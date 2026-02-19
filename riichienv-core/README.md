@@ -28,14 +28,11 @@ riichienv-core = "0.3"
 
 ```rust
 use riichienv_core::hand_evaluator::HandEvaluator;
-use riichienv_core::parser::parse_hand;
-use riichienv_core::types::Conditions;
 
-// Parse a hand from MPSZ notation
-let (tiles_136, melds) = parse_hand("111m33p123s111z");
+// Parse a hand from MPSZ notation and create evaluator
+let evaluator = HandEvaluator::hand_from_text("123m456p789s1122z").unwrap();
 
-// Create evaluator and check tenpai / calculate agari
-let evaluator = HandEvaluator::new(tiles_136, melds);
+// Check tenpai (requires exactly 13 tiles in hand + melds)
 assert!(evaluator.is_tenpai());
 ```
 
@@ -54,30 +51,21 @@ println!("Total: {} points", score.total);
 ```rust
 use riichienv_core::state::GameState;
 use riichienv_core::rule::GameRule;
+use std::collections::HashMap;
 
 // Create a new game with Tenhou rules
+// GameState::new(game_mode, skip_mjai_logging, seed, round_wind, rule)
 let rule = GameRule::default_tenhou();
-let mut state = GameState::new(rule);
+let mut state = GameState::new(0, true, None, 0, rule);
 
 // Get observation for the current player
 let obs = state.get_observation(0);
-let legal_actions = obs.legal_actions();
+let legal_actions = obs.legal_actions_method();
 
-// Advance the game state
-state.step(legal_actions[0].clone());
-```
-
-### Replay parsing
-
-```rust
-use riichienv_core::replay::MjaiReplay;
-
-let replay = MjaiReplay::new("path/to/replay.json").unwrap();
-for kyoku in replay.kyoku_step_iterators() {
-    for (state, obs) in kyoku {
-        // Process each step
-    }
-}
+// Advance the game state (actions is a HashMap<u8, Action>)
+let mut actions = HashMap::new();
+actions.insert(0, legal_actions[0].clone());
+state.step(&actions);
 ```
 
 ## Modules
@@ -92,7 +80,7 @@ for kyoku in replay.kyoku_step_iterators() {
 | `types` | Core data types: `Hand`, `Wind`, `Meld`, `MeldType`, `Conditions`, `WinResult` |
 | `rule` | Game rule configuration with Tenhou/MJSoul presets |
 | `score` | Han/fu-based score calculation |
-| `replay` | MJAI and MJSoul replay parsing with step-by-step iteration |
+| `replay` | MJAI and MJSoul replay parsing with step-by-step iteration (requires `python` feature) |
 | `win_projection` | Win probability and expected value projection |
 | `errors` | Error types (`RiichiError`) and result alias (`RiichiResult`) |
 
