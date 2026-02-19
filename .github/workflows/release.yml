@@ -108,6 +108,10 @@ jobs:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     if: "startsWith(github.ref, 'refs/tags/')"
+    needs: [linux, windows, macos, sdist]
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/riichienv-core
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
