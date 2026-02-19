@@ -257,6 +257,7 @@ pub struct WinResult {
 }
 
 impl WinResult {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         is_win: bool,
         yakuman: bool,

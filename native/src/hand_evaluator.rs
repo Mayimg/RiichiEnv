@@ -278,11 +278,9 @@ fn get_next_tile(tile: u8) -> u8 {
         } else {
             tile + 1
         }
+    } else if tile == 33 {
+        31
     } else {
-        if tile == 33 {
-            31
-        } else {
-            tile + 1
-        }
+        tile + 1
     }
 }
