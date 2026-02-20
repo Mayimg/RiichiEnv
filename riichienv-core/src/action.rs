@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::errors::{RiichiError, RiichiResult};
 use crate::parser::tid_to_mjai;
 
-pub const ACTION_SPACE_4P: usize = 83;
+pub const ACTION_SPACE_4P: usize = 82;
 pub const ACTION_SPACE_3P: usize = 60;
 
 const TILE34_TO_COMPACT: [u8; 34] = [
@@ -209,14 +209,16 @@ impl Action {
             ActionType::Ron | ActionType::Tsumo => Ok(79),
             ActionType::KyushuKyuhai => Ok(80),
             ActionType::Pass => Ok(81),
-            ActionType::Kita => Ok(82),
+            ActionType::Kita => Err(RiichiError::InvalidAction {
+                message: "Kita action is not valid in 4-player mode".to_string(),
+            }),
         }
     }
 }
 
 /// Separate encoder objects for 4P (default) and 3P action spaces.
 ///
-/// `Action::encode()` always returns the 4P encoding (83 IDs).
+/// `Action::encode()` always returns the 4P encoding (82 IDs, 0-81).
 /// For 3P compact encoding (60 IDs), use `ActionEncoder::ThreePlayer`.
 #[derive(Debug, Clone, Copy)]
 pub enum ActionEncoder {

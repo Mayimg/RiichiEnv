@@ -865,11 +865,11 @@ mod unit_tests {
                 .unwrap(),
             81
         );
-        assert_eq!(
+        // Kita is not valid in 4P mode
+        assert!(
             Action::new(ActionType::Kita, None, vec![], None)
                 .encode()
-                .unwrap(),
-            82
+                .is_err()
         );
     }
 
@@ -989,9 +989,9 @@ mod unit_tests {
     fn test_action_space_size() {
         use crate::action::ActionEncoder;
 
-        assert_eq!(ActionEncoder::FourPlayer.action_space_size(), 83);
+        assert_eq!(ActionEncoder::FourPlayer.action_space_size(), 82);
         assert_eq!(ActionEncoder::ThreePlayer.action_space_size(), 60);
-        assert_eq!(ActionEncoder::from_num_players(4).action_space_size(), 83);
+        assert_eq!(ActionEncoder::from_num_players(4).action_space_size(), 82);
         assert_eq!(ActionEncoder::from_num_players(3).action_space_size(), 60);
     }
 

@@ -1319,9 +1319,8 @@ impl GameState {
 
             match self.rule.kan_dora_timing {
                 crate::rule::KanDoraTimingMode::MajsoulImmediate => {
-                    if action.action_type == ActionType::Ankan {
-                        self._reveal_kan_dora();
-                    }
+                    // MjSoul reveals dora immediately for ALL kan types
+                    self._reveal_kan_dora();
                 }
                 crate::rule::KanDoraTimingMode::TenhouImmediate
                 | crate::rule::KanDoraTimingMode::AfterDiscard => {
