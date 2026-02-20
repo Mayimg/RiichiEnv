@@ -390,6 +390,24 @@ impl GameState3PEventHandler for GameState3P {
             LogAction::Dora { dora_marker } => {
                 self.wall.dora_indicators.push(*dora_marker);
             }
+            LogAction::BaBei { seat, .. } => {
+                // Remove a North tile from hand and add to kita_tiles
+                let north_34: u8 = 30; // 4z = North
+                if let Some(idx) = self.players[*seat]
+                    .hand
+                    .iter()
+                    .position(|&x| x / 4 == north_34)
+                {
+                    let tile = self.players[*seat].hand.remove(idx);
+                    self.players[*seat].kita_tiles.push(tile);
+                }
+                self.players[*seat].hand.sort();
+                self.current_player = *seat as u8;
+                self.phase = Phase::WaitAct;
+                self.active_players = vec![self.current_player];
+                self.needs_tsumo = true;
+                self.is_first_turn = false;
+            }
             _ => {}
         }
     }

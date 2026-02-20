@@ -60,6 +60,10 @@ pub enum Action {
         hules: Vec<HuleData>,
     },
     NoTile,
+    BaBei {
+        seat: usize,
+        moqie: bool,
+    },
     LiuJu {
         lj_type: u8,
         seat: usize,
@@ -139,6 +143,7 @@ impl KyokuStepIterator {
             match action {
                 Action::DealTile { .. }
                 | Action::Dora { .. }
+                | Action::BaBei { .. }
                 | Action::NoTile
                 | Action::LiuJu { .. } => {
                     slf.state.apply_log_action(action);
@@ -756,6 +761,11 @@ impl LogKyoku {
                     a_event.set_item("name", "Dora")?;
                     a_data.set_item("dora_marker", TileConverter::to_string(*dora_marker))?;
                 }
+                Action::BaBei { seat, moqie } => {
+                    a_event.set_item("name", "BaBei")?;
+                    a_data.set_item("seat", seat)?;
+                    a_data.set_item("moqie", moqie)?;
+                }
                 Action::NoTile => {
                     a_event.set_item("name", "NoTile")?;
                 }
@@ -1238,6 +1248,19 @@ impl WinResultContextIterator {
                         self.pending_minkan_doras += 1;
                     }
                     self._sync_doras_with_wall();
+                }
+                Action::BaBei { seat, .. } => {
+                    self.ippatsu = vec![false; 4];
+                    self.is_first_turn = vec![false; 4];
+                    // Remove a North tile (z4 = tile_34=30) from hand
+                    let north_34: u8 = 30;
+                    if let Some(pos) = self.current_hands[*seat]
+                        .iter()
+                        .position(|x| *x / 4 == north_34)
+                    {
+                        self.current_hands[*seat].remove(pos);
+                    }
+                    self.rinshan[*seat] = true;
                 }
                 Action::Hule { hules } => {
                     for hule_data in hules {

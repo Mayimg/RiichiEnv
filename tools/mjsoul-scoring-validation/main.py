@@ -75,7 +75,7 @@ def main():
                 print(res_r_py.yaku, ctx.expected_yaku)
                 print(paifu.header["uuid"], k)
                 raise e
-        
+
 
 if __name__ == "__main__":
     main()
