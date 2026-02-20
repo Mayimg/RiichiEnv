@@ -25,7 +25,7 @@
 * **High Performance**: Core logic implemented in Rust for lightning-fast state transitions and rollouts.
 * **Gym-style API**: Intuitive interface designed specifically for reinforcement learning.
 * **Mortal Compatibility**: Seamlessly interface with the Mortal Bot using the standard MJAI protocol.
-* **Rule Flexibility**: Support for diverse rule sets, including no-red-dragon variants and three-player mahjong.
+* **Rule Flexibility**: Support for diverse rule sets, including three-player mahjong (sanma) with Kita (BaBei) declarations.
 * **Game Visualization**: Integrated replay viewer for Jupyter Notebooks.
 
 <div align="center">
@@ -161,15 +161,14 @@ You can select a standard game mode using the `game_mode` argument in the constr
 | `4p-red-single` | 4 | Single Round | No sudden death |
 | `4p-red-east` | 4 | East-only (東風; Tonpuu) | Standard (Tenhou rule) |
 | `4p-red-half` | 4 | Hanchan (半荘) | Standard (Tenhou rule) |
-| `3p-red-east` | 3 | East-only (Tonpuu) | 🚧 In progress |
+| `3p-red-single` | 3 | Single Round | No sudden death |
+| `3p-red-east` | 3 | East-only (東風; Tonpuu) | Standard (Tenhou sanma rule) |
+| `3p-red-half` | 3 | Hanchan (半荘) | Standard (Tenhou sanma rule) |
 
 ```python
 # Initialize a standard 4-player Hanchan game
 env = RiichiEnv(game_mode="4p-red-half")
 ```
-
-> [!NOTE]
-> We are also planning to implement **"No-Red" rules** (game modes without red 5 tiles), which are often adopted in professional leagues (e.g., M-League's team definitions or other competitive settings).
 
 #### 2. Customizing Game Rules (`GameRule`)
 
@@ -209,17 +208,17 @@ Standardize between various tile formats (136-tile, MPSZ, MJAI) and easily parse
 
 See [DATA_REPRESENTATION.md](docs/DATA_REPRESENTATION.md) for more details.
 
-### Agari Calculation
+### Hand Evaluation
 
 ```python
->>> from riichienv import AgariCalculator
+>>> from riichienv import HandEvaluator
 >>> import riichienv.convert as cvt
 
->>> ac = AgariCalculator.hand_from_text("111m33p12s111666z")
->>> ac.is_tenpai()
+>>> he = HandEvaluator.hand_from_text("111m33p12s111666z")
+>>> he.is_tenpai()
 True
->>> ac.calc(cvt.mpsz_to_tid("3s"))
-Agari(agari=True, yakuman=False, ron_agari=12000, tsumo_agari_oya=0, tsumo_agari_ko=0, yaku=[8, 11, 10, 22], han=5, fu=60)
+>>> he.calc(cvt.mpsz_to_tid("3s"), dora_indicators=[], ura_indicators=[])
+WinResult(is_win=True, yakuman=False, ron_agari=12000, tsumo_agari_oya=0, tsumo_agari_ko=0, yaku=[8, 11, 10, 22], han=5, fu=60)
 ```
 
 ## 🛠 Development

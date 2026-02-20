@@ -14,6 +14,22 @@ Detailed game mechanics can be configured using the `GameRule` struct.
 |------|-------------|
 | `.yakuman_pao_is_liability_only` | Whether to limit Pao liability to the specific Pao-triggering Yakuman only (Mahjong Soul style). If false, Pao covers the full amount (Tenhou style). |
 
+## Double Ron
+
+| Flag | Description |
+|------|-------------|
+| `.allow_double_ron` | Whether to allow double ron (two players declaring Ron on the same discard). |
+
+## Kuikae (Swap Calling) Mode
+
+Controls whether players can discard a tile that completes the same sequence they just called.
+
+| Mode | Description |
+|------|-------------|
+| `KuikaeMode.None` | No kuikae restriction. |
+| `KuikaeMode.Basic` | Basic kuikae restriction (cannot discard the called tile). |
+| `KuikaeMode.StrictFlank` | Strict kuikae restriction including flank tiles (Tenhou/MJSoul standard). |
+
 ## Kokushi Musou Rules
 
 | Flag | Description |
@@ -75,13 +91,42 @@ rule = GameRule(kan_dora_timing=KanDoraTimingMode.AfterDiscard)
 env = RiichiEnv(rule=rule)
 ```
 
+## Three-Player (Sanma) Rules
+
+| Flag | Description |
+|------|-------------|
+| `.is_sanma` | Whether the game is a 3-player (sanma) game. |
+| `.allow_kita` | Whether Kita (BaBei / 北抜き) declarations are allowed. |
+| `.sanma_tsumo_zon` | Whether tsumo-zon (ツモ損) scoring is used. When enabled, the non-dealing winner pays the tsumo amount without the absent player's share being distributed. |
+
 ## Platform-Specific Rule Presets
 
 Differences in standard ranked match rules across major platforms.
 
-| Flag | Tenhou | Mahjong Soul |
+### 4-Player Presets
+
+| Flag | `default_tenhou()` | `default_mjsoul()` |
 |------|--------|--------------|
-| `.yakuman_pao_is_liability_only` | `False` | `True` |
 | `.allows_ron_on_ankan_for_kokushi_musou` | `False` | `True` |
 | `.is_kokushi_musou_13machi_double` | `False` | `True` |
+| `.yakuman_pao_is_liability_only` | `False` | `True` |
+| `.allow_double_ron` | `True` | `True` |
+| `.kuikae_mode` | `StrictFlank` | `StrictFlank` |
 | `.kan_dora_timing` | `TenhouImmediate` | `MajsoulImmediate` |
+| `.is_sanma` | `False` | `False` |
+| `.allow_kita` | `False` | `False` |
+| `.sanma_tsumo_zon` | `False` | `False` |
+
+### 3-Player (Sanma) Presets
+
+| Flag | `default_tenhou_sanma()` | `default_mjsoul_sanma()` |
+|------|--------|--------------|
+| `.allows_ron_on_ankan_for_kokushi_musou` | `False` | `True` |
+| `.is_kokushi_musou_13machi_double` | `False` | `True` |
+| `.yakuman_pao_is_liability_only` | `False` | `True` |
+| `.allow_double_ron` | `True` | `True` |
+| `.kuikae_mode` | `StrictFlank` | `StrictFlank` |
+| `.kan_dora_timing` | `TenhouImmediate` | `MajsoulImmediate` |
+| `.is_sanma` | `True` | `True` |
+| `.allow_kita` | `True` | `True` |
+| `.sanma_tsumo_zon` | `True` | `True` |

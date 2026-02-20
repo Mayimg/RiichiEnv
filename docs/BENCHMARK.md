@@ -15,7 +15,7 @@ Calculates yaku, han, and fu for all winning hands extracted from MJAI logs. Thi
 - **`riichienv` (Rust Core)**: 
   The core implementation in Rust. It utilizes optimized bitsets and efficient backtracking for agari detection and yaku calculation. This method measures the bare performance of the Rust engine with minimal Python overhead, as the data stays within the Rust extension.
 - **`riichienv` (Python Wrapper)**:
-  Uses the `riichienv.AgariCalculator` Python class. This wrapper provides a high-level API but introduces overhead due to Python object instantiation, attribute access, and data conversion between Python and Rust.
+  Uses the `riichienv.HandEvaluator` (`calc()`) Python class. This wrapper provides a high-level API but introduces overhead due to Python object instantiation, attribute access, and data conversion between Python and Rust.
 - **`mahjong` (Python Package)**:
   The baseline comparison using the popular `mahjong` Python package (v1.4.0). It is a feature-rich, pure Python implementation.
 
@@ -26,7 +26,7 @@ The following results were obtained by processing 6,503 agari situations extract
 | Implementation | Throughput (agari/sec) | Notes |
 | :--- | ---: | :--- |
 | **`riichienv` (Rust Core)** | **~762,398.23** | Direct calculate on `AgariContext` (Rust side) |
-| **`riichienv` (Python Wrapper)** | 145,592.33 | Using `riichienv.AgariCalculator` (Python side) |
+| **`riichienv` (Python Wrapper)** | 145,592.33 | Using `riichienv.HandEvaluator` (`calc()`) (Python side) |
 | **`mahjong` (Python Package)** | 5,902.76 | Pure Python implementation |
 
 > [!NOTE]
