@@ -5,20 +5,9 @@ use crate::types::{Meld, MeldType};
 use super::helpers::{add_val, broadcast_scalar, get_next_tile, set_val};
 use super::Observation;
 
-const NP: u8 = 4;
-
 /// Internal (non-PyO3) methods that write features directly into a flat f32 buffer.
 /// Buffer layout: channel-major, buf[(ch_offset + ch) * 34 + tile] = value.
 impl Observation {
-    /// Total tiles in the game (136 for 4P).
-    fn total_tiles(&self) -> u32 {
-        136
-    }
-
-    /// Dora next tile (4P standard).
-    fn dora_next(&self, tile: u32) -> u8 {
-        get_next_tile(tile)
-    }
     /// Write 74 base encode channels into buf starting at ch_offset.
     pub(crate) fn encode_base_into(&self, buf: &mut [f32], ch_offset: usize) {
         // Hand (ch 0-3) + Red (ch 4)
@@ -84,8 +73,8 @@ impl Observation {
         }
 
         // Opponents discards last 4 (ch 14-25)
-        for i in 1..NP {
-            let opp_id = (self.player_id + i) % NP;
+        for i in 1..4u8 {
+            let opp_id = (self.player_id + i) % 4;
             if (opp_id as usize) < self.discards.len() {
                 let discs = &self.discards[opp_id as usize];
                 for (j, &t) in discs.iter().rev().take(4).enumerate() {
@@ -122,7 +111,7 @@ impl Observation {
             tiles_used += self.hands[self.player_id as usize].len();
         }
         tiles_used += self.dora_indicators.len();
-        let tiles_left = (self.total_tiles() as i32 - tiles_used as i32).max(0) as f32;
+        let tiles_left = (136_i32 - tiles_used as i32).max(0) as f32;
         broadcast_scalar(buf, ch_offset, 30, tiles_left / 70.0);
 
         // Riichi (ch 31-34)
@@ -131,8 +120,8 @@ impl Observation {
         {
             broadcast_scalar(buf, ch_offset, 31, 1.0);
         }
-        for i in 1..NP {
-            let opp_id = (self.player_id + i) % NP;
+        for i in 1..4u8 {
+            let opp_id = (self.player_id + i) % 4;
             if (opp_id as usize) < self.riichi_declared.len()
                 && self.riichi_declared[opp_id as usize]
             {
@@ -145,7 +134,7 @@ impl Observation {
         if 27 + rw < 34 {
             set_val(buf, ch_offset, 35, 27 + rw, 1.0);
         }
-        let seat = (self.player_id + NP - self.oya) % NP;
+        let seat = (self.player_id + 4 - self.oya) % 4;
         if 27 + (seat as usize) < 34 {
             set_val(buf, ch_offset, 36, 27 + (seat as usize), 1.0);
         }
@@ -155,7 +144,7 @@ impl Observation {
         broadcast_scalar(buf, ch_offset, 38, (self.riichi_sticks as f32) / 5.0);
 
         // Scores (ch 39-46)
-        for i in 0..NP as usize {
+        for i in 0..4 {
             if i < self.scores.len() {
                 broadcast_scalar(
                     buf,
@@ -206,13 +195,13 @@ impl Observation {
         broadcast_scalar(buf, ch_offset, 54, round_progress / 7.0);
 
         // Dora Count (ch 55-58)
-        let mut dora_counts = [0u8; NP as usize];
+        let mut dora_counts = [0u8; 4];
         for (player_idx, dora_count) in dora_counts.iter_mut().enumerate() {
             if player_idx < self.melds.len() {
                 for meld in &self.melds[player_idx] {
                     for &tile in &meld.tiles {
                         for &dora_ind in &self.dora_indicators {
-                            let dora_tile = self.dora_next(dora_ind);
+                            let dora_tile = get_next_tile(dora_ind);
                             if (tile / 4) == (dora_tile / 4) {
                                 *dora_count += 1;
                             }
@@ -223,7 +212,7 @@ impl Observation {
             if player_idx < self.discards.len() {
                 for &tile in &self.discards[player_idx] {
                     for &dora_ind in &self.dora_indicators {
-                        let dora_tile = self.dora_next(dora_ind);
+                        let dora_tile = get_next_tile(dora_ind);
                         if ((tile / 4) as u8) == (dora_tile / 4) {
                             *dora_count += 1;
                         }
@@ -234,7 +223,7 @@ impl Observation {
         if (self.player_id as usize) < self.hands.len() {
             for &tile in &self.hands[self.player_id as usize] {
                 for &dora_ind in &self.dora_indicators {
-                    let dora_tile = self.dora_next(dora_ind);
+                    let dora_tile = get_next_tile(dora_ind);
                     if ((tile / 4) as u8) == (dora_tile / 4) {
                         dora_counts[self.player_id as usize] += 1;
                     }
@@ -293,7 +282,7 @@ impl Observation {
         }
 
         // Extended discards opponent 1 (ch 68-69)
-        let opp1_id = ((self.player_id + 1) % NP) as usize;
+        let opp1_id = ((self.player_id + 1) % 4) as usize;
         if opp1_id < self.discards.len() {
             let discs = &self.discards[opp1_id];
             for (i, &t) in discs.iter().rev().skip(4).take(2).enumerate() {
@@ -305,7 +294,7 @@ impl Observation {
         }
 
         // Tsumogiri flags (ch 70-73)
-        for player_idx in 0..NP as usize {
+        for player_idx in 0..4 {
             if player_idx < self.tsumogiri_flags.len()
                 && !self.tsumogiri_flags[player_idx].is_empty()
             {
@@ -323,7 +312,7 @@ impl Observation {
     /// Write 4 discard history decay channels into buf starting at ch_offset.
     pub(crate) fn encode_discard_decay_into(&self, buf: &mut [f32], ch_offset: usize) {
         let decay_rate = 0.2f32;
-        for player_idx in 0..NP as usize {
+        for player_idx in 0..4 {
             if player_idx >= self.discards.len() {
                 continue;
             }
@@ -357,7 +346,7 @@ impl Observation {
         }
         all_visible.extend(self.dora_indicators.iter().copied());
 
-        for player_idx in 0..NP as usize {
+        for player_idx in 0..4 {
             if player_idx >= self.hands.len() {
                 continue;
             }
@@ -540,7 +529,7 @@ impl Observation {
             let dora_tiles: Vec<u8> = self
                 .dora_indicators
                 .iter()
-                .map(|&ind| self.dora_next(ind))
+                .map(|&ind| get_next_tile(ind))
                 .collect();
             broadcast_scalar(
                 buf,
@@ -560,11 +549,11 @@ impl Observation {
         let dora_tiles: Vec<u8> = self
             .dora_indicators
             .iter()
-            .map(|&ind| self.dora_next(ind))
+            .map(|&ind| get_next_tile(ind))
             .collect();
 
         let mut opp_idx = 0;
-        for player_id in 0..NP as usize {
+        for player_id in 0..4 {
             if player_id == self.player_id as usize {
                 continue;
             }
@@ -597,11 +586,11 @@ impl Observation {
         let dora_tiles: Vec<u8> = self
             .dora_indicators
             .iter()
-            .map(|&ind| self.dora_next(ind))
+            .map(|&ind| get_next_tile(ind))
             .collect();
 
         let mut opp_idx = 0;
-        for player_id in 0..NP as usize {
+        for player_id in 0..4 {
             if player_id == self.player_id as usize {
                 continue;
             }
@@ -741,7 +730,7 @@ impl Observation {
             true
         };
 
-        let seat = (self.player_id + NP - self.oya) % NP;
+        let seat = (self.player_id + 4 - self.oya) % 4;
         let is_oya = seat == 0;
         let round_wind_tile = 27 + self.round_wind;
         let seat_wind_tile = 27 + seat;
@@ -786,7 +775,7 @@ impl Observation {
         };
 
         let total_visible: u32 = tiles_seen.iter().map(|&c| c as u32).sum();
-        let tiles_in_wall = self.total_tiles().saturating_sub(total_visible);
+        let tiles_in_wall = (136u32).saturating_sub(total_visible);
         let tsumos_left = ((tiles_in_wall / 4) as usize).min(win_projection::MAX_TSUMOS_LEFT);
         let hand_tile_count: u32 = tehai.iter().map(|&c| c as u32).sum();
         let can_discard = hand_tile_count % 3 == 2;

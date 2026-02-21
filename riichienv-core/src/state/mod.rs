@@ -536,6 +536,12 @@ impl GameState {
                             self._push_mjai_event(Value::Object(ev));
                         }
 
+                        // Reveal any pending kan doras from previous kans
+                        while self.wall.pending_kan_dora_count > 0 {
+                            self.wall.pending_kan_dora_count -= 1;
+                            self._reveal_kan_dora();
+                        }
+
                         // Kakan Logic
                         // Check Chankan
                         let tile = act.tile.or(act.consume_tiles.first().copied()).unwrap_or(0);
