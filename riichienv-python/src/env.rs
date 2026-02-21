@@ -83,7 +83,7 @@ impl RiichiEnv {
     #[getter]
     pub fn get_state(&self) -> PyResult<GameState> {
         match &self.variant {
-            GameStateVariant::FourPlayer(s) => Ok(s.clone()),
+            GameStateVariant::FourPlayer(s) => Ok(*s.clone()),
             GameStateVariant::ThreePlayer(_) => Err(pyo3::exceptions::PyAttributeError::new_err(
                 "state property is not available for 3P games. Use individual getters instead.",
             )),

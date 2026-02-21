@@ -12,12 +12,14 @@ use std::io::{BufRead, BufReader};
 #[cfg(feature = "python")]
 use std::sync::Arc;
 
+#[cfg(feature = "python")]
 use crate::parser::mjai_to_tid;
 #[cfg(feature = "python")]
 use crate::replay::{Action, HuleData, LogKyoku};
 #[cfg(feature = "python")]
 use crate::types::MeldType;
 
+#[cfg(feature = "python")]
 fn parse_mjai_tile(s: &str) -> u8 {
     mjai_to_tid(s).unwrap_or(0)
 }

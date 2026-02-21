@@ -4,8 +4,8 @@ use crate::state_3p::GameState3P;
 
 #[derive(Debug, Clone)]
 pub enum GameStateVariant {
-    FourPlayer(GameState),
-    ThreePlayer(GameState3P),
+    FourPlayer(Box<GameState>),
+    ThreePlayer(Box<GameState3P>),
 }
 
 impl GameStateVariant {
@@ -17,21 +17,21 @@ impl GameStateVariant {
         rule: GameRule,
     ) -> Self {
         if game_mode >= 3 {
-            GameStateVariant::ThreePlayer(GameState3P::new(
+            GameStateVariant::ThreePlayer(Box::new(GameState3P::new(
                 game_mode,
                 skip_mjai_logging,
                 seed,
                 round_wind,
                 rule,
-            ))
+            )))
         } else {
-            GameStateVariant::FourPlayer(GameState::new(
+            GameStateVariant::FourPlayer(Box::new(GameState::new(
                 game_mode,
                 skip_mjai_logging,
                 seed,
                 round_wind,
                 rule,
-            ))
+            )))
         }
     }
 

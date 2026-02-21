@@ -760,18 +760,16 @@ fn apply_yakuman(
     }
 
     // Chuuren Poutou
-    if ctx.is_menzen && (div.body.len() + melds.len()) == 4 {
-        if is_chuuren_poutou(hand) {
-            let is_9_wait = is_chuuren_9_wait(hand, win_tile);
-            if is_9_wait {
-                yakuman_count += 2;
-                res.yaku_ids.push(ID_JUNSEI_CHUUREN);
-                res.yaku_names.push("Chuuren Poutou 9-wait".to_string());
-            } else {
-                yakuman_count += 1;
-                res.yaku_ids.push(ID_CHUUREN);
-                res.yaku_names.push("Chuuren Poutou".to_string());
-            }
+    if ctx.is_menzen && (div.body.len() + melds.len()) == 4 && is_chuuren_poutou(hand) {
+        let is_9_wait = is_chuuren_9_wait(hand, win_tile);
+        if is_9_wait {
+            yakuman_count += 2;
+            res.yaku_ids.push(ID_JUNSEI_CHUUREN);
+            res.yaku_names.push("Chuuren Poutou 9-wait".to_string());
+        } else {
+            yakuman_count += 1;
+            res.yaku_ids.push(ID_CHUUREN);
+            res.yaku_names.push("Chuuren Poutou".to_string());
         }
     }
 

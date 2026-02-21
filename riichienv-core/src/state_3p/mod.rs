@@ -697,25 +697,23 @@ impl GameState3P {
                                         }
                                     }
                                 }
+                            } else if pid == self.oya {
+                                for i in 0..NP as u8 {
+                                    if i != pid {
+                                        deltas[i as usize] = -(res.tsumo_agari_ko as i32);
+                                        total_win += res.tsumo_agari_ko as i32;
+                                    }
+                                }
                             } else {
-                                if pid == self.oya {
-                                    for i in 0..NP as u8 {
-                                        if i != pid {
+                                for i in 0..NP as u8 {
+                                    if i != pid {
+                                        if i == self.oya {
+                                            deltas[i as usize] =
+                                                -(res.tsumo_agari_oya as i32);
+                                            total_win += res.tsumo_agari_oya as i32;
+                                        } else {
                                             deltas[i as usize] = -(res.tsumo_agari_ko as i32);
                                             total_win += res.tsumo_agari_ko as i32;
-                                        }
-                                    }
-                                } else {
-                                    for i in 0..NP as u8 {
-                                        if i != pid {
-                                            if i == self.oya {
-                                                deltas[i as usize] =
-                                                    -(res.tsumo_agari_oya as i32);
-                                                total_win += res.tsumo_agari_oya as i32;
-                                            } else {
-                                                deltas[i as usize] = -(res.tsumo_agari_ko as i32);
-                                                total_win += res.tsumo_agari_ko as i32;
-                                            }
                                         }
                                     }
                                 }
@@ -876,7 +874,6 @@ impl GameState3P {
                         kita_count: self.players[w_pid as usize].kita_tiles.len() as u8,
                         is_sanma: true,
                         num_players: NP as u8,
-                        ..Default::default()
                     };
 
                     let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(

@@ -399,6 +399,7 @@ pub struct LogKyoku {
     pub end_scores: Vec<i32>,
     pub wliqi: Vec<bool>,
     pub paishan: Option<String>,
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) actions: Arc<[Action]>,
     pub rule: crate::rule::GameRule,
     pub game_end_scores: Option<Vec<i32>>,

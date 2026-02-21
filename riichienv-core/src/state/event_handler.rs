@@ -442,7 +442,7 @@ impl GameStateEventHandler for GameState {
             LogAction::Hule { hules } => {
                 // If a riichi deposit is pending and this is a ron, the deposit
                 // is voided (MjSoul does not deduct it when the discard is ronned).
-                let first_is_ron = hules.first().map_or(false, |h| !h.zimo);
+                let first_is_ron = hules.first().is_some_and(|h| !h.zimo);
                 if first_is_ron {
                     self.riichi_pending_acceptance = None;
                 }
