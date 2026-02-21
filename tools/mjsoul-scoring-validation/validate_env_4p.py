@@ -167,9 +167,6 @@ def process_discard(env: RiichiEnv, data: dict) -> dict:
             if matched is not None:
                 return env.step({seat: matched})
 
-        # TODO: env の内部状態でリーチ宣言開始のタイミングであることを管理するフラグを確認
-        pass
-
         # Fallback: try as Discard (shouldn't normally happen)
         matched = find_legal_action(legals, ActionType.Discard, tile_str)
     else:
@@ -580,7 +577,7 @@ def main():
         print(f"No files found matching {TARGET_FILE_PATTERN}")
         sys.exit(1)
 
-    target_files = list(target_files)[:10000]
+    target_files = list(target_files)[:1000]
 
     total_kyoku = 0
     total_success = 0

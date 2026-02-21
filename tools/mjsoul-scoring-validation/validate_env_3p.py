@@ -185,6 +185,38 @@ def process_discard(env: RiichiEnv, data: dict) -> dict:
     return env.step({seat: matched})
 
 
+def find_best_pon_action(legals: list, data: dict) -> Optional[Action]:
+    """Find the best matching Pon action using froms to identify consume tiles."""
+    seat = data["seat"]
+    tiles_str = data["tiles"]
+    froms = data.get("froms", [])  # TODO: check this later.
+
+    if not froms:
+        # TODO: check this later.
+        # Fallback: no froms data, match by tile type
+        called_tile_str = tiles_str[0]
+        return find_legal_action(legals, ActionType.Pon, called_tile_str)
+
+    # Extract consume tile info from replay (tiles from own hand)
+    consume_parsed = []
+    for ts, f in zip(tiles_str, froms):
+        if f == seat:
+            t34, is_red = parse_tile(ts)
+            consume_parsed.append((t34, is_red))
+    consume_parsed.sort()
+
+    pon_actions = [la for la in legals if la.action_type == ActionType.Pon]
+
+    # Exact match: match consume tiles by type and red status
+    for la in pon_actions:
+        la_parsed = sorted([(t // 4, t in (16, 52, 88)) for t in la.consume_tiles])
+        if la_parsed == consume_parsed:
+            return la
+
+    # Fallback: any pon action
+    return pon_actions[0] if pon_actions else None
+
+
 def process_chi_peng_gang(env: RiichiEnv, data: dict) -> dict:
     """Process a ChiPengGang event (Pon or Daiminkan from discard)."""
     seat = data["seat"]
@@ -203,15 +235,7 @@ def process_chi_peng_gang(env: RiichiEnv, data: dict) -> dict:
     matched = None
 
     if action_type == ActionType.Pon:
-        # Match by the called tile type
-        called_tile_str = tiles_str[0]  # Any tile in the meld should match
-        matched = find_legal_action(legals, ActionType.Pon, called_tile_str)
-        if matched is None:
-            # Try other tiles in the meld
-            for ts in tiles_str[1:]:
-                matched = find_legal_action(legals, ActionType.Pon, ts)
-                if matched:
-                    break
+        matched = find_best_pon_action(legals, data)
 
     elif action_type == ActionType.Daiminkan:
         called_tile_str = tiles_str[0]
@@ -526,6 +550,8 @@ def main():
         print(f"No files found matching {TARGET_FILE_PATTERN}")
         sys.exit(1)
 
+    target_files = list(target_files)[:300]
+
     total_kyoku = 0
     total_success = 0
     total_fail = 0
@@ -543,8 +569,12 @@ def main():
         game_uuid = paifu.header.get("uuid", "unknown")
         game = MjSoulReplay.from_dict(paifu.data)
 
-        for k, kyoku in enumerate(game.take_kyokus()):
+        kyoku_list = list(game.take_kyokus())
+        num_kyoku = len(kyoku_list)
+
+        for k, kyoku in enumerate(kyoku_list):
             total_kyoku += 1
+            is_last_kyoku = (k == num_kyoku - 1)
 
             success, msg = validate_kyoku(env, kyoku, game_uuid, k)
 
@@ -560,7 +590,7 @@ def main():
                 elif "not found in legal actions" in msg:
                     cat = "discard_tile_mismatch"
                 elif "Score mismatch" in msg:
-                    cat = "score_mismatch"
+                    cat = "score_mismatch_last" if is_last_kyoku else "score_mismatch"
                 elif "No matching Ron" in msg:
                     cat = "no_ron"
                 elif "No matching Kita" in msg:

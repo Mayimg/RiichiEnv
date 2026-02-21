@@ -1,4 +1,5 @@
 use crate::action::Phase;
+use crate::hand_evaluator_3p::HandEvaluator3P;
 use crate::parser::mjai_to_tid;
 use crate::replay::{Action as LogAction, MjaiEvent};
 use crate::state_3p::GameState3P;
@@ -274,6 +275,7 @@ impl GameState3PEventHandler for GameState3P {
                 if *is_liqi || *is_wliqi {
                     self.players[s].riichi_declaration_index =
                         Some(self.players[s].discards.len() - 1);
+                    self.riichi_pending_acceptance = Some(s as u8);
                 }
                 self.current_player = (s as u8 + 1) % np;
                 self.phase = Phase::WaitAct;
@@ -283,6 +285,11 @@ impl GameState3PEventHandler for GameState3P {
                 self.is_after_kan = false;
             }
             LogAction::DealTile { seat, tile, .. } => {
+                // Accept pending riichi deposit (discard was not ronned)
+                if let Some(rp) = self.riichi_pending_acceptance.take() {
+                    self.players[rp as usize].score -= 1000;
+                    self.riichi_sticks += 1;
+                }
                 self.players[*seat].hand.push(*tile);
                 self.drawn_tile = Some(*tile);
                 self.current_player = *seat as u8;
@@ -302,6 +309,11 @@ impl GameState3PEventHandler for GameState3P {
                 tiles,
                 froms,
             } => {
+                // Accept pending riichi deposit (discard was not ronned)
+                if let Some(rp) = self.riichi_pending_acceptance.take() {
+                    self.players[rp as usize].score -= 1000;
+                    self.riichi_sticks += 1;
+                }
                 for (i, t) in tiles.iter().enumerate() {
                     if i < froms.len() && froms[i] == *seat {
                         if let Some(idx) = self.players[*seat].hand.iter().position(|&x| x == *t) {
@@ -395,6 +407,11 @@ impl GameState3PEventHandler for GameState3P {
                 self.wall.dora_indicators.push(*dora_marker);
             }
             LogAction::BaBei { seat, .. } => {
+                // Accept pending riichi deposit (discard was not ronned)
+                if let Some(rp) = self.riichi_pending_acceptance.take() {
+                    self.players[rp as usize].score -= 1000;
+                    self.riichi_sticks += 1;
+                }
                 // Remove a North tile from hand and add to kita_tiles
                 let north_34: u8 = 30; // 4z = North
                 if let Some(idx) = self.players[*seat]
@@ -411,6 +428,93 @@ impl GameState3PEventHandler for GameState3P {
                 self.active_players = vec![self.current_player];
                 self.needs_tsumo = true;
                 self.is_first_turn = false;
+            }
+            LogAction::Hule { hules } => {
+                // If a riichi deposit is pending and this is a ron, the deposit
+                // is voided (MjSoul does not deduct it when the discard is ronned).
+                let first_is_ron = hules.first().is_some_and(|h| !h.zimo);
+                if first_is_ron {
+                    self.riichi_pending_acceptance = None;
+                }
+
+                let honba = self.honba;
+                let riichi_on_table = self.riichi_sticks;
+                let mut honba_taken = false;
+
+                for h in hules {
+                    let winner = h.seat;
+                    let is_tsumo = h.zimo;
+
+                    if is_tsumo {
+                        // Tsumo: each non-winner pays base + honba*100
+                        for i in 0..np as usize {
+                            if i != winner {
+                                let base_pay = if (winner as u8) == self.oya {
+                                    // Oya tsumo: all pay xian rate
+                                    h.point_zimo_xian
+                                } else if (i as u8) == self.oya {
+                                    // Ko tsumo: oya pays qin rate
+                                    h.point_zimo_qin
+                                } else {
+                                    // Ko tsumo: other ko pays xian rate
+                                    h.point_zimo_xian
+                                };
+                                let pay = base_pay as i32 + honba as i32 * 100;
+                                self.players[i].score -= pay;
+                                self.players[winner].score += pay;
+                            }
+                        }
+                    } else if let Some((discarder, _)) = self.last_discard {
+                        // Ron: only the first ron winner gets the honba bonus
+                        let ron_honba = if !honba_taken {
+                            honba_taken = true;
+                            honba
+                        } else {
+                            0
+                        };
+                        // 3P ron: honba × 200 (matching tsumo total: 2 players × 100)
+                        let pay = h.point_rong as i32 + ron_honba as i32 * 200;
+                        self.players[discarder as usize].score -= pay;
+                        self.players[winner].score += pay;
+                    }
+                }
+
+                // Distribute riichi sticks to first winner
+                if !hules.is_empty() {
+                    let winner = hules[0].seat;
+                    self.players[winner].score += riichi_on_table as i32 * 1000;
+                    self.riichi_sticks = 0;
+                }
+
+                self.is_done = true;
+            }
+            LogAction::NoTile => {
+                // Finalize pending riichi deposit (exhaustive draw, not ronned)
+                if let Some(rp) = self.riichi_pending_acceptance.take() {
+                    self.players[rp as usize].score -= 1000;
+                    self.riichi_sticks += 1;
+                }
+                // Compute tenpai/noten payments (pool = 2000 in 3P)
+                let mut tenpai = [false; 3];
+                for (i, p) in self.players.iter().enumerate() {
+                    if i < 3 {
+                        let calc = HandEvaluator3P::new(p.hand.clone(), p.melds.clone());
+                        tenpai[i] = calc.is_tenpai();
+                    }
+                }
+                let num_tp = tenpai.iter().filter(|&&t| t).count();
+                if num_tp > 0 && num_tp < 3 {
+                    let pk = 2000 / num_tp as i32;
+                    let pn = 2000 / (3 - num_tp) as i32;
+                    for (i, tp) in tenpai.iter().enumerate() {
+                        let delta = if *tp { pk } else { -pn };
+                        self.players[i].score += delta;
+                    }
+                }
+                self.is_done = true;
+            }
+            LogAction::LiuJu { .. } => {
+                self.is_done = true;
             }
             _ => {}
         }

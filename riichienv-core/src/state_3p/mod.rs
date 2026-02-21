@@ -819,16 +819,6 @@ impl GameState3P {
             }
 
             if !ron_claims.is_empty() {
-                // If a riichi deposit is pending (the discarder declared riichi on this
-                // very discard), accept it so the deposit ends up on the table for the
-                // winner to collect.
-                if let Some(rp) = self.riichi_pending_acceptance.take() {
-                    self.players[rp as usize].score -= 1000;
-                    self.players[rp as usize].score_delta -= 1000;
-                    self.riichi_sticks += 1;
-                    self.players[rp as usize].riichi_declared = true;
-                }
-
                 let (target_pid, win_tile) = self.last_discard.unwrap_or((self.current_player, 0));
                 ron_claims.sort_by_key(|&pid| (pid + NP as u8 - target_pid) % NP as u8);
 
@@ -1707,24 +1697,9 @@ impl GameState3P {
     }
 
     fn check_abortive_draw(&mut self) -> bool {
-        // 1. Sufuurenta (Three/Four Winds) - in 3P it's 3 winds
-        let turns_ok = self.players.iter().all(|p| p.discards.len() == 1);
-        let melds_empty = self.players.iter().all(|p| p.melds.is_empty());
-
-        if turns_ok && melds_empty {
-            if let Some(first_tile) = self.players[0].discards.first() {
-                let first = first_tile / 4;
-                if (27..=30).contains(&first)
-                    && self
-                        .players
-                        .iter()
-                        .all(|p| p.discards.first().map(|&t| t / 4) == Some(first))
-                {
-                    self._trigger_ryukyoku("sufuurenta");
-                    return true;
-                }
-            }
-        }
+        // 1. Sufuurenta (Four Winds) - disabled in 3P
+        // Sufuurenta requires all 4 players to discard the same wind tile.
+        // With only 3 players this rule does not apply (MjSoul 3P confirmed).
 
         // 2. Suukansansen (4 Kans)
         let mut kan_owners = Vec::new();
@@ -1747,11 +1722,9 @@ impl GameState3P {
             }
         }
 
-        // 3. Suucha Riichi (All Riichis)
-        if self.players.iter().all(|p| p.riichi_declared) {
-            self._trigger_ryukyoku("suucha_riichi");
-            return true;
-        }
+        // 3. Suucha Riichi (All Riichis) - disabled in 3P
+        // Suucha riichi requires all 4 players to declare riichi.
+        // With only 3 players this rule does not apply (MjSoul 3P confirmed).
 
         false
     }
@@ -1759,20 +1732,19 @@ impl GameState3P {
     pub fn _reveal_kan_dora(&mut self) {
         let count = self.wall.dora_indicators.len();
         if count < 5 {
-            let base_idx = (4 + 2 * count).saturating_sub(self.wall.rinshan_draw_count as usize);
-            if base_idx < self.wall.tiles.len() {
-                self.wall.dora_indicators.push(self.wall.tiles[base_idx]);
-                if !self.skip_mjai_logging {
-                    let mut ev = serde_json::Map::new();
-                    ev.insert("type".to_string(), Value::String("dora".to_string()));
-                    ev.insert(
-                        "dora_marker".to_string(),
-                        Value::String(tid_to_mjai(
-                            self.wall.dora_indicators.last().copied().unwrap(),
-                        )),
-                    );
-                    self._push_mjai_event(Value::Object(ev));
-                }
+            self.wall
+                .dora_indicators
+                .push(self.wall.dora_indicator_tiles[count]);
+            if !self.skip_mjai_logging {
+                let mut ev = serde_json::Map::new();
+                ev.insert("type".to_string(), Value::String("dora".to_string()));
+                ev.insert(
+                    "dora_marker".to_string(),
+                    Value::String(tid_to_mjai(
+                        self.wall.dora_indicators.last().copied().unwrap(),
+                    )),
+                );
+                self._push_mjai_event(Value::Object(ev));
             }
         }
     }
@@ -1780,10 +1752,7 @@ impl GameState3P {
     pub fn _get_ura_markers(&self) -> Vec<String> {
         let mut markers = Vec::new();
         for i in 0..self.wall.dora_indicators.len() {
-            let idx = (5 + 2 * i).saturating_sub(self.wall.rinshan_draw_count as usize);
-            if idx < self.wall.tiles.len() {
-                markers.push(tid_to_mjai(self.wall.tiles[idx]));
-            }
+            markers.push(tid_to_mjai(self.wall.ura_indicator_tiles[i]));
         }
         markers
     }
@@ -1791,10 +1760,7 @@ impl GameState3P {
     fn _get_ura_indicators(&self) -> Vec<u8> {
         let mut indicators = Vec::new();
         for i in 0..self.wall.dora_indicators.len() {
-            let idx = (5 + 2 * i).saturating_sub(self.wall.rinshan_draw_count as usize);
-            if idx < self.wall.tiles.len() {
-                indicators.push(self.wall.tiles[idx]);
-            }
+            indicators.push(self.wall.ura_indicator_tiles[i]);
         }
         indicators
     }

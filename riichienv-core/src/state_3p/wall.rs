@@ -9,6 +9,10 @@ use crate::types::is_sanma_excluded_tile;
 pub struct WallState3P {
     pub tiles: Vec<u8>,
     pub dora_indicators: Vec<u8>,
+    /// Pre-extracted dora indicator tiles (omote) in order D1..D5.
+    pub dora_indicator_tiles: [u8; 5],
+    /// Pre-extracted ura dora indicator tiles in order U1..U5.
+    pub ura_indicator_tiles: [u8; 5],
     pub rinshan_draw_count: u8,
     pub pending_kan_dora_count: u8,
     pub wall_digest: String,
@@ -22,6 +26,8 @@ impl WallState3P {
         Self {
             tiles: Vec::new(),
             dora_indicators: Vec::new(),
+            dora_indicator_tiles: [0; 5],
+            ura_indicator_tiles: [0; 5],
             rinshan_draw_count: 0,
             pending_kan_dora_count: 0,
             wall_digest: String::new(),
@@ -58,10 +64,15 @@ impl WallState3P {
         w.reverse();
         self.tiles = w;
 
-        self.dora_indicators.clear();
-        if self.tiles.len() > 5 {
-            self.dora_indicators.push(self.tiles[4]);
+        // Pre-extract dora/ura indicators from standard layout.
+        // After reversal: D_i omote at tiles[4+2i], ura at tiles[5+2i].
+        for i in 0..5 {
+            self.dora_indicator_tiles[i] = self.tiles[4 + 2 * i];
+            self.ura_indicator_tiles[i] = self.tiles[5 + 2 * i];
         }
+
+        self.dora_indicators.clear();
+        self.dora_indicators.push(self.dora_indicator_tiles[0]);
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
     }
@@ -71,29 +82,23 @@ impl WallState3P {
 
         // MjSoul 3P dead wall wraps around a table corner.
         // Paishan positions 94-103 encode dora indicator stacks as:
-        //   [94,95]=D3/U3  [96,97]=D2/U2  [98,99]=D1/U1  [100,101]=D4/U4  [102,103]=D5/U5
-        // Rearrange to standard descending order (D5, D4, D3, D2, D1 from left
-        // to right) so that after reversal D1 lands at index 4, matching 4P.
+        //   [94,95]=stack3  [96,97]=stack2  [98,99]=stack1  [100,101]=stack4  [102,103]=stack5
+        // In each stack [X,X+1]: X+1 = omote (indicator), X = ura.
+        //
+        // We do NOT rearrange the wall tiles, because positions 103, 102, ...
+        // are used as rinshan continuation tiles (5th+ draws after kita/kan).
+        // Instead, we pre-extract dora/ura indicators into separate arrays.
         if t.len() == 108 {
-            let orig: [u8; 10] = t[94..104].try_into().unwrap();
-            t[94] = orig[8];
-            t[95] = orig[9]; // D5 (was at 102,103)
-            t[96] = orig[6];
-            t[97] = orig[7]; // D4 (was at 100,101)
-            t[98] = orig[0];
-            t[99] = orig[1]; // D3 (was at 94,95)
-            t[100] = orig[2];
-            t[101] = orig[3]; // D2 (was at 96,97)
-            t[102] = orig[4];
-            t[103] = orig[5]; // D1 (was at 98,99)
+            // D1..D5 omote indicators
+            self.dora_indicator_tiles = [t[99], t[97], t[95], t[101], t[103]];
+            // U1..U5 ura indicators
+            self.ura_indicator_tiles = [t[98], t[96], t[94], t[100], t[102]];
         }
 
         t.reverse();
         self.tiles = t;
         self.dora_indicators.clear();
-        if self.tiles.len() > 5 {
-            self.dora_indicators.push(self.tiles[4]);
-        }
+        self.dora_indicators.push(self.dora_indicator_tiles[0]);
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
     }
