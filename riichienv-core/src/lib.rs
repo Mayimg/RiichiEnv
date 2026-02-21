@@ -15,7 +15,7 @@ pub mod observation_3p;
 pub mod parser;
 pub mod replay;
 pub mod rule;
-mod shanten;
+pub mod shanten;
 pub mod state;
 pub mod state_3p;
 pub mod win_projection;

@@ -33,6 +33,18 @@ fn check_riichi_candidates_py(tiles_136: Vec<u8>) -> Vec<u32> {
     riichienv_core::check_riichi_candidates(tiles_136)
 }
 
+#[pyfunction]
+#[pyo3(name = "calculate_shanten")]
+fn calculate_shanten_py(hand_tiles: Vec<u32>) -> i32 {
+    riichienv_core::shanten::calculate_shanten(&hand_tiles)
+}
+
+#[pyfunction]
+#[pyo3(name = "calculate_shanten_3p")]
+fn calculate_shanten_3p_py(hand_tiles: Vec<u32>) -> i32 {
+    riichienv_core::shanten::calculate_shanten_3p(&hand_tiles)
+}
+
 #[pymodule]
 fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<riichienv_core::types::Meld>()?;
@@ -65,5 +77,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_hand_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_tile_py, m)?)?;
     m.add_function(wrap_pyfunction!(check_riichi_candidates_py, m)?)?;
+    m.add_function(wrap_pyfunction!(calculate_shanten_py, m)?)?;
+    m.add_function(wrap_pyfunction!(calculate_shanten_3p_py, m)?)?;
     Ok(())
 }
