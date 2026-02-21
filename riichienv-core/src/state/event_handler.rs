@@ -258,8 +258,12 @@ impl GameStateEventHandler for GameState {
                 self.last_discard = Some((s as u8, t));
                 self.drawn_tile = None;
 
-                self.players[s].riichi_declared = self.players[s].riichi_declared || *is_liqi;
-                if *is_liqi {
+                if *is_liqi || *is_wliqi {
+                    if !self.players[s].riichi_declared {
+                        self.players[s].riichi_declared = true;
+                        self.players[s].score -= 1000;
+                        self.riichi_sticks += 1;
+                    }
                     self.players[s].riichi_declaration_index =
                         Some(self.players[s].discards.len() - 1);
                 }
@@ -382,6 +386,73 @@ impl GameStateEventHandler for GameState {
             }
             LogAction::Dora { dora_marker } => {
                 self.wall.dora_indicators.push(*dora_marker);
+            }
+            LogAction::Hule { hules } => {
+                let honba = self.honba;
+                let riichi_on_table = self.riichi_sticks;
+
+                for h in hules {
+                    let winner = h.seat;
+                    let is_tsumo = h.zimo;
+
+                    if is_tsumo {
+                        let is_oya = (winner as u8) == self.oya;
+                        for i in 0..4 {
+                            if i != winner {
+                                let base_pay = if is_oya {
+                                    h.point_zimo_xian
+                                } else if (i as u8) == self.oya {
+                                    h.point_zimo_qin
+                                } else {
+                                    h.point_zimo_xian
+                                };
+                                let pay = base_pay as i32 + honba as i32 * 100;
+                                self.players[i].score -= pay;
+                                self.players[winner].score += pay;
+                            }
+                        }
+                    } else if let Some((discarder, _)) = self.last_discard {
+                        let pay = h.point_rong as i32 + honba as i32 * 300;
+                        self.players[discarder as usize].score -= pay;
+                        self.players[winner].score += pay;
+                    }
+                }
+
+                // Distribute riichi sticks to first winner
+                if !hules.is_empty() {
+                    let winner = hules[0].seat;
+                    self.players[winner].score += riichi_on_table as i32 * 1000;
+                    self.riichi_sticks = 0;
+                }
+
+                self.is_done = true;
+            }
+            LogAction::NoTile => {
+                // Compute tenpai/noten payments
+                let mut tenpai = vec![false; 4];
+                for (i, p) in self.players.iter().enumerate() {
+                    if i < 4 {
+                        let calc = crate::hand_evaluator::HandEvaluator::new(
+                            p.hand.clone(),
+                            p.melds.clone(),
+                        );
+                        tenpai[i] = calc.is_tenpai();
+                    }
+                }
+                let num_tp = tenpai.iter().filter(|&&t| t).count();
+                if num_tp > 0 && num_tp < 4 {
+                    let pk = 3000 / num_tp as i32;
+                    let pn = 3000 / (4 - num_tp) as i32;
+                    for (i, tp) in tenpai.iter().enumerate() {
+                        let delta = if *tp { pk } else { -pn };
+                        self.players[i].score += delta;
+                    }
+                }
+                self.is_done = true;
+            }
+            LogAction::LiuJu { .. } => {
+                // Abortive draw - no score changes
+                self.is_done = true;
             }
             _ => {}
         }
