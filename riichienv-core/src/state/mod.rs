@@ -1356,8 +1356,19 @@ impl GameState {
 
             match self.rule.kan_dora_timing {
                 crate::rule::KanDoraTimingMode::MajsoulImmediate => {
-                    // MjSoul reveals dora immediately for ALL kan types
-                    self._reveal_kan_dora();
+                    // MjSoul: reveal any pending doras from previous kans first
+                    if has_pending_doras {
+                        while self.wall.pending_kan_dora_count > 0 {
+                            self.wall.pending_kan_dora_count -= 1;
+                            self._reveal_kan_dora();
+                        }
+                    }
+                    // Ankan reveals immediately, Kakan/Daiminkan defer to after discard
+                    if action.action_type == ActionType::Ankan {
+                        self._reveal_kan_dora();
+                    } else {
+                        self.wall.pending_kan_dora_count += 1;
+                    }
                 }
                 crate::rule::KanDoraTimingMode::TenhouImmediate
                 | crate::rule::KanDoraTimingMode::AfterDiscard => {

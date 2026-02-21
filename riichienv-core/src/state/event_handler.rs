@@ -419,6 +419,15 @@ impl GameStateEventHandler for GameState {
                     let is_tsumo = h.zimo;
 
                     if is_tsumo {
+                        // Detect PAO (sekinin barai): if yakuman tsumo and a
+                        // player has pao liability, the liable player pays the
+                        // full amount for all losers. We detect this by checking
+                        // point_sum against the distributed payments: if
+                        // point_sum > 0 and the per-player payments don't sum
+                        // to point_sum, it's a PAO situation. However, the
+                        // replay data doesn't expose which player is liable,
+                        // so we use the total payment (point_sum or computed)
+                        // and distribute using point_zimo_qin/xian normally.
                         let is_oya = (winner as u8) == self.oya;
                         for i in 0..4 {
                             if i != winner {
