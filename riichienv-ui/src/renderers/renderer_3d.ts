@@ -100,24 +100,29 @@ export class Renderer3D implements IRenderer {
         tableSurface.className = 'table-surface';
         // Position: flatter tilt → move table up to balance with hand layer
         const tableTop = this.layout.tiltAngle <= 40 ? '40%' : '42%';
+        const frameWidth = 76;
+        const surfaceSize = this.layout.tableSize + frameWidth * 2;
         Object.assign(tableSurface.style, {
-            width: `${this.layout.tableSize}px`,
-            height: `${this.layout.tableSize}px`,
+            width: `${surfaceSize}px`,
+            height: `${surfaceSize}px`,
             top: tableTop,
             transform: `translate(-50%, -50%) rotateX(${this.layout.tiltAngle}deg)`,
         });
 
-        // Table inner border
+        // Table inner border (contains all game content)
         const tableInner = document.createElement('div');
         tableInner.className = 'table-inner';
         tableSurface.appendChild(tableInner);
 
         // Center info
         const center = this.renderCenter3D(state);
-        tableSurface.appendChild(center);
+        tableInner.appendChild(center);
 
         // Riichi sticks on table
-        this.renderRiichiSticks(tableSurface, state, pc);
+        this.renderRiichiSticks(tableInner, state, pc);
+
+        // Floating score labels on table (above riichi sticks)
+        this.renderFloatingScores(tableInner, state, pc);
 
         // Collect active waits for highlighting
         const activeWaits = new Set<string>();
@@ -134,16 +139,16 @@ export class Renderer3D implements IRenderer {
 
             // River (discards)
             const river = this.renderRiver3D(p.discards, relIndex, state, i, activeWaits);
-            tableSurface.appendChild(river);
+            tableInner.appendChild(river);
 
             // Opponent hand + melds on table (skip viewpoint player)
             if (relIndex !== 0) {
                 const oppHand = this.renderOpponentHand(p, relIndex, pc);
-                tableSurface.appendChild(oppHand);
+                tableInner.appendChild(oppHand);
 
                 if (p.melds.length > 0) {
                     const oppMelds = this.renderOpponentMelds(p.melds, i, relIndex, pc);
-                    tableSurface.appendChild(oppMelds);
+                    tableInner.appendChild(oppMelds);
                 }
             }
         });
@@ -169,7 +174,7 @@ export class Renderer3D implements IRenderer {
         const uiOverlay = document.createElement('div');
         uiOverlay.className = 'ui-overlay-3d';
 
-        // Score panels
+        // Score panels (at viewport edges)
         state.players.forEach((p, i) => {
             const relIndex = (i - this.viewpoint + pc) % pc;
             const panel = this.renderScorePanel(p, i, relIndex, state);
@@ -287,7 +292,7 @@ export class Renderer3D implements IRenderer {
 
         const row1 = document.createElement('div');
         Object.assign(row1.style, {
-            fontSize: '18px', fontWeight: 'bold', color: 'white',
+            fontSize: '26px', fontWeight: 'bold', color: 'white',
             fontFamily: 'sans-serif', marginBottom: '2px',
         });
         row1.textContent = roundText;
@@ -295,10 +300,10 @@ export class Renderer3D implements IRenderer {
 
         // Row 2: Honba / Kyotaku
         const row2 = document.createElement('div');
-        row2.textContent = `${state.honba}, ${state.kyotaku}`;
+        row2.textContent = `Depo: ${state.kyotaku}, Honba: ${state.honba}`;
         Object.assign(row2.style, {
-            fontSize: '13px', fontWeight: 'bold', color: 'white',
-            fontFamily: 'monospace', marginBottom: '6px',
+            fontSize: '16px', fontWeight: 'bold', color: 'white',
+            fontFamily: 'sans-serif', marginBottom: '6px',
         });
         contentDiv.appendChild(row2);
 
@@ -336,31 +341,89 @@ export class Renderer3D implements IRenderer {
             dot.className = 'dot';
             stick.appendChild(dot);
 
-            // Position between river and center (proportional to table size)
-            const near = Math.round(ts * 0.6625);
-            const far = Math.round(ts * 0.3375);
+            // Position just inside the edges of the center info panel (250x220, centered)
+            const centerHalf = 125; // half of 250px center panel width
+            const inset = 5;
+            const nearEdge = Math.round(ts / 2 + centerHalf - inset);
+            const farEdge = Math.round(ts / 2 - centerHalf + inset);
             if (relPos === 0) {
                 Object.assign(stick.style, {
-                    left: '50%', top: `${near}px`,
+                    left: '50%', top: `${nearEdge}px`,
                     transform: 'translateX(-50%)',
                 });
             } else if (relPos === 1) {
                 Object.assign(stick.style, {
-                    left: `${near}px`, top: '50%',
-                    transform: 'translateY(-50%) rotate(90deg)',
+                    left: `${nearEdge}px`, top: '50%',
+                    transform: 'translate(-50%, -50%) rotate(90deg)',
                 });
             } else if (relPos === 2) {
                 Object.assign(stick.style, {
-                    left: '50%', top: `${far}px`,
+                    left: '50%', top: `${farEdge}px`,
                     transform: 'translateX(-50%)',
                 });
             } else if (relPos === 3) {
                 Object.assign(stick.style, {
-                    left: `${far}px`, top: '50%',
-                    transform: 'translateY(-50%) rotate(90deg)',
+                    left: `${farEdge}px`, top: '50%',
+                    transform: 'translate(-50%, -50%) rotate(90deg)',
                 });
             }
             table.appendChild(stick);
+        });
+    }
+
+    // =========================================================================
+    // Floating score labels on table (positioned above riichi sticks)
+    // =========================================================================
+    private renderFloatingScores(table: HTMLElement, state: BoardState, pc: number): void {
+        const ts = this.layout.tableSize;
+        const centerHalf = 125; // half of 250px center panel width
+        const offset = 30; // px above riichi stick (toward center)
+
+        state.players.forEach((p, i) => {
+            const relPos = (i - this.viewpoint + pc) % pc;
+
+            const el = document.createElement('div');
+            el.className = 'floating-score-3d';
+            el.textContent = p.score.toString();
+
+            // Position above riichi stick, rotated to face the player
+            // "above" = closer to center from the riichi stick position
+            const nearEdge = Math.round(ts / 2 + centerHalf - 5);
+            const farEdge = Math.round(ts / 2 - centerHalf + 5);
+
+            if (relPos === 0) {
+                // Bottom player: stick at nearEdge, score above (closer to center)
+                Object.assign(el.style, {
+                    left: '50%', top: `${nearEdge - offset}px`,
+                    transform: 'translateX(-50%)',
+                });
+            } else if (relPos === 1) {
+                // Right player (下家): rotated 180° from before, slightly outward
+                Object.assign(el.style, {
+                    left: `${nearEdge - offset + 15}px`, top: '50%',
+                    transform: 'translate(-50%, -50%) rotate(-90deg)',
+                });
+            } else if (relPos === 2) {
+                // Top player: stick at farEdge, score below (closer to center)
+                Object.assign(el.style, {
+                    left: '50%', top: `${farEdge + offset}px`,
+                    transform: 'translateX(-50%) rotate(180deg)',
+                });
+            } else if (relPos === 3) {
+                // Left player (上家): rotated 180° from before, slightly outward
+                Object.assign(el.style, {
+                    left: `${farEdge + offset - 15}px`, top: '50%',
+                    transform: 'translate(-50%, -50%) rotate(90deg)',
+                });
+            }
+
+            // Click to change viewpoint
+            el.onclick = (e) => {
+                e.stopPropagation();
+                if (this.onViewpointChange) this.onViewpointChange(i);
+            };
+
+            table.appendChild(el);
         });
     }
 
@@ -391,10 +454,10 @@ export class Renderer3D implements IRenderer {
         const riverScale = 1.35;
         // Left/right rivers shifted toward center by one tile height
         const positions: { [key: number]: { left: string; top: string; transform: string } } = {
-            0: { left: '50%', top: `${Math.round(ts * 0.72)}px`, transform: `translate(-50%, -50%) scale(${riverScale})` },
-            1: { left: `${Math.round(ts * 0.745 - th)}px`, top: '50%', transform: `translate(-50%, -50%) rotate(-90deg) scale(${riverScale})` },
-            2: { left: '50%', top: `${Math.round(ts * 0.28)}px`, transform: `translate(-50%, -50%) rotate(180deg) scale(${riverScale})` },
-            3: { left: `${Math.round(ts * 0.255 + th)}px`, top: '50%', transform: `translate(-50%, -50%) rotate(90deg) scale(${riverScale})` },
+            0: { left: '50%', top: `${Math.round(ts * 0.70)}px`, transform: `translate(-50%, -50%) scale(${riverScale})` },
+            1: { left: `${Math.round(ts * 0.73 - th)}px`, top: '50%', transform: `translate(-50%, -50%) rotate(-90deg) scale(${riverScale})` },
+            2: { left: '50%', top: `${Math.round(ts * 0.30)}px`, transform: `translate(-50%, -50%) rotate(180deg) scale(${riverScale})` },
+            3: { left: `${Math.round(ts * 0.27 + th)}px`, top: '50%', transform: `translate(-50%, -50%) rotate(90deg) scale(${riverScale})` },
         };
         const pos = positions[relIndex] || positions[0];
         Object.assign(wrapper.style, pos);
@@ -498,20 +561,22 @@ export class Renderer3D implements IRenderer {
 
         // Hand center = midpoint between river outer edge and table edge
         // Left/right rivers are shifted by rth toward center
+        // Shift hand to the left from each player's perspective
+        const handShift = Math.round(ts * 0.08);
         const positions: { [key: number]: { left: string; top: string; transform: string } } = {
             1: {
                 left: `${Math.round((ts * 0.745 - rth + halfRiverExtent + ts) / 2)}px`,
-                top: '50%',
+                top: `${Math.round(ts / 2 + handShift)}px`,
                 transform: 'translate(-50%, -50%) rotate(-90deg)',
             },
             2: {
-                left: '50%',
+                left: `${Math.round(ts / 2 + handShift)}px`,
                 top: `${Math.round((ts * 0.28 - halfRiverExtent) / 2)}px`,
                 transform: 'translate(-50%, -50%) rotate(180deg)',
             },
             3: {
                 left: `${Math.round((ts * 0.255 + rth - halfRiverExtent) / 2)}px`,
-                top: '50%',
+                top: `${Math.round(ts / 2 - handShift)}px`,
                 transform: 'translate(-50%, -50%) rotate(90deg)',
             },
         };
@@ -823,14 +888,14 @@ export class Renderer3D implements IRenderer {
         panel.className = 'score-panel-3d';
         if (playerIdx === this.viewpoint) panel.classList.add('active-vp');
 
-        // Position — self (relIndex=0) panel moved to bottom-left to avoid blocking river
-        const positions: { [key: number]: { [k: string]: string } } = {
-            0: { bottom: '135px', left: '80px' },
+        // Position — viewport edges
+        const panelPositions: { [key: number]: { [k: string]: string } } = {
+            0: { bottom: '130px', left: '50%', transform: 'translateX(-50%)' },
             1: { right: '50px', top: '45%', transform: 'translateY(-50%)' },
-            2: { top: '15px', left: '50%', transform: 'translateX(-50%)' },
+            2: { top: '20px', left: '50%', transform: 'translateX(-50%)' },
             3: { left: '50px', top: '45%', transform: 'translateY(-50%)' },
         };
-        const pos = positions[relIndex] || positions[0];
+        const pos = panelPositions[relIndex] || panelPositions[0];
         Object.assign(panel.style, pos);
 
         // Wind label

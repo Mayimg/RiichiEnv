@@ -39,11 +39,12 @@ export const VIEWER_3D_CSS = `
 
     .table-inner {
         position: absolute;
-        top: 38px; left: 38px; right: 38px; bottom: 38px;
+        top: 76px; left: 76px; right: 76px; bottom: 76px;
         background: ${COLORS.boardBackground};
         border: 3px solid #3d2514;
         border-radius: 4px;
         box-shadow: inset 0 0 15px rgba(0,0,0,0.3);
+        transform-style: preserve-3d;
     }
 
     /* Layer 2: Hand Layer (flat, at bottom) */
@@ -128,7 +129,7 @@ export const VIEWER_3D_CSS = `
         bottom: 0;
         left: 0;
         width: 100%;
-        background: linear-gradient(to bottom, #e4dec8 50%, #c8a030 50%);
+        background: linear-gradient(to bottom, #e4dec8 70%, #c8a030 70%);
         transform-origin: bottom center;
         transform: rotateX(-90deg);
         border-radius: 0 0 2px 2px;
@@ -138,7 +139,7 @@ export const VIEWER_3D_CSS = `
         top: 0;
         left: 100%;
         height: 100%;
-        background: linear-gradient(to right, #b08828 50%, #dcd6c0 50%);
+        background: linear-gradient(to right, #b08828 30%, #dcd6c0 30%);
         transform-origin: left center;
         transform: rotateY(-90deg);
         border-radius: 0 2px 2px 0;
@@ -148,7 +149,7 @@ export const VIEWER_3D_CSS = `
         top: 0;
         left: 0;
         width: 100%;
-        background: linear-gradient(to bottom, #c8a030 50%, #e4dec8 50%);
+        background: linear-gradient(to bottom, #c8a030 30%, #e4dec8 30%);
         transform-origin: top center;
         transform: rotateX(90deg);
         border-radius: 2px 2px 0 0;
@@ -158,7 +159,7 @@ export const VIEWER_3D_CSS = `
         top: 0;
         right: 100%;
         height: 100%;
-        background: linear-gradient(to right, #dcd6c0 50%, #b08828 50%);
+        background: linear-gradient(to right, #dcd6c0 70%, #b08828 70%);
         transform-origin: right center;
         transform: rotateY(90deg);
         border-radius: 2px 0 0 2px;
@@ -211,8 +212,8 @@ export const VIEWER_3D_CSS = `
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        width: 180px;
-        height: 180px;
+        width: 250px;
+        height: 220px;
         background: ${COLORS.centerInfoBackground};
         border-radius: 6px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.4);
@@ -228,8 +229,8 @@ export const VIEWER_3D_CSS = `
         background-color: ${COLORS.highlightBoard} !important;
     }
     .dora-tile-3d {
-        width: 18px;
-        height: 25px;
+        width: 28px;
+        height: 39px;
         position: relative;
         transform-style: preserve-3d;
     }
@@ -360,6 +361,19 @@ export const VIEWER_3D_CSS = `
     .score-panel-3d .wind-label {
         font-size: 11px;
         color: #aaa;
+    }
+
+    .floating-score-3d {
+        position: absolute;
+        pointer-events: auto;
+        font-family: monospace;
+        font-size: 18px;
+        font-weight: bold;
+        color: #ffdd00;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.5);
+        cursor: pointer;
+        white-space: nowrap;
+        z-index: 10;
     }
 
     .call-overlay-3d {

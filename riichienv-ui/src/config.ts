@@ -126,7 +126,7 @@ export function createLayout3DConfig4P(): LayoutConfig3D {
             riverTile: [26, 36],
             opponentTile: [30, 42],
             ownTile: [50, 70],
-            doraTile: [18, 25],
+            doraTile: [28, 39],
             meldTileTable: [20, 28],
             meldTileOwn: [40, 56],
         },

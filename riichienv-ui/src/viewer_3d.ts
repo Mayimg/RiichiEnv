@@ -106,8 +106,7 @@ export class Viewer3D {
             width: `${lc.viewAreaWidth}px`,
             height: `${lc.viewAreaHeight}px`,
             position: 'relative',
-            backgroundColor: COLORS.boardBackground,
-            boxShadow: '0 0 20px rgba(0,0,0,0.5)',
+            backgroundColor: '#000',
             flexShrink: '0',
             overflow: 'hidden',
             outline: 'none'
