@@ -17,14 +17,14 @@ use crate::types::Meld;
     pyo3::pyclass(module = "riichienv._riichienv", get_all)
 )]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Observation {
+pub struct Observation3P {
     pub player_id: u8,
-    pub hands: [Vec<u32>; 4],
-    pub melds: [Vec<Meld>; 4],
-    pub discards: [Vec<u32>; 4],
+    pub hands: [Vec<u32>; 3],
+    pub melds: [Vec<Meld>; 3],
+    pub discards: [Vec<u32>; 3],
     pub dora_indicators: Vec<u32>,
-    pub scores: [i32; 4],
-    pub riichi_declared: [bool; 4],
+    pub scores: [i32; 3],
+    pub riichi_declared: [bool; 3],
 
     pub(crate) _legal_actions: Vec<Action>,
 
@@ -37,23 +37,23 @@ pub struct Observation {
     pub kyoku_index: u8,
     pub waits: Vec<u8>,
     pub is_tenpai: bool,
-    pub tsumogiri_flags: [Vec<bool>; 4],
-    pub riichi_sutehais: [Option<u8>; 4],
-    pub last_tedashis: [Option<u8>; 4],
+    pub tsumogiri_flags: [Vec<bool>; 3],
+    pub riichi_sutehais: [Option<u8>; 3],
+    pub last_tedashis: [Option<u8>; 3],
     pub last_discard: Option<u32>,
 }
 
 /// Pure Rust methods (no PyO3 dependency).
-impl Observation {
+impl Observation3P {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         player_id: u8,
-        hands: [Vec<u8>; 4],
-        melds: [Vec<Meld>; 4],
-        discards: [Vec<u8>; 4],
+        hands: [Vec<u8>; 3],
+        melds: [Vec<Meld>; 3],
+        discards: [Vec<u8>; 3],
         dora_indicators: Vec<u8>,
-        scores: [i32; 4],
-        riichi_declared: [bool; 4],
+        scores: [i32; 3],
+        riichi_declared: [bool; 3],
         legal_actions: Vec<Action>,
         events: Vec<String>,
         honba: u8,
@@ -63,8 +63,8 @@ impl Observation {
         kyoku_index: u8,
         waits: Vec<u8>,
         is_tenpai: bool,
-        riichi_sutehais: [Option<u8>; 4],
-        last_tedashis: [Option<u8>; 4],
+        riichi_sutehais: [Option<u8>; 3],
+        last_tedashis: [Option<u8>; 3],
         last_discard: Option<u32>,
     ) -> Self {
         let hands_u32 = hands.map(|h| h.into_iter().map(|x| x as u32).collect());
@@ -100,7 +100,7 @@ impl Observation {
     }
 
     pub fn find_action(&self, action_id: usize) -> Option<Action> {
-        let encoder = ActionEncoder::FourPlayer;
+        let encoder = ActionEncoder::ThreePlayer;
         self._legal_actions
             .iter()
             .find(|a| {
@@ -117,7 +117,7 @@ impl Observation {
         self.events.clone()
     }
 
-    /// Serialize this Observation to a base64-encoded JSON string.
+    /// Serialize this Observation3P to a base64-encoded JSON string.
     pub fn serialize_to_base64(&self) -> RiichiResult<String> {
         let json = serde_json::to_vec(self).map_err(|e| RiichiError::Serialization {
             message: format!("serialization failed: {e}"),
@@ -125,12 +125,12 @@ impl Observation {
         Ok(BASE64.encode(&json))
     }
 
-    /// Deserialize an Observation from a base64-encoded JSON string.
+    /// Deserialize an Observation3P from a base64-encoded JSON string.
     pub fn deserialize_from_base64(s: &str) -> RiichiResult<Self> {
         let bytes = BASE64.decode(s).map_err(|e| RiichiError::Serialization {
             message: format!("base64 decode failed: {e}"),
         })?;
-        let obs: Observation =
+        let obs: Observation3P =
             serde_json::from_slice(&bytes).map_err(|e| RiichiError::Serialization {
                 message: format!("JSON deserialize failed: {e}"),
             })?;

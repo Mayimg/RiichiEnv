@@ -1,19 +1,20 @@
 use crate::action::Phase;
+use crate::hand_evaluator_3p::HandEvaluator3P;
 use crate::parser::mjai_to_tid;
 use crate::replay::{Action as LogAction, MjaiEvent};
-use crate::state::GameState;
+use crate::state_3p::GameState3P;
 use crate::types::{Meld, MeldType, Wind};
 
 fn parse_mjai_tile(s: &str) -> u8 {
     mjai_to_tid(s).unwrap_or(0)
 }
 
-pub trait GameStateEventHandler {
+pub trait GameState3PEventHandler {
     fn apply_mjai_event(&mut self, event: MjaiEvent);
     fn apply_log_action(&mut self, action: &LogAction);
 }
 
-impl GameStateEventHandler for GameState {
+impl GameState3PEventHandler for GameState3P {
     fn apply_mjai_event(&mut self, event: MjaiEvent) {
         match event {
             MjaiEvent::StartKyoku {
@@ -26,7 +27,6 @@ impl GameStateEventHandler for GameState {
                 oya,
                 ..
             } => {
-                // Initialize round state from event
                 self.honba = honba;
                 self.riichi_sticks = kyoutaku as u32;
                 self.players.iter_mut().enumerate().for_each(|(i, p)| {
@@ -42,7 +42,6 @@ impl GameStateEventHandler for GameState {
                 self.oya = oya;
                 self.wall.dora_indicators = vec![parse_mjai_tile(&dora_marker)];
 
-                // Set hands
                 for (i, hand_strs) in tehais.iter().enumerate() {
                     let mut hand = Vec::new();
                     for tile_str in hand_strs {
@@ -52,7 +51,6 @@ impl GameStateEventHandler for GameState {
                     self.players[i].hand = hand;
                 }
 
-                // Clear other state
                 for p in &mut self.players {
                     p.discards.clear();
                     p.melds.clear();
@@ -60,7 +58,7 @@ impl GameStateEventHandler for GameState {
                     p.riichi_stage = false;
                 }
                 self.drawn_tile = None;
-                self.current_player = self.oya; // Oya starts
+                self.current_player = self.oya;
                 self.needs_tsumo = true;
                 self.is_done = false;
             }
@@ -124,6 +122,7 @@ impl GameStateEventHandler for GameState {
                 consumed,
                 ..
             } => {
+                // Chi shouldn't happen in 3P, but handle gracefully
                 let tile = parse_mjai_tile(&pai);
                 self.current_player = actor as u8;
                 let c1 = parse_mjai_tile(&consumed[0]);
@@ -219,8 +218,17 @@ impl GameStateEventHandler for GameState {
                 let tile = parse_mjai_tile(&dora_marker);
                 self.wall.dora_indicators.push(tile);
             }
-            MjaiEvent::Kita { .. } => {
-                // Kita is 3P only; ignored in 4P event handler
+            MjaiEvent::Kita { actor } => {
+                let north_id = 30;
+                if let Some(idx) = self.players[actor]
+                    .hand
+                    .iter()
+                    .position(|&t| t / 4 == north_id)
+                {
+                    let tile = self.players[actor].hand.remove(idx);
+                    self.players[actor].kita_tiles.push(tile);
+                }
+                self.needs_tsumo = true;
             }
             MjaiEvent::Hora { .. } | MjaiEvent::Ryukyoku { .. } | MjaiEvent::EndKyoku => {
                 self.is_done = true;
@@ -230,6 +238,7 @@ impl GameStateEventHandler for GameState {
     }
 
     fn apply_log_action(&mut self, action: &LogAction) {
+        let np: u8 = 3;
         match action {
             LogAction::DiscardTile {
                 seat,
@@ -257,24 +266,20 @@ impl GameStateEventHandler for GameState {
                     .push(*is_liqi || *is_wliqi);
                 self.last_discard = Some((s as u8, t));
                 self.drawn_tile = None;
-                // Track nagashi eligibility: discard must be terminal/honor
-                self.players[s].nagashi_eligible &= crate::types::is_terminal_tile(t);
 
+                self.players[s].riichi_declared =
+                    self.players[s].riichi_declared || *is_liqi || *is_wliqi;
+                if *is_wliqi {
+                    self.players[s].double_riichi_declared = true;
+                }
                 if *is_liqi || *is_wliqi {
-                    if !self.players[s].riichi_declared {
-                        self.players[s].riichi_declared = true;
-                        if *is_wliqi {
-                            self.players[s].double_riichi_declared = true;
-                        }
-                        // Defer the 1000 deposit; it gets voided if this
-                        // discard is ronned, otherwise finalized on the next
-                        // DealTile / ChiPengGang.
-                        self.riichi_pending_acceptance = Some(s as u8);
-                    }
                     self.players[s].riichi_declaration_index =
                         Some(self.players[s].discards.len() - 1);
+                    self.riichi_pending_acceptance = Some(s as u8);
                 }
-                self.current_player = (s as u8 + 1) % 4;
+                // Track nagashi eligibility: discard must be terminal/honor
+                self.players[s].nagashi_eligible &= crate::types::is_terminal_tile(t);
+                self.current_player = (s as u8 + 1) % np;
                 self.phase = Phase::WaitAct;
                 self.active_players = vec![self.current_player];
                 self.needs_tsumo = true;
@@ -282,7 +287,7 @@ impl GameStateEventHandler for GameState {
                 self.is_after_kan = false;
             }
             LogAction::DealTile { seat, tile, .. } => {
-                // Finalize pending riichi deposit (discard was not ronned)
+                // Accept pending riichi deposit (discard was not ronned)
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
@@ -306,16 +311,15 @@ impl GameStateEventHandler for GameState {
                 tiles,
                 froms,
             } => {
-                // Finalize pending riichi deposit (discard was claimed, not ronned)
+                // Accept pending riichi deposit (discard was not ronned)
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
                 }
-                // Discard was called -> discarder loses nagashi eligibility
+                // Discard was called → discarder loses nagashi eligibility
                 if let Some((discarder_pid, _)) = self.last_discard {
                     self.players[discarder_pid as usize].nagashi_eligible = false;
                 }
-                // Remove tiles from hand
                 for (i, t) in tiles.iter().enumerate() {
                     if i < froms.len() && froms[i] == *seat {
                         if let Some(idx) = self.players[*seat].hand.iter().position(|&x| x == *t) {
@@ -418,7 +422,6 @@ impl GameStateEventHandler for GameState {
                         called_tile: None,
                     });
                 } else {
-                    // Kakan
                     let tile = tiles[0];
                     if let Some(idx) = self.players[*seat].hand.iter().position(|&x| x == tile) {
                         self.players[*seat].hand.remove(idx);
@@ -431,8 +434,6 @@ impl GameStateEventHandler for GameState {
                             break;
                         }
                     }
-                    // Set last_discard so chankan ron targets the kakan player
-                    self.last_discard = Some((*seat as u8, tile));
                 }
                 self.players[*seat].hand.sort();
                 self.current_player = *seat as u8;
@@ -441,13 +442,38 @@ impl GameStateEventHandler for GameState {
                 self.needs_tsumo = true;
                 self.is_first_turn = false;
                 self.is_after_kan = true;
-                // Also record ankan for kokushi chankan (kokushi can ron on closed kan)
-                if *meld_type == MeldType::Ankan {
-                    self.last_discard = Some((*seat as u8, tiles[0]));
-                }
+                // Record as last_discard so chankan ron (Hule) can identify
+                // the kan declarer as the payer (e.g. kokushi chankan on ankan).
+                self.last_discard = Some((*seat as u8, tiles[0]));
             }
             LogAction::Dora { dora_marker } => {
                 self.wall.dora_indicators.push(*dora_marker);
+            }
+            LogAction::BaBei { seat, .. } => {
+                // Accept pending riichi deposit (discard was not ronned)
+                if let Some(rp) = self.riichi_pending_acceptance.take() {
+                    self.players[rp as usize].score -= 1000;
+                    self.riichi_sticks += 1;
+                }
+                // Remove a North tile from hand and add to kita_tiles
+                let north_34: u8 = 30; // 4z = North
+                if let Some(idx) = self.players[*seat]
+                    .hand
+                    .iter()
+                    .position(|&x| x / 4 == north_34)
+                {
+                    let tile = self.players[*seat].hand.remove(idx);
+                    self.players[*seat].kita_tiles.push(tile);
+                    // Record as last_discard so ron-on-kita (Hule) can identify
+                    // the kita declarer as the payer.
+                    self.last_discard = Some((*seat as u8, tile));
+                }
+                self.players[*seat].hand.sort();
+                self.current_player = *seat as u8;
+                self.phase = Phase::WaitAct;
+                self.active_players = vec![self.current_player];
+                self.needs_tsumo = true;
+                self.is_first_turn = false;
             }
             LogAction::Hule { hules } => {
                 // If a riichi deposit is pending and this is a ron, the deposit
@@ -468,17 +494,12 @@ impl GameStateEventHandler for GameState {
                     if is_tsumo {
                         let is_oya = (winner as u8) == self.oya;
 
-                        // Check PAO (sekinin barai): for yakuman tsumo, the PAO
-                        // player pays the full amount for all non-winning
-                        // players. We detect PAO from the player's pao map
-                        // which was populated when dragon/wind melds were claimed.
+                        // Check PAO (sekinin barai) for yakuman tsumo
                         let mut pao_payer = None;
                         let mut pao_yakuman_val: i32 = 0;
                         let mut total_yakuman_val: i32 = 0;
 
                         if h.yiman {
-                            // Daisangen = yaku 37, Daisuushii = yaku 50
-                            // Double yakuman IDs: 47, 48, 49, 50
                             for &yid in &h.fans {
                                 let val: i32 = if [47, 48, 49, 50].contains(&yid) {
                                     2
@@ -494,11 +515,21 @@ impl GameStateEventHandler for GameState {
                         }
 
                         if pao_yakuman_val > 0 {
-                            // PAO: liable player pays the PAO portion entirely
-                            let unit: i32 = if is_oya { 48000 } else { 32000 };
-                            let pao_amt = pao_yakuman_val * unit;
-                            let non_pao_yakuman_val = total_yakuman_val - pao_yakuman_val;
-                            let non_pao_amt = non_pao_yakuman_val * unit;
+                            // PAO tsumo: pao payer pays the full tsumo total
+                            // for the liable portion.
+                            let tsumo_total: i32 = if is_oya {
+                                // Oya: each ko pays xian, total = xian * (np-1)
+                                h.point_zimo_xian as i32 * (np as i32 - 1)
+                            } else {
+                                // Ko: oya pays qin, each other ko pays xian
+                                h.point_zimo_qin as i32 + h.point_zimo_xian as i32 * (np as i32 - 2)
+                            };
+                            let pao_amt = if total_yakuman_val > 0 {
+                                tsumo_total * pao_yakuman_val / total_yakuman_val
+                            } else {
+                                tsumo_total
+                            };
+                            let non_pao_amt = tsumo_total - pao_amt;
 
                             if let Some(pp) = pao_payer {
                                 self.players[pp as usize].score -= pao_amt;
@@ -507,38 +538,31 @@ impl GameStateEventHandler for GameState {
 
                             // Non-PAO part split normally
                             if non_pao_amt > 0 {
-                                if is_oya {
-                                    let share = non_pao_amt / 3;
-                                    for i in 0..4 {
-                                        if i != winner {
-                                            self.players[i].score -= share;
-                                            self.players[winner].score += share;
-                                        }
-                                    }
-                                } else {
-                                    for i in 0..4 {
-                                        if i != winner {
-                                            let share = if (i as u8) == self.oya {
-                                                non_pao_amt / 2
-                                            } else {
-                                                non_pao_amt / 4
-                                            };
-                                            self.players[i].score -= share;
-                                            self.players[winner].score += share;
-                                        }
+                                for i in 0..np as usize {
+                                    if i != winner {
+                                        let share = if is_oya {
+                                            non_pao_amt / (np as i32 - 1)
+                                        } else if (i as u8) == self.oya {
+                                            // Approximate: qin share
+                                            h.point_zimo_qin as i32 * non_pao_amt / tsumo_total
+                                        } else {
+                                            h.point_zimo_xian as i32 * non_pao_amt / tsumo_total
+                                        };
+                                        self.players[i].score -= share;
+                                        self.players[winner].score += share;
                                     }
                                 }
                             }
 
-                            // Add honba bonus (paid by PAO player)
+                            // Honba paid by pao payer
                             if let Some(pp) = pao_payer {
-                                let honba_total = honba as i32 * 300;
+                                let honba_total = honba as i32 * (np as i32 - 1) * 100;
                                 self.players[pp as usize].score -= honba_total;
                                 self.players[winner].score += honba_total;
                             }
                         } else {
-                            // Standard tsumo distribution
-                            for i in 0..4 {
+                            // Standard tsumo distribution (no pao)
+                            for i in 0..np as usize {
                                 if i != winner {
                                     let base_pay = if is_oya {
                                         h.point_zimo_xian
@@ -554,7 +578,7 @@ impl GameStateEventHandler for GameState {
                             }
                         }
                     } else if let Some((discarder, _)) = self.last_discard {
-                        // Only the first ron winner gets the honba bonus
+                        // Ron
                         let ron_honba = if !honba_taken {
                             honba_taken = true;
                             honba
@@ -562,26 +586,43 @@ impl GameStateEventHandler for GameState {
                             0
                         };
 
-                        // Check PAO for ron yakuman: target pays half,
-                        // PAO player pays the other half.
-                        let mut pao_payer_ron: Option<u8> = None;
+                        // Check PAO for ron
+                        let mut pao_payer = None;
+                        let mut pao_yakuman_val: i32 = 0;
+                        let mut total_yakuman_val: i32 = 0;
+
                         if h.yiman {
                             for &yid in &h.fans {
+                                let val: i32 = if [47, 48, 49, 50].contains(&yid) {
+                                    2
+                                } else {
+                                    1
+                                };
+                                total_yakuman_val += val;
                                 if let Some(&liable) = self.players[winner].pao.get(&(yid as u8)) {
-                                    pao_payer_ron = Some(liable);
-                                    break;
+                                    pao_yakuman_val += val;
+                                    pao_payer = Some(liable);
                                 }
                             }
                         }
 
-                        if let Some(pp) = pao_payer_ron {
-                            let half = h.point_rong as i32 / 2;
-                            let honba_pts = ron_honba as i32 * 300;
-                            self.players[pp as usize].score -= half + honba_pts;
-                            self.players[discarder as usize].score -= half;
-                            self.players[winner].score += h.point_rong as i32 + honba_pts;
+                        if pao_yakuman_val > 0 {
+                            let pp = pao_payer.unwrap_or(discarder);
+                            let ron_total = h.point_rong as i32;
+                            let pao_amt = ron_total * pao_yakuman_val / total_yakuman_val;
+                            let honba_pts = ron_honba as i32 * (np as i32 - 1) * 100;
+
+                            // PAO ron: split between pao payer and discarder
+                            let pao_share = pao_amt / 2 + honba_pts;
+                            let discarder_share = ron_total - pao_amt / 2;
+
+                            self.players[pp as usize].score -= pao_share;
+                            self.players[discarder as usize].score -= discarder_share;
+                            self.players[winner].score += pao_share + discarder_share;
                         } else {
-                            let pay = h.point_rong as i32 + ron_honba as i32 * 300;
+                            // Standard ron
+                            let pay =
+                                h.point_rong as i32 + ron_honba as i32 * (np as i32 - 1) * 100;
                             self.players[discarder as usize].score -= pay;
                             self.players[winner].score += pay;
                         }
@@ -605,7 +646,6 @@ impl GameStateEventHandler for GameState {
                 }
 
                 // Check for nagashi mangan first
-                let np = 4usize;
                 let mut nagashi_winners = Vec::new();
                 for (i, p) in self.players.iter().enumerate() {
                     if p.nagashi_eligible {
@@ -617,17 +657,16 @@ impl GameStateEventHandler for GameState {
                     // Nagashi mangan: apply mangan tsumo payment (no honba)
                     for &w in &nagashi_winners {
                         let is_oya = w == self.oya;
-                        let score_res =
-                            crate::score::calculate_score(5, 30, is_oya, true, 0, np as u8);
+                        let score_res = crate::score::calculate_score(5, 30, is_oya, true, 0, np);
                         if is_oya {
-                            for i in 0..np {
+                            for i in 0..np as usize {
                                 if i as u8 != w {
                                     self.players[i].score -= score_res.pay_tsumo_ko as i32;
                                     self.players[w as usize].score += score_res.pay_tsumo_ko as i32;
                                 }
                             }
                         } else {
-                            for i in 0..np {
+                            for i in 0..np as usize {
                                 if i as u8 != w {
                                     let pay = if i as u8 == self.oya {
                                         score_res.pay_tsumo_oya as i32
@@ -641,21 +680,18 @@ impl GameStateEventHandler for GameState {
                         }
                     }
                 } else {
-                    // Compute tenpai/noten payments
-                    let mut tenpai = [false; 4];
+                    // Regular tenpai/noten payments (pool = 2000 in 3P)
+                    let mut tenpai = [false; 3];
                     for (i, p) in self.players.iter().enumerate() {
-                        if i < 4 {
-                            let calc = crate::hand_evaluator::HandEvaluator::new(
-                                p.hand.clone(),
-                                p.melds.clone(),
-                            );
+                        if i < 3 {
+                            let calc = HandEvaluator3P::new(p.hand.clone(), p.melds.clone());
                             tenpai[i] = calc.is_tenpai();
                         }
                     }
                     let num_tp = tenpai.iter().filter(|&&t| t).count();
-                    if num_tp > 0 && num_tp < 4 {
-                        let pk = 3000 / num_tp as i32;
-                        let pn = 3000 / (4 - num_tp) as i32;
+                    if num_tp > 0 && num_tp < 3 {
+                        let pk = 2000 / num_tp as i32;
+                        let pn = 2000 / (3 - num_tp) as i32;
                         for (i, tp) in tenpai.iter().enumerate() {
                             let delta = if *tp { pk } else { -pn };
                             self.players[i].score += delta;
@@ -665,12 +701,6 @@ impl GameStateEventHandler for GameState {
                 self.is_done = true;
             }
             LogAction::LiuJu { .. } => {
-                // Finalize pending riichi deposit
-                if let Some(rp) = self.riichi_pending_acceptance.take() {
-                    self.players[rp as usize].score -= 1000;
-                    self.riichi_sticks += 1;
-                }
-                // Abortive draw - no score changes
                 self.is_done = true;
             }
             _ => {}

@@ -1,6 +1,7 @@
 from . import convert
 from ._riichienv import (  # type: ignore
     GameRule,
+    HandEvaluator3P,
     KanDoraTimingMode,
     KuikaeMode,
     Kyoku,
@@ -13,15 +14,21 @@ from ._riichienv import (  # type: ignore
     RiichiEnv,
     Score,
     Wind,
+    WinResult,
     WinResultContext,
+    Yaku,
     calculate_score,
+    calculate_shanten,
+    calculate_shanten_3p,
     check_riichi_candidates,
+    get_all_yaku,
+    get_yaku_by_id,
     parse_hand,
     parse_tile,
 )
 from .action import Action, ActionType
 from .game_mode import GameType
-from .hand import Conditions, HandEvaluator, WinResult
+from .hand import Conditions, HandEvaluator
 
 EAST = Wind.East
 SOUTH = Wind.South
@@ -41,6 +48,8 @@ __all__ = [
     "Score",
     "Wind",
     "calculate_score",
+    "calculate_shanten",
+    "calculate_shanten_3p",
     "check_riichi_candidates",
     "parse_hand",
     "parse_tile",
@@ -54,9 +63,13 @@ __all__ = [
     "GameType",
     "WinResult",
     "HandEvaluator",
+    "HandEvaluator3P",
     "Conditions",
     "EAST",
     "SOUTH",
     "WEST",
     "NORTH",
+    "Yaku",
+    "get_yaku_by_id",
+    "get_all_yaku",
 ]

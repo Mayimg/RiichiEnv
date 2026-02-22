@@ -1,195 +1,19 @@
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
 use crate::agari::{self, Division, Mentsu};
 use crate::types::{Hand, Meld};
 
-// ---------------------------------------------------------------------------
-// Yaku struct (exposed to Python via PyO3)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all))]
-pub struct Yaku {
-    pub id: u32,
-    pub name: String,
-    pub name_en: String,
-    pub tenhou_id: i32,
-    pub mjsoul_id: i32,
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl Yaku {
-    fn __repr__(&self) -> String {
-        format!(
-            "Yaku(id={}, name='{}', name_en='{}', tenhou_id={}, mjsoul_id={})",
-            self.id, self.name, self.name_en, self.tenhou_id, self.mjsoul_id
-        )
-    }
-}
-
-/// Ref: https://tenhou.net/1/script/tenhou.js for tenhou_id.
-/// (id, name, name_en, tenhou_id, mjsoul_id)
-/// id == mjsoul_id for all entries.
-const YAKU_TABLE: &[(u32, &str, &str, i32, i32)] = &[
-    // 1 Han
-    (1, "門前清自摸和", "Menzen Tsumo", 0, 1),
-    (2, "立直", "Riichi", 1, 2),
-    (3, "槍槓", "Chankan", 3, 3),
-    (4, "嶺上開花", "Rinshan Kaihou", 4, 4),
-    (5, "海底摸月", "Haitei Raoyue", 5, 5),
-    (6, "河底撈魚", "Houtei Raoyui", 6, 6),
-    (7, "役牌 白", "Yakuhai (haku)", 18, 7),
-    (8, "役牌 發", "Yakuhai (hatsu)", 19, 8),
-    (9, "役牌 中", "Yakuhai (chun)", 20, 9),
-    (10, "自風牌", "Yakuhai (wind of place)", 10, 10), // tenhou_id=10 自風 東, tenhou_id=11 自風 南, tenhou_id=12 自風 西, tenhou_id=13 自風 北
-    (11, "場風牌", "Yakuhai (wind of round)", 14, 11), // tenhou_id=14 場風 東, tenhou_id=15 場風 南, tenhou_id=16 場風 西, tenhou_id=17 場風 北
-    (12, "断幺九", "Tanyao", 8, 12),
-    (13, "一盃口", "Iipeiko", 9, 13),
-    (14, "平和", "Pinfu", 7, 14),
-    (15, "混全帯幺九", "Chantai", 23, 15),
-    (16, "一気通貫", "Ittsu", 24, 16),
-    (17, "三色同順", "Sanshoku Doujun", 25, 17),
-    // 2 Han
-    (18, "ダブル立直", "Double Riichi", 21, 18),
-    (19, "三色同刻", "Sanshoku Doukou", 26, 19),
-    (20, "三槓子", "San Kantsu", 27, 20),
-    (21, "対々和", "Toitoi", 28, 21),
-    (22, "三暗刻", "San Ankou", 29, 22),
-    (23, "小三元", "Shou Sangen", 30, 23),
-    (24, "混老頭", "Honroutou", 31, 24),
-    (25, "七対子", "Chiitoitsu", 22, 25),
-    (26, "純全帯幺九", "Junchan", 33, 26),
-    (27, "混一色", "Honitsu", 34, 27),
-    // 3 Han
-    (28, "二盃口", "Ryanpeikou", 32, 28),
-    // 6 Han
-    (29, "清一色", "Chinitsu", 35, 29),
-    // Special
-    (30, "一発", "Ippatsu", 2, 30),
-    (31, "ドラ", "Dora", 52, 31),
-    (32, "赤ドラ", "Aka Dora", 54, 32),
-    (33, "裏ドラ", "Ura Dora", 53, 33),
-    (34, "抜きドラ", "Nuki Dora", 52, 34),
-    // Yakuman
-    (35, "天和", "Tenhou", 37, 35),
-    (36, "地和", "Chiihou", 38, 36),
-    (37, "大三元", "Dai Sangen", 39, 37),
-    (38, "四暗刻", "Su Ankou", 40, 38),
-    (39, "字一色", "Tsuu iisou", 42, 39),
-    (40, "緑一色", "Ryuu iisou", 43, 40),
-    (41, "清老頭", "Chinroutou", 44, 41),
-    (42, "国士無双", "Kokushi Musou", 47, 42),
-    (43, "小四喜", "Sho Suusi", 50, 43),
-    (44, "四槓子", "Su Kantsu", 51, 44),
-    (45, "九蓮宝燈", "Chuuren Poutou", 45, 45),
-    // Double Yakuman
-    (47, "純正九蓮宝燈", "Junsei Chuuren Poutou", 46, 47),
-    (48, "四暗刻単騎", "Su Ankou Tanki", 41, 48),
-    (49, "国士無双十三面待ち", "Kokushi Musou 13-men", 48, 49),
-    (50, "大四喜", "Dai Suusi", 49, 50),
-];
-
-pub fn get_yaku_by_id(id: u32) -> Option<Yaku> {
-    YAKU_TABLE.iter().find(|&&(yid, ..)| yid == id).map(
-        |&(yid, name, name_en, tenhou_id, mjsoul_id)| Yaku {
-            id: yid,
-            name: name.to_string(),
-            name_en: name_en.to_string(),
-            tenhou_id,
-            mjsoul_id,
-        },
-    )
-}
-
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(name = "get_yaku_by_id")]
-pub fn get_yaku_by_id_py(id: u32) -> Option<Yaku> {
-    get_yaku_by_id(id)
-}
-
-#[cfg(feature = "python")]
-#[pyfunction]
-#[pyo3(name = "get_all_yaku")]
-pub fn get_all_yaku_py() -> Vec<Yaku> {
-    YAKU_TABLE
-        .iter()
-        .map(|&(id, name, name_en, tenhou_id, mjsoul_id)| Yaku {
-            id,
-            name: name.to_string(),
-            name_en: name_en.to_string(),
-            tenhou_id,
-            mjsoul_id,
-        })
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Yaku IDs based on yans.yml
-pub const ID_TSUMO: u32 = 1;
-pub const ID_RIICHI: u32 = 2;
-pub const ID_CHANKAN: u32 = 3;
-pub const ID_RINSHAN: u32 = 4;
-pub const ID_HAITEI: u32 = 5;
-pub const ID_HOUTEI: u32 = 6;
-pub const ID_HAKU: u32 = 7;
-pub const ID_HATSU: u32 = 8;
-pub const ID_CHUN: u32 = 9;
-pub const ID_JIKAZE: u32 = 10;
-pub const ID_BAKAZE: u32 = 11;
-pub const ID_TANYAO: u32 = 12;
-pub const ID_IPEIKO: u32 = 13;
-pub const ID_PINFU: u32 = 14;
-pub const ID_CHANTA: u32 = 15;
-pub const ID_ITTSU: u32 = 16;
-pub const ID_SANSHOKU: u32 = 17;
-pub const ID_DOUBLE_RIICHI: u32 = 18;
-pub const ID_SANSHOKU_DOKO: u32 = 19;
-pub const ID_SANKANTSU: u32 = 20;
-pub const ID_TOITOI: u32 = 21;
-pub const ID_SANANKOU: u32 = 22;
-pub const ID_SHOSANGEN: u32 = 23;
-pub const ID_HONROUTO: u32 = 24;
-pub const ID_CHITOITSU: u32 = 25;
-pub const ID_JUNCHAN: u32 = 26;
-pub const ID_HONITSU: u32 = 27;
-pub const ID_RYANPEIKO: u32 = 28;
-pub const ID_CHINITSU: u32 = 29;
-pub const ID_IPPATSU: u32 = 30;
-pub const ID_DORA: u32 = 31;
-pub const ID_AKADORA: u32 = 32;
-pub const ID_URADORA: u32 = 33;
-#[allow(dead_code)]
-pub const ID_NUKIDORA: u32 = 34;
-pub const ID_TENHO: u32 = 35;
-pub const ID_CHIHO: u32 = 36;
-pub const ID_DAISANGEN: u32 = 37;
-pub const ID_SUANKO: u32 = 38;
-pub const ID_TSUISO: u32 = 39;
-pub const ID_RYUISOU: u32 = 40;
-pub const ID_CHINROUTO: u32 = 41;
-pub const ID_KOKUSHI: u32 = 42;
-pub const ID_SHOUSUUSHI: u32 = 43;
-pub const ID_SUKANTSU: u32 = 44;
-pub const ID_CHUUREN: u32 = 45;
-pub const ID_JUNSEI_CHUUREN: u32 = 47;
-pub const ID_SUANKO_TANKI: u32 = 48;
-pub const ID_KOKUSHI_13: u32 = 49;
-pub const ID_DAISUUSHI: u32 = 50;
-
-#[derive(Debug, Clone, Default)]
-pub struct YakuResult {
-    pub han: u8,
-    pub fu: u8,
-    pub yaku_ids: Vec<u32>,
-    pub yaku_names: Vec<String>,
-    pub yakuman_count: u8,
-}
+// Re-export yaku IDs from the main yaku module
+pub use crate::yaku::{
+    YakuResult, ID_AKADORA, ID_BAKAZE, ID_CHANKAN, ID_CHANTA, ID_CHIHO, ID_CHINITSU, ID_CHINROUTO,
+    ID_CHITOITSU, ID_CHUN, ID_CHUUREN, ID_DAISANGEN, ID_DAISUUSHI, ID_DORA, ID_DOUBLE_RIICHI,
+    ID_HAITEI, ID_HAKU, ID_HATSU, ID_HONITSU, ID_HONROUTO, ID_HOUTEI, ID_IPEIKO, ID_IPPATSU,
+    ID_ITTSU, ID_JIKAZE, ID_JUNCHAN, ID_JUNSEI_CHUUREN, ID_KOKUSHI, ID_KOKUSHI_13, ID_NUKIDORA,
+    ID_PINFU, ID_RIICHI, ID_RINSHAN, ID_RYANPEIKO, ID_RYUISOU, ID_SANANKOU, ID_SANKANTSU,
+    ID_SANSHOKU, ID_SANSHOKU_DOKO, ID_SHOSANGEN, ID_SHOUSUUSHI, ID_SUANKO, ID_SUANKO_TANKI,
+    ID_SUKANTSU, ID_TANYAO, ID_TENHO, ID_TOITOI, ID_TSUISO, ID_TSUMO, ID_URADORA,
+};
 
 #[derive(Debug)]
-pub struct YakuContext {
+pub struct YakuContext3P {
     pub is_menzen: bool,
     pub is_reach: bool,
     pub is_ippatsu: bool,
@@ -203,11 +27,12 @@ pub struct YakuContext {
     pub dora_count: u8,
     pub aka_dora: u8,
     pub ura_dora_count: u8,
+    pub nukidora_count: u8,
     pub round_wind: u8, // 27=East, 28=South, etc.
     pub seat_wind: u8,
 }
 
-impl Default for YakuContext {
+impl Default for YakuContext3P {
     fn default() -> Self {
         Self {
             is_menzen: true,
@@ -223,13 +48,19 @@ impl Default for YakuContext {
             dora_count: 0,
             aka_dora: 0,
             ura_dora_count: 0,
+            nukidora_count: 0,
             round_wind: 27,
             seat_wind: 27,
         }
     }
 }
 
-pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: u8) -> YakuResult {
+pub fn calculate_yaku_3p(
+    hand: &Hand,
+    melds: &[Meld],
+    ctx: &YakuContext3P,
+    win_tile: u8,
+) -> YakuResult {
     let divisions = agari::find_divisions(hand);
     let mut best_res = YakuResult::default();
 
@@ -288,7 +119,7 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
                 },
                 None,
                 win_tile,
-            ); // Simplified call
+            );
             apply_static_yaku(&mut best_res, ctx);
             return best_res;
         }
@@ -330,14 +161,12 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
                 continue;
             }
 
-            // Static Yaku and Dora are handled by apply_static_yaku
             apply_static_yaku(&mut res, ctx);
 
             // Tanyao
-            // Tanyao
             if is_tanyao(hand, melds) {
                 res.han += 1;
-                res.yaku_ids.push(ID_TANYAO); // Corrected to 12
+                res.yaku_ids.push(ID_TANYAO);
                 res.yaku_names.push("Tanyao".to_string());
             }
 
@@ -352,7 +181,6 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
             }
 
             // Yakuhai
-            // IDs: 7: Haku, 8: Hatsu, 9: Chun, 10: Jikaze, 11: Bakaze
             let yakuhai_tiles = [31, 32, 33, ctx.round_wind, ctx.seat_wind];
             for (i, &t) in yakuhai_tiles.iter().enumerate() {
                 let count = div
@@ -373,11 +201,9 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
                         _ => {
                             if i == 3 {
                                 ID_BAKAZE
-                            }
-                            // Bakaze iteration
-                            else {
+                            } else {
                                 ID_JIKAZE
-                            } // Jikaze iteration
+                            }
                         }
                     };
                     res.yaku_ids.push(id);
@@ -441,7 +267,6 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
             let mut closed_koutsu_count = 0;
             for (idx, m) in div.body.iter().enumerate() {
                 if let Mentsu::Koutsu(_) = m {
-                    // Ron on closed triplet makes it open (if it was part of a Shanpon wait)
                     if !ctx.is_tsumo && Some(idx) == wg_idx {
                         continue;
                     }
@@ -547,8 +372,6 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
                 res.yaku_names.push("Chantai".to_string());
             }
 
-            // Static Yaku and Dora are handled by apply_static_yaku (already called at start of loop)
-
             if res.han > best_res.han || (res.han == best_res.han && res.fu > best_res.fu) {
                 best_res = res;
             }
@@ -561,7 +384,7 @@ pub fn calculate_yaku(hand: &Hand, melds: &[Meld], ctx: &YakuContext, win_tile: 
 fn calculate_fu_with_waiting(
     div: &Division,
     melds: &[Meld],
-    ctx: &YakuContext,
+    ctx: &YakuContext3P,
     wg_idx: Option<usize>,
     win_tile: u8,
 ) -> u8 {
@@ -585,30 +408,25 @@ fn calculate_fu_with_waiting(
     // Waiting fu
     match wg_idx {
         None => fu += 2, // Tanki
-        Some(idx) => {
-            match div.body[idx] {
-                Mentsu::Koutsu(_) => {
-                    // Ron on closed koutsu is 2 fu, but handled in triplet processing below
-                }
-                Mentsu::Shuntsu(t) => {
-                    // Kanchan or Penchan
-                    if win_tile == t + 1
-                        || (win_tile == t + 2 && (t % 9 == 0))
-                        || (win_tile == t && (t % 9 == 6))
-                    {
-                        fu += 2;
-                    }
+        Some(idx) => match div.body[idx] {
+            Mentsu::Koutsu(_) => {}
+            Mentsu::Shuntsu(t) => {
+                if win_tile == t + 1
+                    || (win_tile == t + 2 && (t % 9 == 0))
+                    || (win_tile == t && (t % 9 == 6))
+                {
+                    fu += 2;
                 }
             }
-        }
+        },
     }
 
     for (idx, m) in div.body.iter().enumerate() {
         if let Mentsu::Koutsu(t) = m {
-            let mut f = 4; // Closed
+            let mut f = 4;
             if !ctx.is_tsumo && Some(idx) == wg_idx {
                 f = 2;
-            } // Ron on closed triplet is open
+            }
             if is_terminal(*t) {
                 f *= 2;
             }
@@ -617,10 +435,10 @@ fn calculate_fu_with_waiting(
     }
     for m in melds {
         if m.tiles.len() >= 3 && m.tiles[0] == m.tiles[1] {
-            let mut f = 2; // Open
+            let mut f = 2;
             if !m.opened {
                 f = 4;
-            } // Ankan
+            }
             if is_terminal(m.tiles[0]) {
                 f *= 2;
             }
@@ -636,7 +454,7 @@ fn calculate_fu_with_waiting(
 
     if fu == 20 && !ctx.is_tsumo {
         fu = 30;
-    } // Open Ron minimum 30 fu
+    }
 
     fu.div_ceil(10) * 10
 }
@@ -644,17 +462,16 @@ fn calculate_fu_with_waiting(
 fn check_pinfu(
     div: &Division,
     melds: &[Meld],
-    ctx: &YakuContext,
+    ctx: &YakuContext3P,
     wg_idx: Option<usize>,
     win_tile: u8,
 ) -> bool {
-    // Pinfu requires Menzen, all sequences, non-yakuhai head
     if !ctx.is_menzen {
         return false;
     }
     if !melds.is_empty() {
         return false;
-    } // No melds (including closed Kan)
+    }
     for m in &div.body {
         if let Mentsu::Koutsu(_) = m {
             return false;
@@ -664,20 +481,18 @@ fn check_pinfu(
         return false;
     }
 
-    // Waiting must be ryanmen
     if let Some(idx) = wg_idx {
         if let Mentsu::Shuntsu(t) = div.body[idx] {
-            // Ryanmen: win_tile is t or t+2, and it's not a penchan wait
             if win_tile == t {
                 if t % 9 == 6 {
                     return false;
-                } // 78(9) is penchan
+                }
                 return true;
             }
             if win_tile == t + 2 {
                 if t % 9 == 0 {
                     return false;
-                } // (1)23 is penchan
+                }
                 return true;
             }
         }
@@ -685,7 +500,7 @@ fn check_pinfu(
     false
 }
 
-fn is_yakuhai_tile(tile: u8, ctx: &YakuContext) -> bool {
+fn is_yakuhai_tile(tile: u8, ctx: &YakuContext3P) -> bool {
     tile >= 31 || tile == ctx.round_wind || tile == ctx.seat_wind
 }
 
@@ -840,7 +655,7 @@ fn is_chinitsu(hand: &Hand, melds: &[Meld]) -> bool {
     suits.iter().filter(|&&b| b).count() == 1
 }
 
-fn apply_static_yaku(res: &mut YakuResult, ctx: &YakuContext) {
+fn apply_static_yaku(res: &mut YakuResult, ctx: &YakuContext3P) {
     // Riichi
     if ctx.is_reach && !ctx.is_daburu_reach {
         res.han += 1;
@@ -854,6 +669,7 @@ fn apply_static_yaku(res: &mut YakuResult, ctx: &YakuContext) {
         res.han += 1;
         res.yaku_ids.push(ID_IPPATSU);
     }
+    // Menzen Tsumo
     if ctx.is_menzen && ctx.is_tsumo {
         res.han += 1;
         res.yaku_ids.push(ID_TSUMO);
@@ -887,23 +703,25 @@ fn apply_static_yaku(res: &mut YakuResult, ctx: &YakuContext) {
         res.han += ctx.ura_dora_count;
         res.yaku_ids.push(ID_URADORA);
     }
+    if ctx.nukidora_count > 0 {
+        res.han += ctx.nukidora_count;
+        res.yaku_ids.push(ID_NUKIDORA);
+    }
 }
 
 fn apply_yakuman(
     res: &mut YakuResult,
     hand: &Hand,
     melds: &[Meld],
-    ctx: &YakuContext,
+    ctx: &YakuContext3P,
     div: &Division,
     wg_idx: Option<usize>,
     win_tile: u8,
 ) {
     let mut yakuman_count = 0;
 
-    // Kokushi / Chiitoitsu are handled at the start of calculate_yaku
     if div.head == 0 && div.body.is_empty() {
-        // Special Case: Kokushi / Chiitoitsu call from start of calculate_yaku
-        // We only care about Tenhou/Chiihou/Tsuuiisou etc. that don't need divisions
+        // Special Case: Kokushi / Chiitoitsu call from start of calculate_yaku_3p
     }
 
     // Tsuu iisou (All Honors)
@@ -944,26 +762,22 @@ fn apply_yakuman(
     }
 
     // Chuuren Poutou
-    if ctx.is_menzen && (div.body.len() + melds.len()) == 4 {
-        // Only check if we have a valid standard division
-        if is_chuuren_poutou(hand) {
-            let is_9_wait = is_chuuren_9_wait(hand, win_tile);
-            if is_9_wait {
-                yakuman_count += 2;
-                res.yaku_ids.push(ID_JUNSEI_CHUUREN);
-                res.yaku_names.push("Chuuren Poutou 9-wait".to_string());
-            } else {
-                yakuman_count += 1;
-                res.yaku_ids.push(ID_CHUUREN);
-                res.yaku_names.push("Chuuren Poutou".to_string());
-            }
+    if ctx.is_menzen && (div.body.len() + melds.len()) == 4 && is_chuuren_poutou(hand) {
+        let is_9_wait = is_chuuren_9_wait(hand, win_tile);
+        if is_9_wait {
+            yakuman_count += 2;
+            res.yaku_ids.push(ID_JUNSEI_CHUUREN);
+            res.yaku_names.push("Chuuren Poutou 9-wait".to_string());
+        } else {
+            yakuman_count += 1;
+            res.yaku_ids.push(ID_CHUUREN);
+            res.yaku_names.push("Chuuren Poutou".to_string());
         }
     }
 
     // Tenhou / Chiihou
     if ctx.is_tsumo_first_turn && ctx.is_menzen && ctx.is_tsumo {
         if ctx.seat_wind == 27 {
-            // Oya (East)
             yakuman_count += 1;
             res.yaku_ids.push(ID_TENHO);
             res.yaku_names.push("Tenhou".to_string());
@@ -974,7 +788,6 @@ fn apply_yakuman(
         }
     }
 
-    // Divisions-based Yakuman
     // Su Ankou
     let mut closed_koutsu_count = 0;
     for (idx, m) in div.body.iter().enumerate() {
@@ -993,7 +806,7 @@ fn apply_yakuman(
     if closed_koutsu_count == 4 {
         if wg_idx.is_none() {
             yakuman_count += 2;
-            res.yaku_ids.push(ID_SUANKO_TANKI); // Su Ankou Tanki
+            res.yaku_ids.push(ID_SUANKO_TANKI);
             res.yaku_names.push("Su Ankou Tanki".to_string());
         } else {
             yakuman_count += 1;
@@ -1039,7 +852,7 @@ fn apply_yakuman(
         }
     }
     if wind_koutsu_count == 4 {
-        yakuman_count += 2; // Double Yakuman
+        yakuman_count += 2;
         res.yaku_ids.push(ID_DAISUUSHI);
         res.yaku_names.push("Daisushii".to_string());
     } else if wind_koutsu_count == 3 && wind_pair_count == 1 {
@@ -1083,7 +896,6 @@ fn is_chinroutou(hand: &Hand, melds: &[Meld]) -> bool {
 }
 
 fn is_ryuu_iisou(hand: &Hand, melds: &[Meld]) -> bool {
-    // 2, 3, 4, 6, 8 of sou + Green Dragon (32)
     let green_tiles = [19, 20, 21, 23, 25, 32];
     for (i, &count) in hand.counts.iter().enumerate() {
         if count > 0 && !green_tiles.contains(&(i as u8)) {
@@ -1099,8 +911,6 @@ fn is_ryuu_iisou(hand: &Hand, melds: &[Meld]) -> bool {
 }
 
 fn is_chuuren_poutou(hand: &Hand) -> bool {
-    // Must be chinitsu (already checked or implicit if this is called)
-    // Check if hand contains 1112345678999 + any one of 1-9
     let mut counts = [0u8; 9];
     let mut suit = None;
 
@@ -1150,7 +960,6 @@ fn check_ittsu(div: &Division, melds: &[Meld]) -> bool {
         let mut has_456 = false;
         let mut has_789 = false;
 
-        // Check Body
         for m in &div.body {
             if let Mentsu::Shuntsu(t) = m {
                 if *t == suit_offset {
@@ -1163,7 +972,6 @@ fn check_ittsu(div: &Division, melds: &[Meld]) -> bool {
             }
         }
 
-        // Check Melds
         for m in melds {
             if m.meld_type == crate::types::MeldType::Chi {
                 let t = m.tiles[0];

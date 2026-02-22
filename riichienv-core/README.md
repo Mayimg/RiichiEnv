@@ -10,7 +10,7 @@ This is the core engine behind [RiichiEnv](https://github.com/smly/RiichiEnv), a
 
 ## Features
 
-- **Game state management** -- 4-player Riichi Mahjong simulation with configurable game modes (East-only, Hanchan, single round)
+- **Game state management** -- 4-player and 3-player (sanma) Riichi Mahjong simulation with configurable game modes (East-only, Hanchan, single round)
 - **Hand evaluation** -- Comprehensive agari (winning hand) detection with all standard yaku, including yakuman
 - **Score calculation** -- Han/fu-based scoring with support for honba, tsumo/ron, and oya/ko distinctions
 - **Rule presets** -- Built-in presets for Tenhou and MJSoul rule sets, with granular customization options
@@ -72,13 +72,17 @@ state.step(&actions);
 
 | Module | Description |
 |---|---|
-| `action` | Action types (`Discard`, `Chi`, `Pon`, `Kan`, `Riichi`, `Ron`, `Tsumo`, etc.) and game phase tracking |
-| `observation` | Player-facing game state views with legal actions and MJAI event history |
-| `state` | Full game state management, wall handling, and legal action validation |
-| `hand_evaluator` | Agari detection, tenpai checking, wait calculation, and riichi candidate analysis |
+| `action` | Action types (`Discard`, `Chi`, `Pon`, `Kan`, `Riichi`, `Ron`, `Tsumo`, `Kita`, etc.) and game phase tracking |
+| `observation` | Player-facing game state views with legal actions and MJAI event history (4-player) |
+| `observation_3p` | Player-facing game state views for 3-player games |
+| `state` | Full game state management, wall handling, and legal action validation (4-player) |
+| `state_3p` | Game state management for 3-player games with Kita/BaBei support |
+| `game_variant` | `GameStateVariant` enum dispatching between 4-player and 3-player game states |
+| `hand_evaluator` | Agari detection, tenpai checking, wait calculation, and riichi candidate analysis (4-player) |
+| `hand_evaluator_3p` | Hand evaluation for 3-player games |
 | `parser` | MPSZ notation parsing for tiles and hands |
 | `types` | Core data types: `Hand`, `Wind`, `Meld`, `MeldType`, `Conditions`, `WinResult` |
-| `rule` | Game rule configuration with Tenhou/MJSoul presets |
+| `rule` | Game rule configuration with Tenhou/MJSoul presets (4-player and sanma) |
 | `score` | Han/fu-based score calculation |
 | `replay` | MJAI and MJSoul replay parsing with step-by-step iteration (requires `python` feature) |
 | `win_projection` | Win probability and expected value projection |

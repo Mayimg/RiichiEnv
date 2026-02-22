@@ -9,12 +9,15 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyDictMethods, PyList, PyListMethods};
 use std::sync::Arc;
 
+#[cfg(feature = "python")]
 use crate::action::Action as EnvAction;
 #[cfg(feature = "python")]
 use crate::hand_evaluator::HandEvaluator;
+use crate::types::MeldType;
 #[cfg(feature = "python")]
 use crate::types::WinResult;
-use crate::types::{Conditions, Meld, MeldType};
+#[cfg(feature = "python")]
+use crate::types::{Conditions, Meld};
 
 pub mod mjai_replay;
 pub mod mjsoul_replay;
@@ -60,6 +63,10 @@ pub enum Action {
         hules: Vec<HuleData>,
     },
     NoTile,
+    BaBei {
+        seat: usize,
+        moqie: bool,
+    },
     LiuJu {
         lj_type: u8,
         seat: usize,
@@ -139,6 +146,7 @@ impl KyokuStepIterator {
             match action {
                 Action::DealTile { .. }
                 | Action::Dora { .. }
+                | Action::BaBei { .. }
                 | Action::NoTile
                 | Action::LiuJu { .. } => {
                     slf.state.apply_log_action(action);
@@ -391,6 +399,7 @@ pub struct LogKyoku {
     pub end_scores: Vec<i32>,
     pub wliqi: Vec<bool>,
     pub paishan: Option<String>,
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) actions: Arc<[Action]>,
     pub rule: crate::rule::GameRule,
     pub game_end_scores: Option<Vec<i32>>,
@@ -505,7 +514,7 @@ impl LogKyoku {
             self.ben,
             self.liqibang as u32,
             wall.clone(),
-            Some(initial_scores),
+            Some(initial_scores.to_vec()),
         );
 
         for (i, h) in self.hands.iter().enumerate() {
@@ -756,6 +765,11 @@ impl LogKyoku {
                     a_event.set_item("name", "Dora")?;
                     a_data.set_item("dora_marker", TileConverter::to_string(*dora_marker))?;
                 }
+                Action::BaBei { seat, moqie } => {
+                    a_event.set_item("name", "BaBei")?;
+                    a_data.set_item("seat", seat)?;
+                    a_data.set_item("moqie", moqie)?;
+                }
                 Action::NoTile => {
                     a_event.set_item("name", "NoTile")?;
                 }
@@ -887,12 +901,15 @@ pub struct WinResultContextIterator {
     is_first_turn: Vec<bool>,
     last_action_was_kakan: bool,
     kakan_tile: Option<u8>,
+    last_action_was_babei: bool,
+    ippatsu_before_babei: Vec<bool>,
     current_doras: Vec<u8>,
     _current_liqibang: u8,
     current_left_tile_count: u8,
     wall: Vec<u8>,
     dora_count: u8,
     pending_minkan_doras: u8,
+    kita_counts: Vec<u8>,
 }
 
 #[cfg(feature = "python")]
@@ -942,12 +959,15 @@ impl WinResultContextIterator {
             is_first_turn: vec![true; 4],
             last_action_was_kakan: false,
             kakan_tile: None,
+            last_action_was_babei: false,
+            ippatsu_before_babei: vec![false; 4],
             current_doras: kyoku.doras.clone(),
             _current_liqibang: kyoku.liqibang,
             current_left_tile_count: kyoku.left_tile_count,
             wall,
             dora_count: 1, // Initial Dora is always 1
             pending_minkan_doras: 0,
+            kita_counts: vec![0; 4],
         }
     }
 
@@ -1011,6 +1031,10 @@ impl WinResultContextIterator {
 
             if !matches!(action, Action::Hule { .. }) {
                 self.rinshan = vec![false; 4];
+                // Reset BaBei flag for non-Hule actions; ron-on-kita needs it in Hule handler
+                if !matches!(action, Action::BaBei { .. }) {
+                    self.last_action_was_babei = false;
+                }
             }
 
             match action {
@@ -1025,6 +1049,7 @@ impl WinResultContextIterator {
                         self.ippatsu = vec![false; 4];
                         self.is_first_turn = vec![false; 4];
                         self.last_action_was_kakan = false;
+                        self.last_action_was_babei = false;
                         self.kakan_tile = None;
                     }
 
@@ -1065,6 +1090,7 @@ impl WinResultContextIterator {
                         self.ippatsu = vec![false; 4];
                         self.is_first_turn = vec![false; 4];
                         self.last_action_was_kakan = false;
+                        self.last_action_was_babei = false;
                         self.kakan_tile = None;
                     }
                     self.current_hands[*seat].push(*tile);
@@ -1090,6 +1116,7 @@ impl WinResultContextIterator {
                     self.ippatsu = vec![false; 4];
                     self.is_first_turn = vec![false; 4];
                     self.last_action_was_kakan = false;
+                    self.last_action_was_babei = false;
                     self.kakan_tile = None;
 
                     for (i, t) in tiles.iter().enumerate() {
@@ -1168,6 +1195,7 @@ impl WinResultContextIterator {
                         self.ippatsu = vec![false; 4];
                         self.is_first_turn = vec![false; 4];
                         self.last_action_was_kakan = false;
+                        self.last_action_was_babei = false;
                         self.kakan_tile = None;
 
                         let target_34 = *tile_raw_id;
@@ -1239,6 +1267,24 @@ impl WinResultContextIterator {
                     }
                     self._sync_doras_with_wall();
                 }
+                Action::BaBei { seat, .. } => {
+                    // Save ippatsu state before clearing — ron on kita (chankan-like)
+                    // needs the pre-BaBei ippatsu state.
+                    self.ippatsu_before_babei = self.ippatsu.clone();
+                    self.ippatsu = vec![false; 4];
+                    self.is_first_turn = vec![false; 4];
+                    self.last_action_was_babei = true;
+                    // Remove a North tile (z4 = tile_34=30) from hand
+                    let north_34: u8 = 30;
+                    if let Some(pos) = self.current_hands[*seat]
+                        .iter()
+                        .position(|x| *x / 4 == north_34)
+                    {
+                        self.current_hands[*seat].remove(pos);
+                    }
+                    self.kita_counts[*seat] += 1;
+                    self.rinshan[*seat] = true;
+                }
                 Action::Hule { hules } => {
                     for hule_data in hules {
                         let seat = hule_data.seat;
@@ -1255,14 +1301,26 @@ impl WinResultContextIterator {
                             }
                         }
 
+                        // For ron on BaBei (kita), use ippatsu state from before BaBei cleared it
+                        let ippatsu = if !is_zimo && self.last_action_was_babei {
+                            self.ippatsu_before_babei[seat]
+                        } else {
+                            self.ippatsu[seat]
+                        };
+
                         let mut hand_136 = self.current_hands[seat].clone();
                         let melds_136 = self.melds[seat].clone();
 
+                        let num_players = if self.kyoku.rule.is_sanma {
+                            3usize
+                        } else {
+                            4usize
+                        };
                         let conditions = Conditions {
                             tsumo: is_zimo,
                             riichi: self.liqi[seat],
                             double_riichi: self.wliqi[seat],
-                            ippatsu: self.ippatsu[seat],
+                            ippatsu,
                             haitei: (self.current_left_tile_count == 0)
                                 && is_zimo
                                 && !self.rinshan[seat],
@@ -1272,10 +1330,14 @@ impl WinResultContextIterator {
                             rinshan: self.rinshan[seat],
                             chankan: is_chankan,
                             tsumo_first_turn: self.is_first_turn[seat] && is_zimo,
-                            player_wind: (((seat + 4 - self.kyoku.ju as usize) % 4) as u8).into(),
+                            player_wind: (((seat + num_players - self.kyoku.ju as usize)
+                                % num_players) as u8)
+                                .into(),
                             round_wind: self.kyoku.chang.into(),
                             riichi_sticks: 0, // Not tracked in basic loop?
                             honba: 0,         // Not tracked
+                            kita_count: self.kita_counts[seat],
+                            ..Default::default()
                         };
 
                         if !is_zimo {

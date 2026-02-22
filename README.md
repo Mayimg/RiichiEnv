@@ -16,16 +16,12 @@
 
 -----
 
-> [!NOTE]
-> While RiichiEnv is being built with reinforcement learning applications in mind, it is still very much a work in progress. As indicated in our [Milestones](https://github.com/smly/RiichiEnv/milestones), we haven't yet completed the optimization or verification necessary for RL contexts.
-> The API and specifications are subject to change before the stable release.
-
 ## ✨ Features
 
 * **High Performance**: Core logic implemented in Rust for lightning-fast state transitions and rollouts.
 * **Gym-style API**: Intuitive interface designed specifically for reinforcement learning.
-* **Mortal Compatibility**: Seamlessly interface with the Mortal Bot using the standard MJAI protocol.
-* **Rule Flexibility**: Support for diverse rule sets, including no-red-dragon variants and three-player mahjong.
+* **Mortal Compatibility**: Seamlessly interface with the Mortal Bot using the MJAI protocol.
+* **Rule Flexibility**: Support for diverse rule sets, including three-player mahjong (sanma).
 * **Game Visualization**: Integrated replay viewer for Jupyter Notebooks.
 
 <div align="center">
@@ -161,15 +157,14 @@ You can select a standard game mode using the `game_mode` argument in the constr
 | `4p-red-single` | 4 | Single Round | No sudden death |
 | `4p-red-east` | 4 | East-only (東風; Tonpuu) | Standard (Tenhou rule) |
 | `4p-red-half` | 4 | Hanchan (半荘) | Standard (Tenhou rule) |
-| `3p-red-east` | 3 | East-only (Tonpuu) | 🚧 In progress |
+| `3p-red-single` | 3 | Single Round | No sudden death |
+| `3p-red-east` | 3 | East-only (東風; Tonpuu) | Standard (Tenhou sanma rule) |
+| `3p-red-half` | 3 | Hanchan (半荘) | Standard (Tenhou sanma rule) |
 
 ```python
 # Initialize a standard 4-player Hanchan game
 env = RiichiEnv(game_mode="4p-red-half")
 ```
-
-> [!NOTE]
-> We are also planning to implement **"No-Red" rules** (game modes without red 5 tiles), which are often adopted in professional leagues (e.g., M-League's team definitions or other competitive settings).
 
 #### 2. Customizing Game Rules (`GameRule`)
 
@@ -209,17 +204,54 @@ Standardize between various tile formats (136-tile, MPSZ, MJAI) and easily parse
 
 See [DATA_REPRESENTATION.md](docs/DATA_REPRESENTATION.md) for more details.
 
-### Agari Calculation
+### Hand Evaluation
 
 ```python
->>> from riichienv import AgariCalculator
+>>> from riichienv import HandEvaluator
 >>> import riichienv.convert as cvt
 
->>> ac = AgariCalculator.hand_from_text("111m33p12s111666z")
->>> ac.is_tenpai()
+>>> he = HandEvaluator.hand_from_text("111m33p12s111666z")
+>>> he.is_tenpai()
 True
->>> ac.calc(cvt.mpsz_to_tid("3s"))
-Agari(agari=True, yakuman=False, ron_agari=12000, tsumo_agari_oya=0, tsumo_agari_ko=0, yaku=[8, 11, 10, 22], han=5, fu=60)
+>>> he.calc(cvt.mpsz_to_tid("3s"), dora_indicators=[], ura_indicators=[])
+WinResult(is_win=True, yakuman=False, ron_agari=12000, tsumo_agari_oya=0, tsumo_agari_ko=0, yaku=[8, 11, 10, 22], han=5, fu=60)
+```
+
+### Shanten Number Calculation
+
+Calculate the shanten number (minimum number of tiles away from tenpai) using lookup tables based on [Cryolite/nyanten](https://github.com/Cryolite/nyanten). Both 4-player and 3-player mahjong are supported.
+
+**4-player mahjong:**
+
+```python
+>>> from riichienv import parse_hand, calculate_shanten
+>>> tiles, _ = parse_hand("123m456p789s11z")
+>>> calculate_shanten(tiles)
+-1  # complete hand
+
+>>> tiles, _ = parse_hand("123m456p78s11z")
+>>> calculate_shanten(tiles)
+0  # tenpai
+```
+
+**3-player mahjong:**
+
+In 3-player mahjong (sanma), tiles 2m-8m do not exist. `calculate_shanten_3p` correctly handles this by treating manzu tiles (1m, 9m) as honor-like tiles with no sequence potential, using the nyanten lookup tables.
+
+```python
+>>> from riichienv import parse_hand, calculate_shanten, calculate_shanten_3p
+>>> tiles, _ = parse_hand("111m123456789s11z")
+>>> calculate_shanten_3p(tiles)
+-1  # complete hand (111m koutsu + souzu shuntsu)
+
+>>> tiles, _ = parse_hand("19m19p19s1234567z")
+>>> calculate_shanten_3p(tiles)
+0   # kokushi tenpai
+
+>>> # Corner case: 3P shanten can differ from 4P
+>>> tiles, _ = parse_hand("1111m111122233z")
+>>> calculate_shanten(tiles), calculate_shanten_3p(tiles)
+(1, 2)  # 4P tenpai path requires drawing 2m/3m, which don't exist in 3P
 ```
 
 ## 🛠 Development

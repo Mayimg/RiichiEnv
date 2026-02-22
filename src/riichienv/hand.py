@@ -1,106 +1,13 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from . import _riichienv as rust_core  # type: ignore
 from ._riichienv import (  # type: ignore
     Meld,
     Wind,
+    WinResult,
 )
 
 WINDS = [Wind.East, Wind.South, Wind.West, Wind.North]
-
-
-@dataclass
-class Yaku:
-    name: str
-    name_en: str
-    tenhou_id: int
-    mjsoul_id: int
-
-
-class YakuList:
-    # 流し満貫は役定義なし
-    yaku_list: list[Yaku] = [
-        # 1 Han
-        Yaku(name="門前清自摸和", name_en="Menzen Tsumo", mjsoul_id=1, tenhou_id=0),
-        Yaku(name="立直", name_en="Riichi", mjsoul_id=2, tenhou_id=1),
-        Yaku(name="一発", name_en="Ippatsu", mjsoul_id=30, tenhou_id=2),
-        Yaku(name="槍槓", name_en="Chankan", mjsoul_id=3, tenhou_id=3),
-        Yaku(name="嶺上開花", name_en="Rinshan Kaihou", mjsoul_id=4, tenhou_id=4),
-        Yaku(name="海底摸月", name_en="Haitei Raoyue", mjsoul_id=5, tenhou_id=5),
-        Yaku(name="河底撈魚", name_en="Houtei Raoyui", mjsoul_id=6, tenhou_id=6),
-        Yaku(name="平和", name_en="Pinfu", mjsoul_id=14, tenhou_id=7),
-        Yaku(name="断幺九", name_en="Tanyao", mjsoul_id=12, tenhou_id=8),
-        Yaku(name="一盃口", name_en="Iipeiko", mjsoul_id=13, tenhou_id=9),
-        Yaku(name="自風牌", name_en="Yakuhai (wind of place)", mjsoul_id=10, tenhou_id=10),
-        Yaku(name="場風牌", name_en="Yakuhai (wind of round)", mjsoul_id=11, tenhou_id=11),
-        Yaku(name="役牌 白", name_en="Yakuhai (haku)", mjsoul_id=7, tenhou_id=18),
-        Yaku(name="役牌 發", name_en="Yakuhai (hatsu)", mjsoul_id=8, tenhou_id=19),
-        Yaku(name="役牌 中", name_en="Yakuhai (chun)", mjsoul_id=9, tenhou_id=20),
-        # 2 Han
-        Yaku(name="ダブル立直", name_en="Double Riichi", mjsoul_id=18, tenhou_id=21),
-        Yaku(name="七対子", name_en="Chiitoitsu", mjsoul_id=25, tenhou_id=22),
-        Yaku(name="混全帯幺九", name_en="Chantai", mjsoul_id=15, tenhou_id=23),
-        Yaku(name="一気通貫", name_en="Ittsu", mjsoul_id=16, tenhou_id=24),
-        Yaku(name="三色同順", name_en="Sanshoku Doujun", mjsoul_id=17, tenhou_id=25),
-        Yaku(name="三色同刻", name_en="Sanshoku Doukou", mjsoul_id=19, tenhou_id=26),
-        Yaku(name="三槓子", name_en="San Kantsu", mjsoul_id=20, tenhou_id=27),
-        Yaku(name="対々和", name_en="Toitoi", mjsoul_id=21, tenhou_id=28),
-        Yaku(name="三暗刻", name_en="San Ankou", mjsoul_id=22, tenhou_id=29),
-        Yaku(name="小三元", name_en="Shou Sangen", mjsoul_id=23, tenhou_id=30),
-        Yaku(name="混老頭", name_en="Honroutou", mjsoul_id=24, tenhou_id=31),
-        # 3 Han
-        Yaku(name="二盃口", name_en="Ryanpeikou", mjsoul_id=28, tenhou_id=32),
-        Yaku(name="純全帯幺九", name_en="Junchan", mjsoul_id=26, tenhou_id=33),
-        Yaku(name="混一色", name_en="Honitsu", mjsoul_id=27, tenhou_id=34),
-        # 6 Han
-        Yaku(name="清一色", name_en="Chinitsu", mjsoul_id=29, tenhou_id=35),
-        # Yakuman
-        Yaku(name="天和", name_en="Tenhou", mjsoul_id=35, tenhou_id=37),
-        Yaku(name="地和", name_en="Chiihou", mjsoul_id=36, tenhou_id=38),
-        Yaku(name="大三元", name_en="Dai Sangen", mjsoul_id=37, tenhou_id=39),
-        Yaku(name="四暗刻単騎", name_en="Su Ankou Tanki", mjsoul_id=48, tenhou_id=40),
-        Yaku(name="四暗刻", name_en="Su Ankou", mjsoul_id=38, tenhou_id=41),
-        Yaku(name="字一色", name_en="Tsuu iisou", mjsoul_id=39, tenhou_id=42),
-        Yaku(name="緑一色", name_en="Ryuu iisou", mjsoul_id=40, tenhou_id=43),
-        Yaku(name="清老頭", name_en="Chinroutou", mjsoul_id=41, tenhou_id=44),
-        Yaku(name="九蓮宝燈", name_en="Chuuren Poutou", mjsoul_id=45, tenhou_id=45),
-        Yaku(name="純正九蓮宝燈", name_en="Junsei Chuuren Poutou", mjsoul_id=47, tenhou_id=46),
-        Yaku(name="国士無双", name_en="Kokushi Musou", mjsoul_id=42, tenhou_id=47),
-        Yaku(name="国士無双十三面待ち", name_en="Kokushi Musou 13-men", mjsoul_id=49, tenhou_id=48),
-        Yaku(name="大四喜", name_en="Dai Suusi", mjsoul_id=50, tenhou_id=49),
-        Yaku(name="小四喜", name_en="Sho Suusi", mjsoul_id=43, tenhou_id=50),
-        Yaku(name="四槓子", name_en="Su Kantsu", mjsoul_id=44, tenhou_id=51),
-        # Extra
-        Yaku(name="ドラ", name_en="Dora", mjsoul_id=31, tenhou_id=52),
-        Yaku(name="赤ドラ", name_en="Aka Dora", mjsoul_id=32, tenhou_id=54),
-        Yaku(name="裏ドラ", name_en="Ura Dora", mjsoul_id=33, tenhou_id=52),  # ドラと同じ
-    ]
-
-    @staticmethod
-    def get_yaku_from_tenhou_id(tenhou_id: int) -> Yaku:
-        for yaku in YakuList.yaku_list:
-            if yaku.tenhou_id == tenhou_id:
-                return yaku
-        raise ValueError(f"Invalid tenhou_id: {tenhou_id}")
-
-    @staticmethod
-    def get_yaku_from_mjsoul_id(mjsoul_id: int) -> Yaku:
-        for yaku in YakuList.yaku_list:
-            if yaku.mjsoul_id == mjsoul_id:
-                return yaku
-        raise ValueError(f"Invalid mjsoul_id: {mjsoul_id}")
-
-
-@dataclass
-class WinResult:
-    is_win: bool
-    yakuman: bool = False
-    ron_agari: int = 0
-    tsumo_agari_oya: int = 0
-    tsumo_agari_ko: int = 0
-    yaku: list[int] = field(default_factory=list)
-    han: int = 0
-    fu: int = 0
 
 
 @dataclass
@@ -384,21 +291,7 @@ class HandEvaluator:
             temp_tiles = sorted(self.tiles_136 + [win_tile])
             calc_obj = rust_core.HandEvaluator(temp_tiles, rust_melds)
 
-        res = calc_obj.calc(win_tile, dora_inds_136, ura_inds_136, rust_conditions)
-
-        if not res.is_win:
-            return WinResult(is_win=False)
-
-        return WinResult(
-            is_win=True,
-            yakuman=res.yakuman,
-            ron_agari=res.ron_agari,
-            tsumo_agari_oya=res.tsumo_agari_oya,
-            tsumo_agari_ko=res.tsumo_agari_ko,
-            yaku=res.yaku,
-            han=res.han,
-            fu=res.fu,
-        )
+        return calc_obj.calc(win_tile, dora_inds_136, ura_inds_136, rust_conditions)
 
     def is_tenpai(self) -> bool:
         return self.calc_rust.is_tenpai()

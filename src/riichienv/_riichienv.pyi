@@ -126,6 +126,14 @@ class Conditions:
         honba: int = 0,
     ): ...
 
+class Yaku:
+    id: int
+    name: str
+    name_en: str
+    tenhou_id: int
+    mjsoul_id: int
+    def __repr__(self) -> str: ...
+
 class WinResult:
     is_win: bool
     yakuman: bool
@@ -137,6 +145,7 @@ class WinResult:
     fu: int
     pao_payer: int | None
     has_win_shape: bool
+    def yaku_list(self) -> list[Yaku]: ...
 
 class WinResultContext:
     actual: WinResult
@@ -166,6 +175,21 @@ class HandEvaluator:
     def get_waits(self) -> list[int]: ...
     @staticmethod
     def hand_from_text(text: str) -> HandEvaluator: ...
+
+class HandEvaluator3P:
+    def __init__(self, tiles: list[int], melds: list[Meld] = []): ...
+    def calc(
+        self,
+        win_tile: int,
+        dora_indicators: list[int] = [],
+        ura_indicators: list[int] = [],
+        conditions: Conditions | None = None,
+    ) -> WinResult: ...
+    def is_tenpai(self) -> bool: ...
+    def get_waits(self) -> list[int]: ...
+    def get_waits_u8(self) -> list[int]: ...
+    @staticmethod
+    def hand_from_text(text: str) -> HandEvaluator3P: ...
 
 class Observation:
     events: list[Any]
@@ -302,15 +326,18 @@ class RiichiEnv:
 
 class Score:
     total: int
-    def pay_ron(self, *args: Any, **kwargs: Any) -> None: ...
-    def pay_tsumo_ko(self, *args: Any, **kwargs: Any) -> None: ...
-    def pay_tsumo_oya(self, *args: Any, **kwargs: Any) -> None: ...
-    def __init__(self, *args: Any, **kwargs: Any): ...
+    pay_ron: int
+    pay_tsumo_oya: int
+    pay_tsumo_ko: int
 
-def calculate_score(han: int, fu: int, is_oya: bool, is_tsumo: bool) -> tuple[int, int]: ...
+def calculate_score(han: int, fu: int, is_oya: bool, is_tsumo: bool, honba: int, num_players: int = 4) -> Score: ...
+def calculate_shanten(hand_tiles: list[int]) -> int: ...
+def calculate_shanten_3p(hand_tiles: list[int]) -> int: ...
 def check_riichi_candidates(tiles: list[int]) -> list[int]: ...
 def parse_hand(hand_str: str) -> tuple[list[int], list[Meld]]: ...
 def parse_tile(tile_str: str) -> int: ...
+def get_yaku_by_id(id_: int) -> Yaku | None: ...
+def get_all_yaku() -> list[Yaku]: ...
 
 __all__ = [
     "Action",
@@ -318,6 +345,7 @@ __all__ = [
     "GameRule",
     "WinResult",
     "HandEvaluator",
+    "HandEvaluator3P",
     "WinResultContext",
     "WinResultContextIterator",
     "Conditions",
@@ -333,9 +361,14 @@ __all__ = [
     "Score",
     "Wind",
     "calculate_score",
+    "calculate_shanten",
+    "calculate_shanten_3p",
     "check_riichi_candidates",
     "parse_hand",
     "parse_tile",
     "KuikaeMode",
     "KanDoraTimingMode",
+    "Yaku",
+    "get_yaku_by_id",
+    "get_all_yaku",
 ]

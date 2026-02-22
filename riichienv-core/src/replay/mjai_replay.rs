@@ -12,12 +12,14 @@ use std::io::{BufRead, BufReader};
 #[cfg(feature = "python")]
 use std::sync::Arc;
 
+#[cfg(feature = "python")]
 use crate::parser::mjai_to_tid;
 #[cfg(feature = "python")]
 use crate::replay::{Action, HuleData, LogKyoku};
 #[cfg(feature = "python")]
 use crate::types::MeldType;
 
+#[cfg(feature = "python")]
 fn parse_mjai_tile(s: &str) -> u8 {
     mjai_to_tid(s).unwrap_or(0)
 }
@@ -142,6 +144,8 @@ pub enum MjaiEvent {
         delta: Option<Vec<i32>>,
         scores: Option<Vec<i32>>,
     },
+    #[serde(rename = "kita")]
+    Kita { actor: usize },
     #[serde(rename = "end_game")]
     EndGame,
     #[serde(rename = "end_kyoku")]
@@ -530,6 +534,10 @@ impl MjaiReplay {
                 builder.actions.push(Action::Hule {
                     hules: vec![hule_data],
                 });
+            }
+            MjaiEvent::Kita { actor: _ } => {
+                // Kita is treated as a special action; no separate Action variant needed
+                // The event handler handles it via MjaiEvent directly
             }
             MjaiEvent::Ryukyoku { delta, scores, .. } => {
                 if let Some(s) = scores {

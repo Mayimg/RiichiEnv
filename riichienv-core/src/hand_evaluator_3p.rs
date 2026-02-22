@@ -4,18 +4,19 @@ use crate::errors::RiichiResult;
 use crate::score;
 use crate::types::{Conditions, Hand, Meld, MeldType, WinResult, Wind};
 use crate::yaku;
+use crate::yaku_3p;
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
 #[cfg_attr(feature = "python", pyclass)]
-pub struct HandEvaluator {
+pub struct HandEvaluator3P {
     pub hand: Hand,      // Normalised for agari detection
     pub full_hand: Hand, // Full counts for dora/yaku
     pub melds: Vec<Meld>,
     pub aka_dora_count: u8,
 }
 
-impl HandEvaluator {
+impl HandEvaluator3P {
     pub fn hand_from_text(text: &str) -> RiichiResult<Self> {
         let (tiles, melds) = crate::parser::parse_hand_internal(text)?;
         Ok(Self::new(tiles, melds))
@@ -101,24 +102,36 @@ impl HandEvaluator {
             return WinResult::new(false, false, 0, 0, 0, vec![], 0, 0, None, false);
         }
 
+        // Sanma dora mapping: 1m↔9m directly
+        // Kita tiles (North/4z = tile_34=30) are set aside and not in hand,
+        // but they still count as dora/ura-dora when the dora tile is North.
         let mut dora_count = 0;
         for &indicator_136 in &dora_indicators {
-            let next_tile_34 = get_next_tile(indicator_136 / 4);
+            let next_tile_34 = get_next_tile_sanma(indicator_136 / 4);
             dora_count += full_hand_14.counts[next_tile_34 as usize];
+            if next_tile_34 == 30 {
+                dora_count += conditions.kita_count;
+            }
         }
 
         let mut ura_dora_count = 0;
         for &indicator_136 in &ura_indicators {
-            let next_tile_34 = get_next_tile(indicator_136 / 4);
+            let next_tile_34 = get_next_tile_sanma(indicator_136 / 4);
             ura_dora_count += full_hand_14.counts[next_tile_34 as usize];
+            if next_tile_34 == 30 {
+                ura_dora_count += conditions.kita_count;
+            }
         }
+
+        // Nukidora (kita) count
+        let nukidora_count = conditions.kita_count;
 
         let mut aka_dora = self.aka_dora_count;
         if current_total == 13 && (win_tile_136 == 16 || win_tile_136 == 52 || win_tile_136 == 88) {
             aka_dora += 1;
         }
 
-        let ctx = yaku::YakuContext {
+        let ctx = yaku_3p::YakuContext3P {
             is_tsumo: conditions.tsumo,
             is_reach: conditions.riichi,
             is_daburu_reach: conditions.double_riichi,
@@ -131,13 +144,13 @@ impl HandEvaluator {
             dora_count,
             aka_dora,
             ura_dora_count,
+            nukidora_count,
             round_wind: 27 + conditions.round_wind as u8,
             seat_wind: 27 + conditions.player_wind as u8,
             is_menzen: self.melds.iter().all(|m| !m.opened),
         };
 
-        let _divisions = agari::find_divisions(&hand_14);
-        let yaku_res = yaku::calculate_yaku(&hand_14, &self.melds, &ctx, win_tile_34);
+        let yaku_res = yaku_3p::calculate_yaku_3p(&hand_14, &self.melds, &ctx, win_tile_34);
 
         let is_oya = conditions.player_wind == Wind::East;
         let score_res = score::calculate_score(
@@ -146,12 +159,14 @@ impl HandEvaluator {
             is_oya,
             conditions.tsumo,
             conditions.honba,
-            4, // Always 4 players
+            3, // Always 3 players
         );
-        let has_yaku = yaku_res
-            .yaku_ids
-            .iter()
-            .any(|&id| id != yaku::ID_DORA && id != yaku::ID_AKADORA && id != yaku::ID_URADORA);
+        let has_yaku = yaku_res.yaku_ids.iter().any(|&id| {
+            id != yaku::ID_DORA
+                && id != yaku::ID_AKADORA
+                && id != yaku::ID_URADORA
+                && id != yaku::ID_NUKIDORA
+        });
 
         let official_yaku: Vec<u32> = yaku_res.yaku_ids.into_iter().collect();
 
@@ -213,7 +228,7 @@ impl HandEvaluator {
 
 #[cfg(feature = "python")]
 #[pymethods]
-impl HandEvaluator {
+impl HandEvaluator3P {
     #[staticmethod]
     #[pyo3(name = "hand_from_text")]
     pub fn hand_from_text_py(text: &str) -> PyResult<Self> {
@@ -254,9 +269,8 @@ impl HandEvaluator {
     }
 }
 
-pub fn check_riichi_candidates(tiles_136: Vec<u8>) -> Vec<u32> {
+pub fn check_riichi_candidates_3p(tiles_136: Vec<u8>) -> Vec<u32> {
     let mut candidates = Vec::new();
-    // Convert to 34-tile hand
     let mut tiles_34 = Vec::with_capacity(tiles_136.len());
     for t in &tiles_136 {
         tiles_34.push(t / 4);
@@ -277,34 +291,17 @@ pub fn check_riichi_candidates(tiles_136: Vec<u8>) -> Vec<u32> {
     candidates
 }
 
-fn get_next_tile(tile: u8) -> u8 {
-    if tile < 9 {
-        if tile == 8 {
-            0
-        } else {
-            tile + 1
-        }
-    } else if tile < 18 {
-        if tile == 17 {
-            9
-        } else {
-            tile + 1
-        }
-    } else if tile < 27 {
-        if tile == 26 {
-            18
-        } else {
-            tile + 1
-        }
-    } else if tile < 31 {
-        if tile == 30 {
-            27
-        } else {
-            tile + 1
-        }
-    } else if tile == 33 {
-        31
-    } else {
-        tile + 1
+/// Sanma dora indicator -> dora tile mapping.
+/// In sanma, manzu wraps 1m(0)->9m(8) and 9m(8)->1m(0) directly (skipping 2m-8m).
+fn get_next_tile_sanma(tile: u8) -> u8 {
+    match tile {
+        0 => 8,        // 1m -> 9m
+        8 => 0,        // 9m -> 1m
+        1..=7 => tile, // shouldn't appear in sanma, but safe fallback
+        9..=17 => 9 + (tile - 9 + 1) % 9,
+        18..=26 => 18 + (tile - 18 + 1) % 9,
+        27..=30 => 27 + (tile - 27 + 1) % 4,
+        31..=33 => 31 + (tile - 31 + 1) % 3,
+        _ => tile,
     }
 }
