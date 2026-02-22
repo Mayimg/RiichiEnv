@@ -115,23 +115,22 @@ export class Viewer3D {
         contentWrapper.appendChild(viewArea);
         this.viewArea = viewArea;
 
-        // 4. Sidebar (overlay, top-right corner inside viewArea)
+        // 4. Controls (overlay, bottom-right inside viewArea, 2-column grid)
         const rightSidebar = document.createElement('div');
         rightSidebar.id = `${containerId}-controls`;
         Object.assign(rightSidebar.style, {
             position: 'absolute',
-            top: '16px',
-            right: '10px',
-            width: '40px',
+            bottom: '20%',
+            right: '20%',
             backgroundColor: 'rgba(0,0,0,0.65)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            padding: '8px 8px',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, auto)',
+            gap: '6px',
+            padding: '8px',
             alignItems: 'center',
+            justifyItems: 'center',
             flexShrink: '0',
             zIndex: '500',
-            height: 'auto',
             borderRadius: '10px',
             backdropFilter: 'blur(4px)'
         });

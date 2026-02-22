@@ -213,7 +213,7 @@ export const VIEWER_3D_CSS = `
         left: 50%;
         transform: translate(-50%, -50%);
         width: 250px;
-        height: 220px;
+        height: 250px;
         background: ${COLORS.centerInfoBackground};
         border-radius: 6px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.4);
@@ -222,11 +222,22 @@ export const VIEWER_3D_CSS = `
         align-items: center;
         justify-content: center;
         z-index: 5;
-        cursor: pointer;
-        transform-style: preserve-3d;
+        pointer-events: none;
+        transition: background-color 0.15s;
     }
-    .center-info-3d:hover {
+    .center-info-3d.hover {
         background-color: ${COLORS.highlightBoard} !important;
+    }
+    .center-click-zone {
+        position: absolute;
+        left: 50%;
+        top: 34%;
+        transform: translate(-50%, -50%);
+        width: 24%;
+        height: 40%;
+        cursor: pointer;
+        pointer-events: auto;
+        z-index: 20;
     }
     .dora-tile-3d {
         width: 28px;
@@ -338,13 +349,14 @@ export const VIEWER_3D_CSS = `
         padding: 6px 12px;
         border-radius: 6px;
         text-align: center;
-        font-family: monospace;
-        font-size: 13px;
+        font-family: sans-serif;
         color: white;
         cursor: pointer;
         transition: background-color 0.2s;
-        min-width: 70px;
         white-space: nowrap;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
     }
     .score-panel-3d:hover {
         background: rgba(60,60,100,0.8);
@@ -353,14 +365,26 @@ export const VIEWER_3D_CSS = `
         border: 2px solid #aaa;
         background: rgba(0,0,0,0.85);
     }
-    .score-panel-3d .score-value {
-        font-size: 15px;
+    .score-panel-3d .player-name {
+        font-size: 14px;
         font-weight: bold;
-        color: #ffdd00;
+        color: #ffffff;
+        margin-top: 2px;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.8);
     }
-    .score-panel-3d .wind-label {
-        font-size: 11px;
-        color: #aaa;
+    .score-panel-3d .avatar-3d {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        overflow: hidden;
+        background: rgba(255,255,255,0.1);
+        margin: 0 auto;
+        flex-shrink: 0;
+    }
+    .score-panel-3d .avatar-img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
     }
 
     .floating-score-3d {

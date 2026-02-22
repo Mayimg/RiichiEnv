@@ -7,6 +7,7 @@ import { TileRenderer } from './tile_renderer';
 import { ResultRenderer } from './result_renderer';
 import { COLORS } from '../constants';
 import { CHAR_SPRITE_BASE64, CHAR_MAP } from '../char_assets';
+import { AVATAR_PLACEHOLDER } from '../icons';
 
 export class Renderer3D implements IRenderer {
     container: HTMLElement;
@@ -181,6 +182,24 @@ export class Renderer3D implements IRenderer {
             uiOverlay.appendChild(panel);
         });
 
+        // Center click zone (2D overlay for reliable click on 3D center panel)
+        if (this.onCenterClick) {
+            const centerClick = document.createElement('div');
+            centerClick.className = 'center-click-zone';
+            centerClick.onclick = (e) => {
+                e.stopPropagation();
+                if (this.onCenterClick) this.onCenterClick();
+            };
+            // Sync hover state to 3D center panel
+            centerClick.addEventListener('mouseenter', () => {
+                center.classList.add('hover');
+            });
+            centerClick.addEventListener('mouseleave', () => {
+                center.classList.remove('hover');
+            });
+            uiOverlay.appendChild(centerClick);
+        }
+
         // Call overlay
         this.renderCallOverlay(uiOverlay, state);
 
@@ -225,11 +244,6 @@ export class Renderer3D implements IRenderer {
         const center = document.createElement('div');
         center.className = 'center-info-3d';
 
-        center.onclick = (e) => {
-            e.stopPropagation();
-            if (this.onCenterClick) this.onCenterClick();
-        };
-
         const pc = state.playerCount || 4;
 
         // Wind labels at corners
@@ -255,9 +269,9 @@ export class Renderer3D implements IRenderer {
                 transformOrigin: 'center center',
             });
 
-            const targetSize = 22;
+            const targetSize = 34;
             const maxDim = Math.max(asset.w, asset.h);
-            const scale = Math.min(1, targetSize / maxDim);
+            const scale = targetSize / maxDim;
 
             let rotation = '0deg';
             if (relPos === 1) rotation = '-90deg';
@@ -348,7 +362,7 @@ export class Renderer3D implements IRenderer {
             const farEdge = Math.round(ts / 2 - centerHalf + inset);
             if (relPos === 0) {
                 Object.assign(stick.style, {
-                    left: '50%', top: `${nearEdge}px`,
+                    left: '50%', top: `${nearEdge - 15}px`,
                     transform: 'translateX(-50%)',
                 });
             } else if (relPos === 1) {
@@ -392,9 +406,9 @@ export class Renderer3D implements IRenderer {
             const farEdge = Math.round(ts / 2 - centerHalf + 5);
 
             if (relPos === 0) {
-                // Bottom player: stick at nearEdge, score above (closer to center)
+                // Bottom player: stick at nearEdge-15, score above (closer to center)
                 Object.assign(el.style, {
-                    left: '50%', top: `${nearEdge - offset}px`,
+                    left: '50%', top: `${nearEdge - 15 - offset - 10}px`,
                     transform: 'translateX(-50%)',
                 });
             } else if (relPos === 1) {
@@ -406,7 +420,7 @@ export class Renderer3D implements IRenderer {
             } else if (relPos === 2) {
                 // Top player: stick at farEdge, score below (closer to center)
                 Object.assign(el.style, {
-                    left: '50%', top: `${farEdge + offset}px`,
+                    left: '50%', top: `${farEdge + offset - 10}px`,
                     transform: 'translateX(-50%) rotate(180deg)',
                 });
             } else if (relPos === 3) {
@@ -888,28 +902,30 @@ export class Renderer3D implements IRenderer {
         panel.className = 'score-panel-3d';
         if (playerIdx === this.viewpoint) panel.classList.add('active-vp');
 
-        // Position — viewport edges
+        // Position — corners and edges
         const panelPositions: { [key: number]: { [k: string]: string } } = {
-            0: { bottom: '130px', left: '50%', transform: 'translateX(-50%)' },
+            0: { bottom: '130px', left: '25%', transform: 'translateX(-50%)' },
             1: { right: '50px', top: '45%', transform: 'translateY(-50%)' },
-            2: { top: '20px', left: '50%', transform: 'translateX(-50%)' },
-            3: { left: '50px', top: '45%', transform: 'translateY(-50%)' },
+            2: { top: '100px', right: '380px' },
+            3: { left: '100px', top: '120px' },
         };
         const pos = panelPositions[relIndex] || panelPositions[0];
         Object.assign(panel.style, pos);
 
-        // Wind label
-        const winds = ['E', 'S', 'W', 'N'];
-        const windLabel = document.createElement('div');
-        windLabel.className = 'wind-label';
-        windLabel.textContent = `${winds[player.wind] || '?'} · P${playerIdx}`;
-        panel.appendChild(windLabel);
+        // Avatar (centered)
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar-3d';
+        const avatarImg = document.createElement('img');
+        avatarImg.src = AVATAR_PLACEHOLDER;
+        avatarImg.className = 'avatar-img';
+        avatar.appendChild(avatarImg);
+        panel.appendChild(avatar);
 
-        // Score
-        const scoreVal = document.createElement('div');
-        scoreVal.className = 'score-value';
-        scoreVal.textContent = player.score.toString();
-        panel.appendChild(scoreVal);
+        // Player name
+        const playerName = document.createElement('div');
+        playerName.className = 'player-name';
+        playerName.textContent = `P${playerIdx}`;
+        panel.appendChild(playerName);
 
         // Active player bar
         if (playerIdx === state.currentActor) {
