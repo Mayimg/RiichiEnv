@@ -298,7 +298,7 @@ export class Renderer3D implements IRenderer {
         doraTiles.forEach(t => {
             const d = document.createElement('div');
             d.className = 'dora-tile-3d';
-            this.setTile3D(d, t, 2);
+            this.setTile3D(d, t, Math.round(this.layout.tileSizes.doraTile[0] / 2));
             row3.appendChild(d);
         });
         contentDiv.appendChild(row3);
@@ -405,7 +405,7 @@ export class Renderer3D implements IRenderer {
                 cell.className = isRiichi ? 'table-tile-rotated' : 'table-tile';
                 if (d.isTsumogiri) cell.classList.add('table-tile-tsumogiri');
 
-                const topFace = this.setTile3D(cell, d.tile, 5);
+                const topFace = this.setTile3D(cell, d.tile, Math.round(tw / 2));
 
                 // Highlight (append to top face so it's at the correct Z level)
                 if (activeWaits.size > 0) {
@@ -480,7 +480,7 @@ export class Renderer3D implements IRenderer {
         player.hand.forEach(t => {
             const tile = document.createElement('div');
             tile.className = 'opp-tile';
-            this.setTile3D(tile, t, 4);
+            this.setTile3D(tile, t, Math.round(tw / 2));
             wrapper.appendChild(tile);
         });
 
@@ -527,12 +527,14 @@ export class Renderer3D implements IRenderer {
             const rel = (m.from - playerIdx + pc) % pc;
             const tiles = [...m.tiles];
 
+            const meldDepth = Math.round(this.layout.tileSizes.meldTileTable[0] / 2);
+
             if (m.type === 'ankan') {
                 tiles.forEach((t, i) => {
                     const tileId = (i === 0 || i === 3) ? 'back' : t;
                     const d = document.createElement('div');
                     d.className = 'meld-tile-table';
-                    this.setTile3D(d, tileId, 3);
+                    this.setTile3D(d, tileId, meldDepth);
                     mGroup.appendChild(d);
                 });
             } else {
@@ -543,13 +545,13 @@ export class Renderer3D implements IRenderer {
                 const addUpright = (t: string) => {
                     const d = document.createElement('div');
                     d.className = 'meld-tile-table';
-                    this.setTile3D(d, t, 3);
+                    this.setTile3D(d, t, meldDepth);
                     mGroup.appendChild(d);
                 };
                 const addRotated = (t: string) => {
                     const d = document.createElement('div');
                     d.className = 'meld-tile-table-rotated';
-                    this.setTile3D(d, t, 3);
+                    this.setTile3D(d, t, meldDepth);
                     mGroup.appendChild(d);
                 };
 

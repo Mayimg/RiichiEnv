@@ -86,24 +86,29 @@ export const VIEWER_3D_CSS = `
     .river-row-3d {
         display: flex;
         gap: 1px;
+        transform-style: preserve-3d;
     }
     .table-tile {
         width: 26px;
         height: 36px;
         flex-shrink: 0;
         position: relative;
+        transform-style: preserve-3d;
     }
     .table-tile-rotated {
         width: 36px;
         height: 36px;
         flex-shrink: 0;
         position: relative;
+        transform-style: preserve-3d;
     }
     .table-tile-rotated .tile-layer {
         transform: rotate(90deg) scale(0.88);
         transform-origin: center center;
     }
-    .table-tile-tsumogiri {
+    .table-tile-tsumogiri > .tile-3d-top,
+    .table-tile-tsumogiri > .tile-3d-front,
+    .table-tile-tsumogiri > .tile-3d-right {
         opacity: 0.6;
     }
 
@@ -121,7 +126,7 @@ export const VIEWER_3D_CSS = `
         bottom: 0;
         left: 0;
         width: 100%;
-        background: #d4ccb8;
+        background: #c8a030;
         transform-origin: bottom center;
         transform: rotateX(-90deg);
         border-radius: 0 0 2px 2px;
@@ -131,7 +136,7 @@ export const VIEWER_3D_CSS = `
         top: 0;
         left: 100%;
         height: 100%;
-        background: #c8c0ac;
+        background: #b08828;
         transform-origin: left center;
         transform: rotateY(90deg);
         border-radius: 0 2px 2px 0;
@@ -149,6 +154,7 @@ export const VIEWER_3D_CSS = `
         height: 42px;
         flex-shrink: 0;
         position: relative;
+        transform-style: preserve-3d;
     }
 
     /* Opponent melds on table */
@@ -163,12 +169,14 @@ export const VIEWER_3D_CSS = `
         height: 28px;
         flex-shrink: 0;
         position: relative;
+        transform-style: preserve-3d;
     }
     .meld-tile-table-rotated {
         width: 28px;
         height: 28px;
         flex-shrink: 0;
         position: relative;
+        transform-style: preserve-3d;
     }
     .meld-tile-table-rotated .tile-layer {
         transform: rotate(90deg) scale(0.85);
@@ -201,6 +209,7 @@ export const VIEWER_3D_CSS = `
         width: 18px;
         height: 25px;
         position: relative;
+        transform-style: preserve-3d;
     }
 
     /* Riichi sticks on table */
