@@ -241,8 +241,8 @@ impl Observation3P {
 
         dict.set_item("discards", self.discards.clone())?;
         dict.set_item("dora_indicators", self.dora_indicators.clone())?;
-        dict.set_item("scores", self.scores.clone())?;
-        dict.set_item("riichi_declared", self.riichi_declared.clone())?;
+        dict.set_item("scores", self.scores)?;
+        dict.set_item("riichi_declared", self.riichi_declared)?;
 
         let actions_py = pyo3::types::PyList::empty(py);
         for a in &self._legal_actions {
@@ -283,10 +283,6 @@ impl Observation3P {
         let mut arr = Array2::<f32>::zeros((NP, 34));
 
         for player_idx in 0..NP {
-            if player_idx >= self.discards.len() {
-                continue;
-            }
-
             let discs = &self.discards[player_idx];
             let max_len = discs.len();
 
@@ -323,10 +319,6 @@ impl Observation3P {
         let mut arr = Array2::<f32>::ones((NP, NUM_YAKU));
 
         for player_idx in 0..NP {
-            if player_idx >= self.tsumogiri_flags.len() {
-                continue;
-            }
-
             let flags = &self.tsumogiri_flags[player_idx];
             if flags.is_empty() {
                 continue;
@@ -366,20 +358,9 @@ impl Observation3P {
         const NUM_YAKU: usize = 21;
         let mut arr = Array3::<f32>::ones((NP, NUM_YAKU, 2));
 
-        let mut all_discards: Vec<Vec<u32>> = Vec::with_capacity(NP);
-        for player_idx in 0..NP {
-            if player_idx < self.discards.len() {
-                all_discards.push(self.discards[player_idx].clone());
-            } else {
-                all_discards.push(Vec::new());
-            }
-        }
+        let all_discards: [Vec<u32>; 3] = self.discards.clone();
 
         for player_idx in 0..NP {
-            if player_idx >= self.melds.len() {
-                continue;
-            }
-
             let melds = &self.melds[player_idx];
             let discards = &all_discards[player_idx];
 
@@ -502,45 +483,41 @@ impl Observation3P {
         let mut arr = Array2::<f32>::zeros((num_channels, 34));
 
         // 1. Hand (0-3), 2. Red (4)
-        if (self.player_id as usize) < self.hands.len() {
-            let mut counts = [0u8; 34];
-            for &t in &self.hands[self.player_id as usize] {
-                let idx = (t as usize) / 4;
-                if idx < 34 {
-                    counts[idx] += 1;
-                    if t == 16 || t == 52 || t == 88 {
-                        arr[[4, idx]] = 1.0;
-                    }
+        let mut counts = [0u8; 34];
+        for &t in &self.hands[self.player_id as usize] {
+            let idx = (t as usize) / 4;
+            if idx < 34 {
+                counts[idx] += 1;
+                if t == 16 || t == 52 || t == 88 {
+                    arr[[4, idx]] = 1.0;
                 }
             }
-            for i in 0..34 {
-                let c = counts[i];
-                if c >= 1 {
-                    arr[[0, i]] = 1.0;
-                }
-                if c >= 2 {
-                    arr[[1, i]] = 1.0;
-                }
-                if c >= 3 {
-                    arr[[2, i]] = 1.0;
-                }
-                if c >= 4 {
-                    arr[[3, i]] = 1.0;
-                }
+        }
+        for i in 0..34 {
+            let c = counts[i];
+            if c >= 1 {
+                arr[[0, i]] = 1.0;
+            }
+            if c >= 2 {
+                arr[[1, i]] = 1.0;
+            }
+            if c >= 3 {
+                arr[[2, i]] = 1.0;
+            }
+            if c >= 4 {
+                arr[[3, i]] = 1.0;
             }
         }
 
         // 3. Melds (Self) (5-8)
-        if (self.player_id as usize) < self.melds.len() {
-            for (m_idx, meld) in self.melds[self.player_id as usize].iter().enumerate() {
-                if m_idx >= 4 {
-                    break;
-                }
-                for &t in &meld.tiles {
-                    let idx = (t as usize) / 4;
-                    if idx < 34 {
-                        arr[[5 + m_idx, idx]] = 1.0;
-                    }
+        for (m_idx, meld) in self.melds[self.player_id as usize].iter().enumerate() {
+            if m_idx >= 4 {
+                break;
+            }
+            for &t in &meld.tiles {
+                let idx = (t as usize) / 4;
+                if idx < 34 {
+                    arr[[5 + m_idx, idx]] = 1.0;
                 }
             }
         }
@@ -554,36 +531,29 @@ impl Observation3P {
         }
 
         // 5. Discards (Self) (10-13)
-        if (self.player_id as usize) < self.discards.len() {
-            let discs = &self.discards[self.player_id as usize];
-            for (i, &t) in discs.iter().rev().take(4).enumerate() {
-                let idx = (t as usize) / 4;
-                if idx < 34 {
-                    arr[[10 + i, idx]] = 1.0;
-                }
+        let discs = &self.discards[self.player_id as usize];
+        for (i, &t) in discs.iter().rev().take(4).enumerate() {
+            let idx = (t as usize) / 4;
+            if idx < 34 {
+                arr[[10 + i, idx]] = 1.0;
             }
         }
 
         // 6. Discards (Opponents) (14-21 for 2 opponents)
         for i in 1..NP {
             let opp_id = (self.player_id as usize + i) % NP;
-            if opp_id < self.discards.len() {
-                let discs = &self.discards[opp_id];
-                for (j, &t) in discs.iter().rev().take(4).enumerate() {
-                    let idx = (t as usize) / 4;
-                    if idx < 34 {
-                        let ch_base = 14 + (i - 1) * 4;
-                        arr[[ch_base + j, idx]] = 1.0;
-                    }
+            let discs = &self.discards[opp_id];
+            for (j, &t) in discs.iter().rev().take(4).enumerate() {
+                let idx = (t as usize) / 4;
+                if idx < 34 {
+                    let ch_base = 14 + (i - 1) * 4;
+                    arr[[ch_base + j, idx]] = 1.0;
                 }
             }
         }
 
         // 7. Discard Counts (26-28 for 3 players)
         for (player_idx, discs) in self.discards.iter().enumerate() {
-            if player_idx >= NP {
-                break;
-            }
             let count_norm = (discs.len() as f32) / 24.0;
             for k in 0..34 {
                 arr[[26 + player_idx, k]] = count_norm;
@@ -600,9 +570,7 @@ impl Observation3P {
                 tiles_used += meld.tiles.len();
             }
         }
-        if (self.player_id as usize) < self.hands.len() {
-            tiles_used += self.hands[self.player_id as usize].len();
-        }
+        tiles_used += self.hands[self.player_id as usize].len();
         tiles_used += self.dora_indicators.len();
         let tiles_left = (TOTAL_TILES as i32 - tiles_used as i32).max(0) as f32;
         let tiles_left_norm = tiles_left / 70.0;
@@ -611,16 +579,14 @@ impl Observation3P {
         }
 
         // 9. Riichi (31-33: self + 2 opponents)
-        if (self.player_id as usize) < self.riichi_declared.len()
-            && self.riichi_declared[self.player_id as usize]
-        {
+        if self.riichi_declared[self.player_id as usize] {
             for i in 0..34 {
                 arr[[31, i]] = 1.0;
             }
         }
         for i in 1..NP {
             let opp_id = (self.player_id as usize + i) % NP;
-            if opp_id < self.riichi_declared.len() && self.riichi_declared[opp_id] {
+            if self.riichi_declared[opp_id] {
                 for k in 0..34 {
                     arr[[32 + (i - 1), k]] = 1.0;
                 }
@@ -647,21 +613,17 @@ impl Observation3P {
 
         // 12. Scores (39-41) normalized 0-100000
         for i in 0..NP {
-            if i < self.scores.len() {
-                let score_norm = (self.scores[i].clamp(0, 100000) as f32) / 100000.0;
-                for k in 0..34 {
-                    arr[[39 + i, k]] = score_norm;
-                }
+            let score_norm = (self.scores[i].clamp(0, 100000) as f32) / 100000.0;
+            for k in 0..34 {
+                arr[[39 + i, k]] = score_norm;
             }
         }
 
         // 13. Scores (43-45) normalized 0-30000
         for i in 0..NP {
-            if i < self.scores.len() {
-                let score_norm = (self.scores[i].clamp(0, 30000) as f32) / 30000.0;
-                for k in 0..34 {
-                    arr[[43 + i, k]] = score_norm;
-                }
+            let score_norm = (self.scores[i].clamp(0, 30000) as f32) / 30000.0;
+            for k in 0..34 {
+                arr[[43 + i, k]] = score_norm;
             }
         }
 
@@ -679,11 +641,7 @@ impl Observation3P {
         }
 
         // 16. Rank (49-51 for 3 players)
-        let my_score = self
-            .scores
-            .get(self.player_id as usize)
-            .copied()
-            .unwrap_or(0);
+        let my_score = self.scores[self.player_id as usize];
         let mut rank = 0;
         for &s in &self.scores {
             if s > my_score {
@@ -712,36 +670,30 @@ impl Observation3P {
         // 19. Dora Count (55-57 for 3 players)
         let mut dora_counts = [0u8; NP];
         for (player_idx, dora_count) in dora_counts.iter_mut().enumerate() {
-            if player_idx < self.melds.len() {
-                for meld in &self.melds[player_idx] {
-                    for &tile in &meld.tiles {
-                        for &dora_ind in &self.dora_indicators {
-                            let dora_tile = get_next_tile_sanma(dora_ind);
-                            if (tile / 4) == (dora_tile / 4) {
-                                *dora_count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-            if player_idx < self.discards.len() {
-                for &tile in &self.discards[player_idx] {
+            for meld in &self.melds[player_idx] {
+                for &tile in &meld.tiles {
                     for &dora_ind in &self.dora_indicators {
                         let dora_tile = get_next_tile_sanma(dora_ind);
-                        if ((tile / 4) as u8) == (dora_tile / 4) {
+                        if (tile / 4) == (dora_tile / 4) {
                             *dora_count += 1;
                         }
                     }
                 }
             }
-        }
-        if (self.player_id as usize) < self.hands.len() {
-            for &tile in &self.hands[self.player_id as usize] {
+            for &tile in &self.discards[player_idx] {
                 for &dora_ind in &self.dora_indicators {
                     let dora_tile = get_next_tile_sanma(dora_ind);
                     if ((tile / 4) as u8) == (dora_tile / 4) {
-                        dora_counts[self.player_id as usize] += 1;
+                        *dora_count += 1;
                     }
+                }
+            }
+        }
+        for &tile in &self.hands[self.player_id as usize] {
+            for &dora_ind in &self.dora_indicators {
+                let dora_tile = get_next_tile_sanma(dora_ind);
+                if ((tile / 4) as u8) == (dora_tile / 4) {
+                    dora_counts[self.player_id as usize] += 1;
                 }
             }
         }
@@ -754,9 +706,6 @@ impl Observation3P {
 
         // 20. Melds Count (59-61 for 3 players)
         for (player_idx, melds_list) in self.melds.iter().enumerate() {
-            if player_idx >= NP {
-                break;
-            }
             let meld_count_norm = (melds_list.len() as f32) / 4.0;
             for k in 0..34 {
                 arr[[59 + player_idx, k]] = meld_count_norm;
@@ -765,10 +714,8 @@ impl Observation3P {
 
         // 21. Tiles Seen (63)
         let mut seen = [0u8; 34];
-        if (self.player_id as usize) < self.hands.len() {
-            for &t in &self.hands[self.player_id as usize] {
-                seen[(t as usize) / 4] += 1;
-            }
+        for &t in &self.hands[self.player_id as usize] {
+            seen[(t as usize) / 4] += 1;
         }
         for mlist in &self.melds {
             for m in mlist {
@@ -791,32 +738,26 @@ impl Observation3P {
         }
 
         // 22-24. Extended Discard History (64-69)
-        if (self.player_id as usize) < self.discards.len() {
-            let discs = &self.discards[self.player_id as usize];
-            for (i, &t) in discs.iter().rev().skip(4).take(4).enumerate() {
-                let idx = (t as usize) / 4;
-                if idx < 34 {
-                    arr[[64 + i, idx]] = 1.0;
-                }
+        let discs = &self.discards[self.player_id as usize];
+        for (i, &t) in discs.iter().rev().skip(4).take(4).enumerate() {
+            let idx = (t as usize) / 4;
+            if idx < 34 {
+                arr[[64 + i, idx]] = 1.0;
             }
         }
 
         let opp1_id = (self.player_id as usize + 1) % NP;
-        if opp1_id < self.discards.len() {
-            let discs = &self.discards[opp1_id];
-            for (i, &t) in discs.iter().rev().skip(4).take(2).enumerate() {
-                let idx = (t as usize) / 4;
-                if idx < 34 {
-                    arr[[68 + i, idx]] = 1.0;
-                }
+        let discs = &self.discards[opp1_id];
+        for (i, &t) in discs.iter().rev().skip(4).take(2).enumerate() {
+            let idx = (t as usize) / 4;
+            if idx < 34 {
+                arr[[68 + i, idx]] = 1.0;
             }
         }
 
         // 25. Tsumogiri flags (70-72 for 3 players)
         for player_idx in 0..NP {
-            if player_idx < self.tsumogiri_flags.len()
-                && !self.tsumogiri_flags[player_idx].is_empty()
-            {
+            if !self.tsumogiri_flags[player_idx].is_empty() {
                 let last_tsumogiri = *self.tsumogiri_flags[player_idx].last().unwrap_or(&false);
                 let val = if last_tsumogiri { 1.0 } else { 0.0 };
                 for k in 0..34 {
@@ -854,10 +795,6 @@ impl Observation3P {
         all_visible.extend(self.dora_indicators.iter().copied());
 
         for player_idx in 0..NP {
-            if player_idx >= self.hands.len() {
-                continue;
-            }
-
             let hand = &self.hands[player_idx];
 
             if player_idx == self.player_id as usize {
@@ -874,11 +811,7 @@ impl Observation3P {
                 arr[[player_idx, 2]] = 0.5;
             }
 
-            let turn_count = if player_idx < self.discards.len() {
-                self.discards[player_idx].len() as f32
-            } else {
-                0.0
-            };
+            let turn_count = self.discards[player_idx].len() as f32;
             arr[[player_idx, 3]] = turn_count / 18.0;
         }
 
@@ -901,10 +834,6 @@ impl Observation3P {
         let mut arr = Array3::<f32>::zeros((NP, 7, 34));
 
         for (player_idx, discards) in self.discards.iter().enumerate() {
-            if player_idx >= NP {
-                break;
-            }
-
             let mut tile_counts = [0u8; 34];
             let mut aka_flags = [false; 3];
 
@@ -950,10 +879,6 @@ impl Observation3P {
         let mut arr = Array4::<f32>::zeros((NP, 4, 5, 34));
 
         for (player_idx, melds) in self.melds.iter().enumerate() {
-            if player_idx >= NP {
-                break;
-            }
-
             for (meld_idx, meld) in melds.iter().enumerate() {
                 if meld_idx >= 4 {
                     break;
@@ -996,10 +921,6 @@ impl Observation3P {
         let mut arr = Array2::<f32>::zeros((NP, 34));
 
         for (player_idx, melds) in self.melds.iter().enumerate() {
-            if player_idx >= NP {
-                break;
-            }
-
             for meld in melds {
                 if matches!(meld.meld_type, MeldType::Ankan) {
                     if let Some(&tile) = meld.tiles.first() {
@@ -1198,15 +1119,6 @@ impl Observation3P {
         let mut arr = Array1::<f32>::zeros(5);
 
         let player_idx = self.player_id as usize;
-        if player_idx >= self.hands.len() {
-            let slice = arr.as_slice().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>("Array not contiguous")
-            })?;
-            let byte_len = std::mem::size_of_val(slice);
-            let byte_slice =
-                unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, byte_len) };
-            return Ok(pyo3::types::PyBytes::new(py, byte_slice));
-        }
 
         let hand = &self.hands[player_idx];
         let current_shanten = shanten::calculate_shanten_3p(hand);
@@ -1241,7 +1153,7 @@ impl Observation3P {
         }
 
         arr[3] = if current_shanten == -1 { 1.0 } else { 0.0 };
-        arr[4] = if player_idx < self.riichi_declared.len() && self.riichi_declared[player_idx] {
+        arr[4] = if self.riichi_declared[player_idx] {
             1.0
         } else {
             0.0
@@ -1266,16 +1178,6 @@ impl Observation3P {
         use crate::win_projection;
 
         let player_idx = self.player_id as usize;
-        let num_channels = 89;
-        let total_floats = num_channels * 34;
-
-        if player_idx >= self.hands.len() {
-            let arr = vec![0.0f32; total_floats];
-            let byte_len = arr.len() * std::mem::size_of::<f32>();
-            let byte_slice =
-                unsafe { std::slice::from_raw_parts(arr.as_ptr() as *const u8, byte_len) };
-            return Ok(pyo3::types::PyBytes::new(py, byte_slice));
-        }
 
         let hand_136 = &self.hands[player_idx];
 
@@ -1359,20 +1261,12 @@ impl Observation3P {
             *ts = (*ts).min(4);
         }
 
-        let num_melds = if player_idx < self.melds.len() {
-            self.melds[player_idx].len()
-        } else {
-            0
-        };
+        let num_melds = self.melds[player_idx].len();
         let tehai_len_div3 = (4 - num_melds) as u8;
 
-        let is_menzen = if player_idx < self.melds.len() {
-            self.melds[player_idx]
-                .iter()
-                .all(|m| matches!(m.meld_type, MeldType::Ankan))
-        } else {
-            true
-        };
+        let is_menzen = self.melds[player_idx]
+            .iter()
+            .all(|m| matches!(m.meld_type, MeldType::Ankan));
 
         let seat = (self.player_id + NP as u8 - self.oya) % NP as u8;
         let is_oya = seat == 0;
@@ -1387,37 +1281,31 @@ impl Observation3P {
 
         let mut num_doras_in_fuuro = 0u8;
         let mut num_aka_in_fuuro = 0u8;
-        if player_idx < self.melds.len() {
-            for meld in &self.melds[player_idx] {
-                for &tile in &meld.tiles {
-                    for &ind in &dora_indicators_34 {
-                        let dora = win_projection::next_dora_tile(ind);
-                        if tile / 4 == dora {
-                            num_doras_in_fuuro += 1;
-                        }
+        for meld in &self.melds[player_idx] {
+            for &tile in &meld.tiles {
+                for &ind in &dora_indicators_34 {
+                    let dora = win_projection::next_dora_tile(ind);
+                    if tile / 4 == dora {
+                        num_doras_in_fuuro += 1;
                     }
-                    match tile {
-                        16 | 52 | 88 => num_aka_in_fuuro += 1,
-                        _ => {}
-                    }
+                }
+                match tile {
+                    16 | 52 | 88 => num_aka_in_fuuro += 1,
+                    _ => {}
                 }
             }
         }
 
-        let melds_for_calc: Vec<crate::types::Meld> = if player_idx < self.melds.len() {
-            self.melds[player_idx]
-                .iter()
-                .map(|m| crate::types::Meld {
-                    meld_type: m.meld_type,
-                    tiles: m.tiles.iter().map(|&t| t / 4).collect(),
-                    opened: m.opened,
-                    from_who: m.from_who,
-                    called_tile: m.called_tile.map(|t| t / 4),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let melds_for_calc: Vec<crate::types::Meld> = self.melds[player_idx]
+            .iter()
+            .map(|m| crate::types::Meld {
+                meld_type: m.meld_type,
+                tiles: m.tiles.iter().map(|&t| t / 4).collect(),
+                opened: m.opened,
+                from_who: m.from_who,
+                called_tile: m.called_tile.map(|t| t / 4),
+            })
+            .collect();
 
         let total_visible: u32 = tiles_seen.iter().map(|&c| c as u32).sum();
         let tiles_in_wall = TOTAL_TILES.saturating_sub(total_visible);
@@ -1535,35 +1423,31 @@ impl Observation3P {
 
         let mut tehai = [0u8; TILE_MAX];
         let mut akas_in_hand = [false; 3];
-        if player_idx < self.hands.len() {
-            for &t in &self.hands[player_idx] {
-                let tile_type = (t / 4) as usize;
-                if tile_type < TILE_MAX {
-                    tehai[tile_type] += 1;
-                }
-                match t {
-                    16 => akas_in_hand[0] = true,
-                    52 => akas_in_hand[1] = true,
-                    88 => akas_in_hand[2] = true,
-                    _ => {}
-                }
+        for &t in &self.hands[player_idx] {
+            let tile_type = (t / 4) as usize;
+            if tile_type < TILE_MAX {
+                tehai[tile_type] += 1;
+            }
+            match t {
+                16 => akas_in_hand[0] = true,
+                52 => akas_in_hand[1] = true,
+                88 => akas_in_hand[2] = true,
+                _ => {}
             }
         }
 
         let mut tiles_seen = [0u8; TILE_MAX];
         let mut akas_seen = [false; 3];
-        if player_idx < self.hands.len() {
-            for &t in &self.hands[player_idx] {
-                let tt = (t / 4) as usize;
-                if tt < TILE_MAX {
-                    tiles_seen[tt] += 1;
-                }
-                match t {
-                    16 => akas_seen[0] = true,
-                    52 => akas_seen[1] = true,
-                    88 => akas_seen[2] = true,
-                    _ => {}
-                }
+        for &t in &self.hands[player_idx] {
+            let tt = (t / 4) as usize;
+            if tt < TILE_MAX {
+                tiles_seen[tt] += 1;
+            }
+            match t {
+                16 => akas_seen[0] = true,
+                52 => akas_seen[1] = true,
+                88 => akas_seen[2] = true,
+                _ => {}
             }
         }
         for melds_list in &self.melds {
@@ -1623,19 +1507,11 @@ impl Observation3P {
             *ts = (*ts).min(4);
         }
 
-        let num_melds = if player_idx < self.melds.len() {
-            self.melds[player_idx].len()
-        } else {
-            0
-        };
+        let num_melds = self.melds[player_idx].len();
         let tehai_len_div3 = (4 - num_melds) as u8;
-        let is_menzen = if player_idx < self.melds.len() {
-            self.melds[player_idx]
-                .iter()
-                .all(|m| matches!(m.meld_type, MeldType::Ankan))
-        } else {
-            true
-        };
+        let is_menzen = self.melds[player_idx]
+            .iter()
+            .all(|m| matches!(m.meld_type, MeldType::Ankan));
 
         let seat = (self.player_id + NP as u8 - self.oya) % NP as u8;
         let is_oya = seat == 0;
@@ -1650,36 +1526,30 @@ impl Observation3P {
 
         let mut num_doras_in_fuuro = 0u8;
         let mut num_aka_in_fuuro = 0u8;
-        if player_idx < self.melds.len() {
-            for meld in &self.melds[player_idx] {
-                for &tile in &meld.tiles {
-                    for &ind in &dora_indicators_34 {
-                        if tile / 4 == win_projection::next_dora_tile(ind) {
-                            num_doras_in_fuuro += 1;
-                        }
+        for meld in &self.melds[player_idx] {
+            for &tile in &meld.tiles {
+                for &ind in &dora_indicators_34 {
+                    if tile / 4 == win_projection::next_dora_tile(ind) {
+                        num_doras_in_fuuro += 1;
                     }
-                    match tile {
-                        16 | 52 | 88 => num_aka_in_fuuro += 1,
-                        _ => {}
-                    }
+                }
+                match tile {
+                    16 | 52 | 88 => num_aka_in_fuuro += 1,
+                    _ => {}
                 }
             }
         }
 
-        let melds_for_calc: Vec<Meld> = if player_idx < self.melds.len() {
-            self.melds[player_idx]
-                .iter()
-                .map(|m| Meld {
-                    meld_type: m.meld_type,
-                    tiles: m.tiles.iter().map(|&t| t / 4).collect(),
-                    opened: m.opened,
-                    from_who: m.from_who,
-                    called_tile: m.called_tile.map(|t| t / 4),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let melds_for_calc: Vec<Meld> = self.melds[player_idx]
+            .iter()
+            .map(|m| Meld {
+                meld_type: m.meld_type,
+                tiles: m.tiles.iter().map(|&t| t / 4).collect(),
+                opened: m.opened,
+                from_who: m.from_who,
+                called_tile: m.called_tile.map(|t| t / 4),
+            })
+            .collect();
 
         let total_visible: u32 = tiles_seen.iter().map(|&c| c as u32).sum();
         let tiles_in_wall = TOTAL_TILES.saturating_sub(total_visible);

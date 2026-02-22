@@ -1036,9 +1036,8 @@ mod unit_tests {
         state.needs_tsumo = false;
 
         let obs = state.get_observation(0);
-        assert_eq!(obs.hands.len(), 3, "Observation should have 3 hands");
-        assert_eq!(obs.scores.len(), 3, "Observation should have 3 scores");
-        assert_eq!(obs.discards.len(), 3, "Observation should have 3 discards");
-        assert_eq!(obs.melds.len(), 3, "Observation should have 3 melds");
+        // hands, scores, discards, melds are now [T; 3] fixed-size arrays,
+        // so .len() checks are trivially true and have been removed.
+        assert!(!obs.hands[0].is_empty(), "Player 0 hand should not be empty");
     }
 }

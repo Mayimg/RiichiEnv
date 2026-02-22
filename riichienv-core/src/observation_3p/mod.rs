@@ -12,8 +12,6 @@ use crate::action::{Action, ActionEncoder};
 use crate::errors::{RiichiError, RiichiResult};
 use crate::types::Meld;
 
-const NP: u8 = 3;
-
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "riichienv._riichienv", get_all)
