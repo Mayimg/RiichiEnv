@@ -364,7 +364,7 @@ class MetadataInjector:
         return waits
 
 
-class Replay:
+class GameViewer:
     def __init__(
         self, log: list[dict[str, Any]], step: int | None = None, perspective: int | None = None, freeze: bool = False
     ):
@@ -473,9 +473,9 @@ class Replay:
 def show_replay(log: list[dict[str, Any]]) -> HTML:
     """
     Displays a replay viewer for the given MJAI log.
-    Start using Replay.from_list(log).show() instead.
+    Start using GameViewer.from_list(log) instead.
     """
-    return Replay.from_list(log)
+    return GameViewer.from_list(log)
 
 
 def main() -> None:
