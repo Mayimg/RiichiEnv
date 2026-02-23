@@ -15,9 +15,18 @@ export class ReplayController {
     autoPlayTimer: number | null = null;
     private logBtn: HTMLElement | null = null;
     private autoBtn: HTMLElement | null = null;
+    private lastActionTime: number = 0;
+    private static readonly ACTION_THROTTLE_MS = 80;
 
     constructor(viewer: ViewerLike) {
         this.viewer = viewer;
+    }
+
+    private isThrottled(): boolean {
+        const now = Date.now();
+        if (now - this.lastActionTime < ReplayController.ACTION_THROTTLE_MS) return true;
+        this.lastActionTime = now;
+        return false;
     }
 
     setupKeyboardControls(target: HTMLElement | Window) {
@@ -51,19 +60,23 @@ export class ReplayController {
     }
 
     stepForward() {
+        if (this.isThrottled()) return;
         if (this.viewer.gameState.stepForward()) this.viewer.update();
     }
 
     stepBackward() {
+        if (this.isThrottled()) return;
         if (this.viewer.gameState.stepBackward()) this.viewer.update();
     }
 
     nextTurn() {
+        if (this.isThrottled()) return;
         const vp = this.viewer.renderer.viewpoint;
         if (this.viewer.gameState.jumpToNextTurn(vp)) this.viewer.update();
     }
 
     prevTurn() {
+        if (this.isThrottled()) return;
         const vp = this.viewer.renderer.viewpoint;
         if (this.viewer.gameState.jumpToPrevTurn(vp)) this.viewer.update();
     }

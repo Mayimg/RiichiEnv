@@ -19,6 +19,12 @@ export class Renderer2D implements IRenderer {
     private layout: LayoutConfig;
     viewpoint: number = 0;
 
+    // Persistent DOM slots to avoid full destruction/rebuild
+    private centerSlot: HTMLElement | null = null;
+    private playerWrappers: HTMLElement[] = [];
+    private playerDivs: HTMLElement[] = [];
+    private hadModal: boolean = false;
+
     constructor(container: HTMLElement, layout?: LayoutConfig) {
         this.container = container;
         this.layout = layout ?? createLayoutConfig4P();
@@ -44,10 +50,18 @@ export class Renderer2D implements IRenderer {
         this.boardElement.style.transform = `translate(-50%, -50%) scale(${scale})`;
     }
 
-    render(state: BoardState, debugPanel?: HTMLElement) {
-        const pc = state.playerCount;
+    /** Ensure persistent board structure exists. Creates slots on first call. Rebuilds if player count changes. */
+    private ensureBoardStructure(pc: number): void {
+        if (this.boardElement && this.centerSlot && this.playerWrappers.length === pc) return;
 
-        // Reuse board element to prevent flickering
+        // Player count changed — tear down existing slots before rebuilding
+        if (this.boardElement && this.playerWrappers.length > 0 && this.playerWrappers.length !== pc) {
+            if (this.centerSlot) { this.centerSlot.remove(); this.centerSlot = null; }
+            this.playerWrappers.forEach(w => w.remove());
+            this.playerWrappers = [];
+            this.playerDivs = [];
+        }
+
         if (!this.boardElement) {
             this.boardElement = document.createElement('div');
             this.boardElement.className = 'mahjong-board';
@@ -57,35 +71,21 @@ export class Renderer2D implements IRenderer {
                 position: 'absolute',
                 top: '50%',
                 left: '50%',
-                transform: 'translate(-50%, -50%)', // Initial transform, will be overridden by resize
+                transform: 'translate(-50%, -50%)',
                 transformOrigin: 'center center'
             });
             this.container.appendChild(this.boardElement);
         }
-        const board = this.boardElement;
 
-        console.log("[Renderer2D] render() called. State:", {
-            round: state.round,
-            players: state.players.length,
-            doraMarkers: state.doraMarkers,
-            eventIndex: state.eventIndex
-        });
+        // Create center slot
+        this.centerSlot = document.createElement('div');
+        this.centerSlot.className = 'center-slot';
+        this.boardElement.appendChild(this.centerSlot);
 
-        board.innerHTML = '';
-
-        // Clear any existing modals from container (since we append them to container now)
-        const oldModals = this.container.querySelectorAll('.re-modal-overlay');
-        oldModals.forEach(el => el.remove());
-
-        // Center Info
-        const center = CenterRenderer.renderCenter(state, this.onCenterClick, this.viewpoint);
-        board.appendChild(center);
-
-        const angles = this.layout.playerAngles;
-
-        state.players.forEach((p, i) => {
-            const relIndex = (i - this.viewpoint + pc) % pc;
-
+        // Create player wrapper slots
+        this.playerWrappers = [];
+        this.playerDivs = [];
+        for (let i = 0; i < pc; i++) {
             const wrapper = document.createElement('div');
             Object.assign(wrapper.style, {
                 position: 'absolute',
@@ -95,21 +95,71 @@ export class Renderer2D implements IRenderer {
                 height: '0',
                 display: 'flex',
                 justifyContent: 'center',
-                transform: `rotate(${angles[relIndex]}deg)`
             });
 
             const pDiv = document.createElement('div');
             Object.assign(pDiv.style, {
                 width: '600px',
-                height: '250px', // Adjusted height to prevent cutoff
+                height: '250px',
                 display: 'block',
-                transform: 'translateY(120px)', // Lifted up
-                transition: 'background-color 0.3s',
-                position: 'relative'
+                transform: 'translateY(120px)',
+                position: 'relative',
+                padding: '10px',
+                contain: 'layout style',
             });
 
-            // Active player highlighting adds bar to infoBox below
-            pDiv.style.padding = '10px';
+            wrapper.appendChild(pDiv);
+            this.boardElement.appendChild(wrapper);
+            this.playerWrappers.push(wrapper);
+            this.playerDivs.push(pDiv);
+        }
+    }
+
+    render(state: BoardState, debugPanel?: HTMLElement) {
+        const pc = state.playerCount;
+
+        // Ensure persistent DOM structure exists
+        this.ensureBoardStructure(pc);
+        const board = this.boardElement!;
+
+        // Suppress style recalculation during DOM batch updates.
+        // content-visibility: hidden tells the browser to skip layout/paint/style
+        // for all descendants while we mutate the DOM. On restore, only a single
+        // style recalc pass is performed instead of incremental per-mutation recalcs.
+        if ('contentVisibility' in board.style) {
+            (board.style as any).contentVisibility = 'hidden';
+        }
+
+        // Clear modals only if we had one previously
+        if (this.hadModal) {
+            const oldModals = this.container.querySelectorAll('.re-modal-overlay');
+            oldModals.forEach(el => el.remove());
+            this.hadModal = false;
+        }
+
+        // Update center slot content
+        const center = CenterRenderer.renderCenter(state, this.onCenterClick, this.viewpoint);
+        this.centerSlot!.replaceChildren(center);
+
+        const angles = this.layout.playerAngles;
+
+        // Collect active waits once (shared across all players)
+        const activeWaits = new Set<string>();
+        const normalize = (t: string) => t.replace('0', '5').replace('r', '');
+        state.players.forEach(pl => {
+            if (pl.waits && pl.waits.length > 0) {
+                pl.waits.forEach(w => activeWaits.add(normalize(w)));
+            }
+        });
+
+        state.players.forEach((p, i) => {
+            const relIndex = (i - this.viewpoint + pc) % pc;
+
+            // Update wrapper transform (may change with viewpoint)
+            this.playerWrappers[i].style.transform = `rotate(${angles[relIndex]}deg)`;
+
+            // Build new content for the player div
+            const children: HTMLElement[] = [];
 
             // Call Overlay Logic
             let showOverlay = false;
@@ -118,10 +168,10 @@ export class Renderer2D implements IRenderer {
             // Standard Checks (Actor-based)
             if (state.lastEvent && state.lastEvent.actor === i) {
                 const type = state.lastEvent.type;
-                if (['chi', 'pon', 'kan', 'ankan', 'daiminkan', 'kakan', 'reach'].includes(type)) { // Added reach
+                if (['chi', 'pon', 'kan', 'ankan', 'daiminkan', 'kakan', 'reach'].includes(type)) {
                     label = type.charAt(0).toUpperCase() + type.slice(1);
                     if (type === 'daiminkan') label = 'Kan';
-                    if (type === 'reach') label = 'Reach'; // Ensure capitalization
+                    if (type === 'reach') label = 'Reach';
                     showOverlay = true;
                 } else if (type === 'hora') {
                     label = (state.lastEvent.target === state.lastEvent.actor) ? 'Tsumo' : 'Ron';
@@ -139,31 +189,34 @@ export class Renderer2D implements IRenderer {
                 const overlay = document.createElement('div');
                 overlay.className = 'call-overlay';
                 overlay.textContent = label;
-                pDiv.appendChild(overlay);
+                children.push(overlay);
             }
 
-
-
-            // Wait Indicator Logic (Persistent)
+            // Wait Indicator Logic
             if (p.waits && p.waits.length > 0) {
                 const wDiv = document.createElement('div');
                 Object.assign(wDiv.style, {
                     position: 'absolute',
-                    top: '130px', left: '50%', transform: 'translateX(140px)', // Aligned with InfoBox
+                    top: '130px', left: '50%', transform: 'translateX(140px)',
                     background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '5px 10px',
                     borderRadius: '4px', fontSize: '14px', zIndex: '50',
                     display: 'flex', gap: '4px', alignItems: 'center', pointerEvents: 'none'
                 });
-                wDiv.innerHTML = '<span style="margin-right:4px;">Wait:</span>';
+                const waitLabel = document.createElement('span');
+                waitLabel.style.marginRight = '4px';
+                waitLabel.textContent = 'Wait:';
+                wDiv.appendChild(waitLabel);
                 p.waits.forEach((w: string) => {
-                    wDiv.innerHTML += `<div style="width:24px; height:34px;">${TileRenderer.getTileHtml(w)}</div>`;
+                    const d = document.createElement('div');
+                    d.style.width = '24px';
+                    d.style.height = '34px';
+                    d.appendChild(TileRenderer.getTileElement(w));
+                    wDiv.appendChild(d);
                 });
-                pDiv.appendChild(wDiv);
+                children.push(wDiv);
             }
 
-            // --- River + Info Container ---
-            // Relative positioned river container
-            // We use riverRow as the container for the river tiles, absolutely positioned.
+            // River
             const riverRow = document.createElement('div');
             Object.assign(riverRow.style, {
                 display: 'flex',
@@ -176,31 +229,19 @@ export class Renderer2D implements IRenderer {
                 zIndex: '5'
             });
 
-            // Collect active waits (global) to highlight in ALL hands AND rivers
-            const activeWaits = new Set<string>();
-            const normalize = (t: string) => t.replace('0', '5').replace('r', '');
-
-            state.players.forEach(pl => {
-                if (pl.waits && pl.waits.length > 0) {
-                    pl.waits.forEach(w => activeWaits.add(normalize(w)));
-                }
-            });
-
-            // Use independent RiverRenderer
             let riverDAnim = undefined;
             if (state.dahaiAnim && state.currentActor === i) {
                 riverDAnim = state.dahaiAnim;
             }
             const riverDiv = RiverRenderer.renderRiver(p.discards, activeWaits, riverDAnim);
             riverRow.appendChild(riverDiv);
-            pDiv.appendChild(riverRow);
+            children.push(riverRow);
 
-            // Info Box (New Overlay) - Anchored to pDiv
+            // Info Box
             const infoBox = InfoRenderer.renderPlayerInfo(p, i, this.viewpoint, state.currentActor, this.onViewpointChange || (() => { }));
-            pDiv.appendChild(infoBox);
+            children.push(infoBox);
 
-            // Render Hand
-            // Check if this player has just drawn a tile (Tsumo position)
+            // Hand
             let hasDraw = false;
             let shouldAnimate = false;
 
@@ -210,49 +251,50 @@ export class Renderer2D implements IRenderer {
                     hasDraw = true;
                     shouldAnimate = true;
                 } else if (type === 'reach' && state.lastEvent.actor === i) {
-                    // During Reach declaration step, keep tile separated but no fly-in animation
                     hasDraw = true;
                     shouldAnimate = false;
                 }
             }
 
             const playerState = state.players[i];
-
-            // Only pass dahaiAnim if it's THIS player's action
             let dAnim = undefined;
             if (state.dahaiAnim && state.currentActor === i) {
                 dAnim = state.dahaiAnim;
             }
 
             const hand = HandRenderer.renderHand(playerState.hand, playerState.melds, i, activeWaits, hasDraw, dAnim, shouldAnimate, pc);
+            children.push(hand);
 
-            pDiv.appendChild(hand);
-
-            wrapper.appendChild(pDiv);
-            board.appendChild(wrapper);
+            // Replace player div content via DocumentFragment (single reflow)
+            const frag = document.createDocumentFragment();
+            for (const child of children) frag.appendChild(child);
+            this.playerDivs[i].replaceChildren(frag);
         });
+
+        // Restore rendering — triggers a single style recalc for the entire board
+        if ('contentVisibility' in board.style) {
+            (board.style as any).contentVisibility = '';
+        }
 
         // End Kyoku Modal
         if (state.lastEvent && state.lastEvent.type === 'end_kyoku' && state.lastEvent.meta) {
             let modal: HTMLElement | null = null;
 
             if (state.lastEvent.meta.ryukyoku) {
-                // Ryukyoku / Error Result
                 modal = ResultRenderer.renderRyukyokuModal(state.lastEvent.meta.ryukyoku, state);
             } else if (state.lastEvent.meta.results) {
-                // Hora Result
                 const results = state.lastEvent.meta.results;
                 modal = ResultRenderer.renderModal(results, state);
             }
 
             if (modal) {
-                // Click background to close
                 modal.onclick = (e) => {
                     if (e.target === modal) {
                         modal!.remove();
                     }
                 };
                 this.container.appendChild(modal);
+                this.hadModal = true;
             }
         }
 

@@ -22,6 +22,7 @@ export class LiveViewer {
     container: HTMLElement;
     controller: LiveController;
     debugPanel: HTMLElement;
+    private _rafId: number = 0;
 
     constructor(containerId: string, options?: { perspective?: number, config?: GameConfig, layout?: LayoutConfig }) {
         const gc = options?.config ?? createGameConfig4P();
@@ -31,12 +32,8 @@ export class LiveViewer {
         if (!el) throw new Error(`Container #${containerId} not found`);
         this.container = el;
 
-        // Start WASM initialization in background
-        initWasm().then(() => {
-            console.log('[LiveViewer] WASM module loaded');
-        }).catch(e => {
-            console.warn('[LiveViewer] WASM load failed, continuing without:', e);
-        });
+        // Start WASM initialization in background (non-blocking)
+        initWasm().catch(() => {});
 
         this.container.innerHTML = '';
         Object.assign(this.container.style, {
@@ -207,7 +204,7 @@ export class LiveViewer {
             scaleWrapper.style.height = `${Math.floor(baseH * scale)}px`;
         });
 
-        this.update();
+        this.updateImmediate();
     }
 
     /**
@@ -229,6 +226,15 @@ export class LiveViewer {
     }
 
     update(): void {
+        if (!this.gameState || !this.renderer) return;
+        if (this._rafId) cancelAnimationFrame(this._rafId);
+        this._rafId = requestAnimationFrame(() => {
+            this._rafId = 0;
+            this.updateImmediate();
+        });
+    }
+
+    updateImmediate(): void {
         if (!this.gameState || !this.renderer) return;
         const state = this.gameState.getState();
         this.renderer.render(state, this.debugPanel);
