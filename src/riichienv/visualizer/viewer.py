@@ -374,6 +374,12 @@ class GameViewer:
         self.freeze = freeze
 
     @classmethod
+    def from_env(
+        cls, env: Any, step: int | None = None, perspective: int | None = None, freeze: bool = False
+    ) -> HTML:
+        return cls(env.mjai_log, step=step, perspective=perspective, freeze=freeze).show()
+
+    @classmethod
     def from_jsonl(
         cls, path: str, step: int | None = None, perspective: int | None = None, freeze: bool = False
     ) -> HTML:
