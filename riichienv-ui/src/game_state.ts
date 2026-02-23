@@ -349,6 +349,7 @@ export class GameState {
     reset() {
         this.cursor = 0;
         this.current = this.initialState();
+        this.stateCache.clear();
     }
 
     /** Deep clone a BoardState for checkpoint caching. */

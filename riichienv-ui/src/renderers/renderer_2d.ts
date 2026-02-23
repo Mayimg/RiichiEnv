@@ -50,9 +50,17 @@ export class Renderer2D implements IRenderer {
         this.boardElement.style.transform = `translate(-50%, -50%) scale(${scale})`;
     }
 
-    /** Ensure persistent board structure exists. Creates slots on first call. */
+    /** Ensure persistent board structure exists. Creates slots on first call. Rebuilds if player count changes. */
     private ensureBoardStructure(pc: number): void {
         if (this.boardElement && this.centerSlot && this.playerWrappers.length === pc) return;
+
+        // Player count changed — tear down existing slots before rebuilding
+        if (this.boardElement && this.playerWrappers.length > 0 && this.playerWrappers.length !== pc) {
+            if (this.centerSlot) { this.centerSlot.remove(); this.centerSlot = null; }
+            this.playerWrappers.forEach(w => w.remove());
+            this.playerWrappers = [];
+            this.playerDivs = [];
+        }
 
         if (!this.boardElement) {
             this.boardElement = document.createElement('div');
@@ -118,7 +126,9 @@ export class Renderer2D implements IRenderer {
         // content-visibility: hidden tells the browser to skip layout/paint/style
         // for all descendants while we mutate the DOM. On restore, only a single
         // style recalc pass is performed instead of incremental per-mutation recalcs.
-        board.style.contentVisibility = 'hidden';
+        if ('contentVisibility' in board.style) {
+            (board.style as any).contentVisibility = 'hidden';
+        }
 
         // Clear modals only if we had one previously
         if (this.hadModal) {
@@ -127,11 +137,9 @@ export class Renderer2D implements IRenderer {
             this.hadModal = false;
         }
 
-        // Update center slot content via DocumentFragment (avoids incremental reflows)
+        // Update center slot content
         const center = CenterRenderer.renderCenter(state, this.onCenterClick, this.viewpoint);
-        const centerFrag = document.createDocumentFragment();
-        centerFrag.appendChild(center);
-        this.centerSlot!.replaceChildren(centerFrag);
+        this.centerSlot!.replaceChildren(center);
 
         const angles = this.layout.playerAngles;
 
@@ -264,7 +272,9 @@ export class Renderer2D implements IRenderer {
         });
 
         // Restore rendering — triggers a single style recalc for the entire board
-        board.style.contentVisibility = '';
+        if ('contentVisibility' in board.style) {
+            (board.style as any).contentVisibility = '';
+        }
 
         // End Kyoku Modal
         if (state.lastEvent && state.lastEvent.type === 'end_kyoku' && state.lastEvent.meta) {

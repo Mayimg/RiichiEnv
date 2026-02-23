@@ -157,10 +157,6 @@ export const VIEWER_CSS = `
         from { opacity: 0; }
         to { opacity: 1; }
     }
-    @keyframes fadeIn {
-        from { opacity: 0; }
-        to { opacity: 1; }
-    }
 
     .player-info-box {
         background: rgba(0,0,0,0.6);
@@ -269,7 +265,7 @@ export const VIEWER_CSS = `
         display: flex;
         align-items: center;
         justify-content: center;
-        animation: fadeIn 0.3s;
+        animation: fade-in 0.3s;
     }
     .re-modal-title { 
         font-size: 1.5em; 

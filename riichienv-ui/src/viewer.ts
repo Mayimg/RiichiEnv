@@ -42,11 +42,7 @@ export class Viewer {
         this.log = log;
 
         // Start WASM initialization in background (non-blocking)
-        initWasm().then(() => {
-            console.log('[Viewer] WASM module loaded successfully');
-        }).catch(() => {
-            console.warn('[Viewer] WASM unavailable, falling back to metadata');
-        });
+        initWasm().catch(() => {});
 
         // ... (styles) ...
         this.container.innerHTML = '';

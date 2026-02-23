@@ -32,12 +32,8 @@ export class LiveViewer {
         if (!el) throw new Error(`Container #${containerId} not found`);
         this.container = el;
 
-        // Start WASM initialization in background
-        initWasm().then(() => {
-            console.log('[LiveViewer] WASM module loaded');
-        }).catch(e => {
-            console.warn('[LiveViewer] WASM load failed, continuing without:', e);
-        });
+        // Start WASM initialization in background (non-blocking)
+        initWasm().catch(() => {});
 
         this.container.innerHTML = '';
         Object.assign(this.container.style, {
