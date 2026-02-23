@@ -423,14 +423,16 @@ class GameViewer:
         rounds = []
         for ev in self.log:
             if ev.get("type") == "start_kyoku":
-                rounds.append({
-                    "round_idx": len(rounds),
-                    "bakaze": ev.get("bakaze", "E"),
-                    "kyoku": ev.get("kyoku", 1),
-                    "honba": ev.get("honba", 0),
-                    "oya": ev.get("oya", 0),
-                    "scores": ev.get("scores", []),
-                })
+                rounds.append(
+                    {
+                        "round_idx": len(rounds),
+                        "bakaze": ev.get("bakaze", "E"),
+                        "kyoku": ev.get("kyoku", 1),
+                        "honba": ev.get("honba", 0),
+                        "oya": ev.get("oya", 0),
+                        "scores": ev.get("scores", []),
+                    }
+                )
         return rounds
 
     def get_results(self, round_idx: int) -> list[WinResult]:
