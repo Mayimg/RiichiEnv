@@ -1,23 +1,27 @@
-import { BoardState, PlayerState } from './types';
-import { TILES } from './tiles';
-import { VIEWER_CSS } from './styles';
-import { TileRenderer } from './renderers/tile_renderer';
-import { RiverRenderer } from './renderers/river_renderer';
-import { HandRenderer } from './renderers/hand_renderer';
-import { InfoRenderer } from './renderers/info_renderer';
-import { CenterRenderer } from './renderers/center_renderer';
-import { ResultRenderer } from './renderers/result_renderer';
+import { BoardState, PlayerState } from '../types';
+import { TILES } from '../tiles';
+import { VIEWER_CSS } from '../styles';
+import { LayoutConfig, createLayoutConfig4P } from '../config';
+import { IRenderer } from './renderer_interface';
+import { TileRenderer } from './tile_renderer';
+import { RiverRenderer } from './river_renderer';
+import { HandRenderer } from './hand_renderer';
+import { InfoRenderer } from './info_renderer';
+import { CenterRenderer } from './center_renderer';
+import { ResultRenderer } from './result_renderer';
 
 
 
-export class Renderer {
+export class Renderer2D implements IRenderer {
     container: HTMLElement;
     private boardElement: HTMLElement | null = null;
     private styleElement: HTMLStyleElement | null = null;
+    private layout: LayoutConfig;
     viewpoint: number = 0;
 
-    constructor(container: HTMLElement) {
+    constructor(container: HTMLElement, layout?: LayoutConfig) {
         this.container = container;
+        this.layout = layout ?? createLayoutConfig4P();
 
         let style = document.getElementById('riichienv-viewer-style') as HTMLStyleElement;
         if (!style) {
@@ -33,22 +37,23 @@ export class Renderer {
 
     onViewpointChange: ((pIdx: number) => void) | null = null;
     onCenterClick: (() => void) | null = null;
-    private readonly BASE_SIZE = 800;
 
     resize(width: number) {
         if (!this.boardElement) return;
-        const scale = width / this.BASE_SIZE;
+        const scale = width / this.layout.boardSize;
         this.boardElement.style.transform = `translate(-50%, -50%) scale(${scale})`;
     }
 
     render(state: BoardState, debugPanel?: HTMLElement) {
+        const pc = state.playerCount;
+
         // Reuse board element to prevent flickering
         if (!this.boardElement) {
             this.boardElement = document.createElement('div');
             this.boardElement.className = 'mahjong-board';
             Object.assign(this.boardElement.style, {
-                width: `${this.BASE_SIZE}px`,
-                height: `${this.BASE_SIZE}px`,
+                width: `${this.layout.boardSize}px`,
+                height: `${this.layout.boardSize}px`,
                 position: 'absolute',
                 top: '50%',
                 left: '50%',
@@ -59,7 +64,7 @@ export class Renderer {
         }
         const board = this.boardElement;
 
-        console.log("[Renderer] render() called. State:", {
+        console.log("[Renderer2D] render() called. State:", {
             round: state.round,
             players: state.players.length,
             doraMarkers: state.doraMarkers,
@@ -76,10 +81,10 @@ export class Renderer {
         const center = CenterRenderer.renderCenter(state, this.onCenterClick, this.viewpoint);
         board.appendChild(center);
 
-        const angles = [0, -90, 180, 90];
+        const angles = this.layout.playerAngles;
 
         state.players.forEach((p, i) => {
-            const relIndex = (i - this.viewpoint + 4) % 4;
+            const relIndex = (i - this.viewpoint + pc) % pc;
 
             const wrapper = document.createElement('div');
             Object.assign(wrapper.style, {
@@ -190,7 +195,7 @@ export class Renderer {
             riverRow.appendChild(riverDiv);
             pDiv.appendChild(riverRow);
 
-            // Info Box (New Overlay) - Anchored to pDiv 
+            // Info Box (New Overlay) - Anchored to pDiv
             const infoBox = InfoRenderer.renderPlayerInfo(p, i, this.viewpoint, state.currentActor, this.onViewpointChange || (() => { }));
             pDiv.appendChild(infoBox);
 
@@ -219,7 +224,7 @@ export class Renderer {
                 dAnim = state.dahaiAnim;
             }
 
-            const hand = HandRenderer.renderHand(playerState.hand, playerState.melds, i, activeWaits, hasDraw, dAnim, shouldAnimate);
+            const hand = HandRenderer.renderHand(playerState.hand, playerState.melds, i, activeWaits, hasDraw, dAnim, shouldAnimate, pc);
 
             pDiv.appendChild(hand);
 

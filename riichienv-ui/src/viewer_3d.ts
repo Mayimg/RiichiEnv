@@ -1,16 +1,19 @@
 import { GameState } from './game_state';
+import { GameConfig, LayoutConfig3D, createGameConfig4P, createLayout3DConfig4P } from './config';
 import { COLORS } from './constants';
-import { Renderer } from './renderer';
+import { Renderer3D } from './renderers/renderer_3d';
+import { IRenderer } from './renderers/renderer_interface';
 import { MjaiEvent } from './types';
 import { ReplayController } from './controller';
+import { initWasm } from './wasm/loader';
 import {
     ICON_EYE, ICON_ARROW_LEFT, ICON_ARROW_RIGHT,
     ICON_CHEVRON_LEFT, ICON_CHEVRON_RIGHT, ICON_PLAY_PAUSE
 } from './icons';
 
-export class Viewer {
+export class Viewer3D {
     gameState: GameState;
-    renderer: Renderer;
+    renderer: IRenderer;
     container: HTMLElement;
     log: MjaiEvent[];
     controller!: ReplayController;
@@ -18,15 +21,34 @@ export class Viewer {
     isFrozen: boolean = false;
 
     debugPanel!: HTMLElement;
+    private viewArea!: HTMLElement;
 
-    constructor(containerId: string, log: MjaiEvent[], initialStep?: number, perspective?: number, freeze: boolean = false) {
+    constructor(
+        containerId: string,
+        log: MjaiEvent[],
+        initialStep?: number,
+        perspective?: number,
+        freeze: boolean = false,
+        config?: GameConfig,
+        layout?: LayoutConfig3D
+    ) {
+        const gc = config ?? createGameConfig4P();
+        const lc = layout ?? createLayout3DConfig4P();
+
         this.isFrozen = freeze;
         const el = document.getElementById(containerId);
         if (!el) throw new Error(`Container #${containerId} not found`);
         this.container = el;
         this.log = log;
 
-        // ... (styles) ...
+        // Start WASM initialization in background (non-blocking)
+        initWasm().then(() => {
+            console.log('[Viewer3D] WASM module loaded successfully');
+        }).catch(() => {
+            console.warn('[Viewer3D] WASM unavailable, falling back to metadata');
+        });
+
+        // Setup container
         this.container.innerHTML = '';
         Object.assign(this.container.style, {
             display: 'block',
@@ -61,7 +83,7 @@ export class Viewer {
         });
         scrollContainer.appendChild(scaleWrapper);
 
-        // 2b. Content Wrapper 
+        // 2b. Content Wrapper (16:9 aspect ratio)
         const contentWrapper = document.createElement('div');
         Object.assign(contentWrapper.style, {
             display: 'flex',
@@ -70,49 +92,54 @@ export class Viewer {
             position: 'absolute',
             top: '0',
             left: '0',
-            width: '970px',
-            height: '900px',
+            width: `${lc.contentWidth}px`,
+            height: `${lc.contentHeight}px`,
             flexShrink: '0',
             transformOrigin: 'top left'
         });
         scaleWrapper.appendChild(contentWrapper);
 
-        // 3. View Area
+        // 3. View Area (full 16:9 — sidebar is overlay)
         const viewArea = document.createElement('div');
         viewArea.id = `${containerId}-board`;
         Object.assign(viewArea.style, {
-            width: '880px',
-            height: '880px',
+            width: `${lc.viewAreaWidth}px`,
+            height: `${lc.viewAreaHeight}px`,
             position: 'relative',
-            backgroundColor: COLORS.boardBackground,
-            boxShadow: '0 0 20px rgba(0,0,0,0.5)',
-            flexShrink: '0'
+            backgroundColor: '#000',
+            flexShrink: '0',
+            overflow: 'hidden',
+            outline: 'none'
         });
+        viewArea.tabIndex = 0;
         contentWrapper.appendChild(viewArea);
+        this.viewArea = viewArea;
 
-        // 4. Sidebar
+        // 4. Controls (overlay, bottom-right inside viewArea, 2-column grid)
         const rightSidebar = document.createElement('div');
-        rightSidebar.id = 'controls';
+        rightSidebar.id = `${containerId}-controls`;
         Object.assign(rightSidebar.style, {
-            width: '40px',
-            backgroundColor: '#000000ff',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '10px',
-            padding: '10px 10px',
-            marginTop: '20px',
+            position: 'absolute',
+            bottom: '20%',
+            right: '20%',
+            backgroundColor: 'rgba(0,0,0,0.65)',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, auto)',
+            gap: '6px',
+            padding: '8px',
             alignItems: 'center',
+            justifyItems: 'center',
             flexShrink: '0',
             zIndex: '500',
-            height: 'auto',
-            borderRadius: '0 12px 12px 0',
-            marginLeft: '0px'
+            borderRadius: '10px',
+            backdropFilter: 'blur(4px)'
         });
-        contentWrapper.appendChild(rightSidebar);
+        viewArea.appendChild(rightSidebar);
 
+        // Debug panel
         this.debugPanel = document.createElement('div');
         this.debugPanel.className = 'debug-panel';
-        this.debugPanel.id = 'log-panel';
+        this.debugPanel.id = `${containerId}-log-panel`;
         Object.assign(this.debugPanel.style, {
             position: 'absolute',
             top: '0',
@@ -122,7 +149,7 @@ export class Viewer {
         });
         viewArea.appendChild(this.debugPanel);
 
-        // Helper to create buttons with SVG
+        // Helper to create SVG icon buttons
         const createBtn = (id: string, svgContent: string, tooltip: string): HTMLDivElement => {
             const btn = document.createElement('div');
             btn.id = id;
@@ -142,26 +169,23 @@ export class Viewer {
             return btn;
         };
 
-        console.log("[Viewer] Initializing GameState with log length:", log.length);
-        this.gameState = new GameState(log);
-        console.log("[Viewer] GameState initialized. Current event index:", this.gameState.current.eventIndex);
+        console.log("[Viewer3D] Initializing GameState with log length:", log.length);
+        this.gameState = new GameState(log, gc);
+        console.log("[Viewer3D] GameState initialized. Current event index:", this.gameState.current.eventIndex);
 
-        console.log("[Viewer] Initializing Renderer");
-        this.renderer = new Renderer(viewArea);
+        console.log("[Viewer3D] Initializing Renderer3D");
+        this.renderer = new Renderer3D(viewArea, lc);
 
-        // Create Buttons
+        // Apply initial viewpoint
         if (typeof perspective === 'number') {
             this.renderer.viewpoint = perspective;
         }
 
-        // Create Buttons
-        // Create Buttons
+        // Create control buttons
         if (!this.isFrozen) {
             const btnLog = createBtn('btn-log', ICON_EYE, "Debug");
             btnLog.onclick = () => this.controller.toggleLog(btnLog, this.debugPanel);
             rightSidebar.appendChild(btnLog);
-
-
 
             const btnPTurn = createBtn('btn-pturn', ICON_ARROW_LEFT, "Prev Round");
             btnPTurn.onclick = () => this.controller.prevTurn();
@@ -185,14 +209,18 @@ export class Viewer {
 
             // Hidden button for Round Selector
             const rBtn = document.createElement('div');
-            rBtn.id = 'btn-round';
+            rBtn.id = `${containerId}-btn-round`;
             rBtn.style.display = 'none';
             rightSidebar.appendChild(rBtn);
 
             // Initialize Controller
             this.controller = new ReplayController(this);
-            this.controller.setupKeyboardControls(window);
+            this.controller.setupKeyboardControls(viewArea);
             this.controller.setupWheelControls(viewArea);
+
+            // Auto-focus on interaction for keyboard controls
+            viewArea.addEventListener('mouseenter', () => viewArea.focus());
+            viewArea.addEventListener('click', () => viewArea.focus());
         } else {
             rightSidebar.style.display = 'none';
         }
@@ -206,40 +234,31 @@ export class Viewer {
 
         if (typeof initialStep === 'number') {
             targetStep = initialStep;
-            console.log(`[Viewer] Initializing with explicit step: ${targetStep}`);
+            console.log(`[Viewer3D] Initializing with explicit step: ${targetStep}`);
         } else if (eventStepParam) {
             const parsed = parseInt(eventStepParam, 10);
             if (!isNaN(parsed)) {
                 targetStep = parsed;
-                console.log(`[Viewer] Initializing with permalink step: ${targetStep}`);
+                console.log(`[Viewer3D] Initializing with permalink step: ${targetStep}`);
             }
         }
 
         if (targetStep !== -1) {
-            // Note: jumpTo internally clamps values
             this.gameState.jumpTo(targetStep);
-            this.update(); // Initial update happens at end of constructor, but we set state here
+            this.update();
         }
 
-        // Resize Logic to scale the entire content (Board + Sidebar)
-        // We use ResizeObserver on the container to detect size changes.
+        // Resize Logic — scale to fit 16:9 content
+        const baseW = lc.contentWidth;
+        const baseH = lc.contentHeight;
+
         const resizeObserver = new ResizeObserver((entries) => {
             for (const entry of entries) {
-                // this.container.clientWidth reflects the PARENT's constraint.
-
                 const availableW = entry.contentRect.width;
-                // For height, we might not be constrained by parent height in Jupyter (it grows).
-                // But we want to fit within window height if it's full screen.
-                // If Jupyter, height is usually auto.
-                // If we use window.innerHeight, we ensure it doesn't get taller than the viewport.
-                const availableH = window.innerHeight; // Still useful to prevent being too tall
+                const availableH = window.innerHeight;
 
                 if (availableW === 0) continue;
 
-                const baseW = 970;
-                const baseH = 900;
-
-                // Calculate scale
                 const scale = Math.min(availableW / baseW, availableH / baseH, 1.0);
 
                 contentWrapper.style.transform = `scale(${scale})`;
@@ -249,31 +268,22 @@ export class Viewer {
 
                 scaleWrapper.style.width = `${finalW}px`;
                 scaleWrapper.style.height = `${finalH}px`;
-
-                // We do NOT touch this.container dimensions here. 
-                // It will shrink-wrap scaleWrapper height naturally if display: block/flex.
             }
         });
 
         resizeObserver.observe(this.container);
 
-
-        // Handle window resize to update vertical scaling if needed
+        // Handle window resize
         window.addEventListener('resize', () => {
             const availableW = this.container.clientWidth;
             const availableH = window.innerHeight;
-            const baseW = 970; const baseH = 900;
             const scale = Math.min(availableW / baseW, availableH / baseH, 1.0);
             contentWrapper.style.transform = `scale(${scale})`;
             scaleWrapper.style.width = `${Math.floor(baseW * scale)}px`;
             scaleWrapper.style.height = `${Math.floor(baseH * scale)}px`;
         });
 
-        // Wire up buttons - Moved to creation block to handle freeze safely and avoid ID collisions.
-
-        // Ensure log panel is initially hidden if desired, or handled by controller.
-
-        // Handle Viewpoint Change from Renderer (Click on Player Info)
+        // Handle Viewpoint Change from Renderer (Click on Score Panel)
         if (!this.isFrozen) {
             this.renderer.onViewpointChange = (pIdx: number) => {
                 if (this.renderer.viewpoint !== pIdx) {
@@ -290,11 +300,13 @@ export class Viewer {
             };
         }
 
-        console.log("[Viewer] Calling first update()");
+        console.log("[Viewer3D] Calling first update()");
         this.update();
     }
 
     showRoundSelector() {
+        const pc = this.gameState.config.playerCount;
+
         // Create Modal Overlay
         const overlay = document.createElement('div');
         overlay.className = 're-modal-overlay';
@@ -315,18 +327,14 @@ export class Viewer {
         const table = document.createElement('table');
         table.className = 're-kyoku-table';
 
-        // Header
+        // Header - dynamic columns based on player count
         const thead = document.createElement('thead');
-        thead.innerHTML = `
-            <tr>
-                <th>Round</th>
-                <th>Honba</th>
-                <th>P0 Score</th>
-                <th>P1 Score</th>
-                <th>P2 Score</th>
-                <th>P3 Score</th>
-            </tr>
-        `;
+        const headerRow = document.createElement('tr');
+        headerRow.innerHTML = '<th>Round</th><th>Honba</th>';
+        for (let i = 0; i < pc; i++) {
+            headerRow.innerHTML += `<th>P${i} Score</th>`;
+        }
+        thead.appendChild(headerRow);
         table.appendChild(thead);
 
         const tbody = document.createElement('tbody');
@@ -341,18 +349,20 @@ export class Viewer {
             };
 
             // Round Name
-            const winds = ['E', 'S', 'W', 'N'];
-            const w = winds[Math.floor(k.round / 4)];
-            const rNum = (k.round % 4) + 1;
+            const winds = this.gameState.config.winds;
+            const w = winds[Math.floor(k.round / pc)] || winds[0];
+            const rNum = (k.round % pc) + 1;
             const roundStr = `${w}${rNum}`;
+
+            let scoresCells = '';
+            for (let i = 0; i < pc; i++) {
+                scoresCells += `<td>${k.scores[i] ?? '-'}</td>`;
+            }
 
             tr.innerHTML = `
                 <td>${roundStr}</td>
                 <td>${k.honba}</td>
-                <td>${k.scores[0]}</td>
-                <td>${k.scores[1]}</td>
-                <td>${k.scores[2]}</td>
-                <td>${k.scores[3]}</td>
+                ${scoresCells}
             `;
             tbody.appendChild(tr);
         });
@@ -360,15 +370,12 @@ export class Viewer {
         content.appendChild(table);
 
         overlay.appendChild(content);
-        this.container.appendChild(overlay);
+        this.viewArea.appendChild(overlay);
     }
 
     update() {
         if (!this.gameState || !this.renderer) return;
         const state = this.gameState.getState();
         this.renderer.render(state, this.debugPanel);
-        // Update URL/History?
     }
 }
-
-(window as any).RiichiEnvViewer = Viewer;

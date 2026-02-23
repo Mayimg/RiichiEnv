@@ -4,16 +4,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RiichiEnv Viewer Dev</title>
+    <title>RiichiEnv 3D Viewer Dev</title>
     <style>
         body {
             margin: 0;
+            background: #000;
         }
     </style>
 </head>
 
 <body>
-    <div id="viewer-container" style="width: 100%; min-height: 600px; border: 1px solid #ddd;"></div>
+    <div id="viewer-container" style="width: 100%; min-height: 600px;"></div>
 
     <!-- Load the built viewer script -->
     <script src="dist/viewer.js"></script>
@@ -22,18 +23,17 @@
         async function loadReplay() {
             try {
                 // Fetch the example log
-                const response = await fetch('example_after_injection.jsonl');
+                const response = await fetch('example_before_injection.jsonl');
                 const text = await response.text();
 
                 // Parse JSONL
                 const events = text.trim().split('\n').map(line => JSON.parse(line));
 
-                // Initialize Viewer
-                // The viewer script exposes RiichiEnvViewer globally
-                if (window.RiichiEnvViewer) {
-                    new window.RiichiEnvViewer('viewer-container', events);
+                // Initialize 3D Viewer
+                if (window.RiichiEnv3DViewer) {
+                    new window.RiichiEnv3DViewer('viewer-container', events);
                 } else {
-                    console.error('RiichiEnvViewer not found');
+                    console.error('RiichiEnv3DViewer not found');
                 }
             } catch (err) {
                 console.error('Failed to load replay:', err);

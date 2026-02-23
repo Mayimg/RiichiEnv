@@ -247,7 +247,6 @@ const SANMA_VALID_TILE_TYPES: [u32; 27] = [
 ];
 
 /// Calculate shanten from 136-tile ID hand.
-#[cfg(feature = "python")]
 pub fn calculate_shanten(hand_tiles: &[u32]) -> i32 {
     let mut tile_counts = [0u8; TILE_MAX];
     for &tile in hand_tiles {

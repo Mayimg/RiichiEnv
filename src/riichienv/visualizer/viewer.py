@@ -434,10 +434,10 @@ class Replay:
                     const initialStep = {self.step if self.step is not None else "undefined"};
                     const perspective = {self.perspective if self.perspective is not None else "undefined"};
                     const freeze = {"true" if self.freeze else "false"};
-                    if (window.RiichiEnvViewer) {{
-                        new window.RiichiEnvViewer("{unique_id}", logData, initialStep, perspective, freeze);
+                    if (window.RiichiEnv3DViewer) {{
+                        new window.RiichiEnv3DViewer("{unique_id}", logData, initialStep, perspective, freeze);
                     }} else {{
-                        throw new Error("RiichiEnvViewer global not found after injection");
+                        throw new Error("RiichiEnv3DViewer global not found after injection");
                     }}
                 }} catch (e) {{
                     console.error("RiichiEnv Viewer Error:", e);
@@ -446,7 +446,7 @@ class Replay:
             }};
 
             // Check if global exists AND matches expected hash
-            if (window.RiichiEnvViewer && window.RiichiEnvViewerHash === expectedHash) {{
+            if (window.RiichiEnv3DViewer && window.RiichiEnvViewerHash === expectedHash) {{
                 runViewer("");
             }} else {{
                 // Decompress and load New Code

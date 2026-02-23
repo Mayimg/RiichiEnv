@@ -1,4 +1,7 @@
-import { MjaiEvent, PlayerState, BoardState } from './types';
+import { MjaiEvent, PlayerState, BoardState, ConditionTracker } from './types';
+import { calculateWaits, calculateScore, mjaiToTileId, tileIdToMjai, MeldInput, ConditionsInput } from './wasm/bridge';
+import { isWasmReady } from './wasm/loader';
+import { GameConfig, createGameConfig4P } from './config';
 
 // Helper to sort hand (simple alphanumeric sort for now, ideally strictly by tile order)
 const sortHand = (hand: string[]) => {
@@ -45,15 +48,40 @@ const sortHand = (hand: string[]) => {
     return [...hand].sort((a, b) => order(a) - order(b));
 };
 
+/** Convert PlayerState melds to WASM MeldInput format (136-encoding). */
+function meldsToWasmInput(melds: { type: string; tiles: string[]; from: number }[]): MeldInput[] {
+    return melds.map(m => ({
+        meld_type: m.type,
+        tiles: m.tiles
+            .map(t => mjaiToTileId(t))
+            .filter((id): id is number => id !== null)
+    }));
+}
+
+/** Create a fresh ConditionTracker. */
+function initialConditions(playerCount: number = 4): ConditionTracker {
+    return {
+        ippatsu: Array(playerCount).fill(false),
+        afterKan: false,
+        pendingChankan: false,
+        callsMade: false,
+        firstTurnCompleted: Array(playerCount).fill(false),
+        turnCount: 0,
+        doubleRiichi: Array(playerCount).fill(false),
+    };
+}
+
 export class GameState {
     events: MjaiEvent[];
     cursor: number;
     kyokus: { index: number, round: number, honba: number, scores: number[] }[];
+    readonly config: GameConfig;
 
     // Cache state at each step to allow fast jumping
     current: BoardState;
 
-    constructor(events: MjaiEvent[]) {
+    constructor(events: MjaiEvent[], config?: GameConfig) {
+        this.config = config ?? createGameConfig4P();
         // Filter out null events and start/end game events
         this.events = events.filter(e => e && e.type !== 'start_game' && e.type !== 'end_game');
         this.cursor = 0;
@@ -88,7 +116,7 @@ export class GameState {
                     index: i,
                     round: this.getRoundIndex(e),
                     honba: e.honba || 0,
-                    scores: e.scores || [25000, 25000, 25000, 25000]
+                    scores: e.scores || this.config.defaultScores
                 });
             }
         });
@@ -96,12 +124,14 @@ export class GameState {
     }
 
     initialState(): BoardState {
+        const pc = this.config.playerCount;
         return {
-            players: Array(4).fill(0).map(() => ({
+            playerCount: pc,
+            players: Array(pc).fill(0).map((_, i) => ({
                 hand: [],
                 discards: [],
                 melds: [],
-                score: 25000,
+                score: this.config.defaultScores[i],
                 riichi: false,
                 pendingRiichi: false,
                 wind: 0
@@ -110,10 +140,11 @@ export class GameState {
             round: 0,
             honba: 0,
             kyotaku: 0,
-            wallRemaining: 70,
+            wallRemaining: this.config.initialWallRemaining,
             currentActor: 0,
             eventIndex: 0,
-            totalEvents: this.events.length
+            totalEvents: this.events.length,
+            conditions: initialConditions(pc),
         };
     }
 
@@ -234,6 +265,30 @@ export class GameState {
         return false;
     }
 
+    /**
+     * Append a single event incrementally (for live mode).
+     * Automatically advances the cursor to the latest event.
+     */
+    appendEvent(event: MjaiEvent): void {
+        if (!event || event.type === 'start_game' || event.type === 'end_game') return;
+
+        this.events.push(event);
+        this.current.totalEvents = this.events.length;
+
+        if (event.type === 'start_kyoku') {
+            this.kyokus.push({
+                index: this.events.length - 1,
+                round: this.getRoundIndex(event),
+                honba: event.honba || 0,
+                scores: event.scores || this.config.defaultScores
+            });
+        }
+
+        this.processEvent(event);
+        this.cursor++;
+        this.current.eventIndex = this.cursor;
+    }
+
     reset() {
         this.cursor = 0;
         this.current = this.initialState();
@@ -242,10 +297,11 @@ export class GameState {
     private getRoundIndex(e: MjaiEvent): number {
         const kyoku = (e.kyoku || 1) - 1;
         const bakaze = e.bakaze || 'E';
+        const pc = this.config.playerCount;
         let offset = 0;
-        if (bakaze === 'S') offset = 4;
-        else if (bakaze === 'W') offset = 8;
-        else if (bakaze === 'N') offset = 12;
+        if (bakaze === 'S') offset = pc;
+        else if (bakaze === 'W') offset = pc * 2;
+        else if (bakaze === 'N') offset = pc * 3;
         return offset + kyoku;
     }
 
@@ -262,6 +318,8 @@ export class GameState {
                 this.current.kyotaku = e.kyotaku || 0;
                 this.current.doraMarkers = [e.dora_marker];
                 this.current.currentActor = e.oya;
+                this.current.wallRemaining = this.config.initialWallRemaining;
+                this.current.conditions = initialConditions(this.config.playerCount);
                 this.current.players.forEach((p, i) => {
                     p.hand = sortHand(e.tehais[i].map((t: string) => t)); // Clone and sort
                     p.discards = [];
@@ -271,7 +329,7 @@ export class GameState {
                     p.score = e.scores[i];
                     p.waits = undefined;
                     // Assign wind based on oya
-                    p.wind = (i - e.oya + 4) % 4;
+                    p.wind = (i - e.oya + this.config.playerCount) % this.config.playerCount;
                     p.lastDrawnTile = undefined;
                 });
                 break;
@@ -282,12 +340,17 @@ export class GameState {
                     this.current.players[e.actor].lastDrawnTile = e.pai;
                     // Do NOT sort hand here in renderer
                     this.current.currentActor = e.actor;
+                    this.current.wallRemaining--;
+                    // Clear pendingChankan on tsumo (rinshan draw after kan)
+                    this.current.conditions.pendingChankan = false;
+                    this.current.conditions.chankanTarget = undefined;
                 }
                 break;
 
             case 'dahai':
                 if (e.actor !== undefined && e.pai) {
                     const p = this.current.players[e.actor];
+                    const cond = this.current.conditions;
                     const discardIdx = p.hand.indexOf(e.pai);
                     // Note: discardIdx might be -1 if not found (shouldn't happen in valid)
 
@@ -332,7 +395,37 @@ export class GameState {
 
 
                     p.discards.push({ tile: e.pai, isRiichi, isTsumogiri: !!e.tsumogiri });
-                    p.waits = e.meta?.waits;
+
+                    // Condition tracking
+                    if (!cond.firstTurnCompleted[e.actor]) {
+                        cond.firstTurnCompleted[e.actor] = true;
+                    }
+                    cond.turnCount++;
+                    cond.ippatsu[e.actor] = false;  // Turn passed without winning
+                    cond.afterKan = false;
+
+                    // WASM-first waits computation with melds
+                    p.waits = undefined;
+                    if (isWasmReady()) {
+                        const tileIds = p.hand
+                            .map(t => mjaiToTileId(t))
+                            .filter((id): id is number => id !== null);
+                        const meldInputs = meldsToWasmInput(p.melds);
+                        const expectedLen = 13 - meldInputs.length * 3;
+                        if (tileIds.length === expectedLen) {
+                            const waits34 = calculateWaits(tileIds, meldInputs);
+                            if (waits34 && waits34.length > 0) {
+                                p.waits = waits34
+                                    .map(t34 => tileIdToMjai(t34 * 4))
+                                    .filter((s): s is string => s !== null);
+                            }
+                        }
+                    }
+                    // Fallback to meta only if WASM did not produce waits
+                    if (!p.waits) {
+                        p.waits = e.meta?.waits || undefined;
+                    }
+
                     this.current.currentActor = e.actor;
                 }
                 break;
@@ -367,6 +460,14 @@ export class GameState {
                             targetP.pendingRiichi = true;
                         }
                     }
+
+                    // Condition tracking for calls
+                    const cond = this.current.conditions;
+                    cond.callsMade = true;
+                    cond.ippatsu = Array(this.config.playerCount).fill(false);
+                    if (e.type === 'daiminkan') {
+                        cond.afterKan = true;
+                    }
                 }
                 break;
 
@@ -383,6 +484,12 @@ export class GameState {
                         from: e.actor
                     });
                     p.waits = undefined;
+
+                    // Condition tracking
+                    const cond = this.current.conditions;
+                    cond.callsMade = true;
+                    cond.ippatsu = Array(this.config.playerCount).fill(false);
+                    cond.afterKan = true;
                 }
                 break;
 
@@ -414,6 +521,15 @@ export class GameState {
                             from: e.actor
                         });
                     }
+
+                    // Condition tracking
+                    const cond = this.current.conditions;
+                    cond.callsMade = true;
+                    cond.ippatsu = Array(this.config.playerCount).fill(false);
+                    cond.afterKan = true;
+                    cond.pendingChankan = true;
+                    cond.chankanTarget = e.actor;
+
                     p.waits = undefined;
                 }
                 break;
@@ -436,6 +552,15 @@ export class GameState {
                         this.current.kyotaku += 1;
                         this.current.players[e.actor].score -= 1000;
                         this.current.players[e.actor].pendingRiichi = false;
+
+                        // Set ippatsu for this player
+                        this.current.conditions.ippatsu[e.actor] = true;
+
+                        // Check double riichi: no calls made and first turn not completed
+                        const cond = this.current.conditions;
+                        if (!cond.callsMade && !cond.firstTurnCompleted[e.actor]) {
+                            cond.doubleRiichi[e.actor] = true;
+                        }
                     }
                 }
                 break;
@@ -448,6 +573,19 @@ export class GameState {
 
             case 'hora':
             case 'ryukyoku':
+                // Capture conditions at hora time for WASM scoring at end_kyoku
+                if (e.type === 'hora' && e.actor !== undefined) {
+                    const cond = this.current.conditions;
+                    const isTsumo = (e.actor === e.target);
+                    e._horaConditions = {
+                        ippatsu: cond.ippatsu[e.actor],
+                        rinshan: isTsumo && cond.afterKan,
+                        chankan: !isTsumo && cond.pendingChankan && cond.chankanTarget !== e.actor,
+                        tsumoFirstTurn: !cond.callsMade && !cond.firstTurnCompleted[e.actor],
+                        doubleRiichi: cond.doubleRiichi[e.actor],
+                        wallRemaining: this.current.wallRemaining,
+                    };
+                }
                 if (e.scores) {
                     this.current.players.forEach((p, i) => p.score = e.scores[i]);
                 }
@@ -474,6 +612,25 @@ export class GameState {
                     };
                 }
 
+                // Build results from hora events if meta.results is missing
+                if (!e.meta?.results) {
+                    const horaResults: any[] = [];
+                    for (let i = this.cursor - 1; i >= 0; i--) {
+                        const prev = this.events[i];
+                        if (prev.type === 'start_kyoku') break;
+                        if (prev.type === 'hora') {
+                            horaResults.push({
+                                actor: prev.actor,
+                                target: prev.target,
+                            });
+                        }
+                    }
+                    if (horaResults.length > 0) {
+                        if (!e.meta) e.meta = {};
+                        e.meta.results = horaResults;
+                    }
+                }
+
                 // Enrich results with data from preceding hora events
                 if (e.meta && e.meta.results) {
                     e.meta.results.forEach((res: any) => {
@@ -491,6 +648,9 @@ export class GameState {
 
                             if (prev.type === 'hora') {
                                 if (prev.actor == res.actor) {
+                                    // Capture hora-time conditions for WASM scoring
+                                    res._horaConditions = prev._horaConditions;
+
                                     if (prev.pai) {
                                         res.winningTile = prev.pai;
                                         res.uraMarkers = prev.ura_markers;
@@ -498,7 +658,7 @@ export class GameState {
                                         break;
                                     } else {
                                         res.uraMarkers = prev.ura_markers; // Still capture ura markers if present
-                                        
+
                                         // Infer winning tile:
                                         // If Ron (target != actor), winning tile is last discard of target.
                                         // If Tsumo (target == actor), winning tile is last tsumo of actor.
@@ -538,9 +698,104 @@ export class GameState {
                             console.warn(`[ResultEnricher] Failed to find winning tile for actor ${res.actor}`);
                         }
                     });
+
+                    // WASM score computation for each result
+                    if (isWasmReady()) {
+                        this.computeScoresViaWasm(e.meta.results);
+                    }
                 }
                 break;
         }
         this.current.lastEvent = e;
+    }
+
+    /** Compute scores via WASM for each hora result at end_kyoku time. */
+    private computeScoresViaWasm(results: any[]) {
+        results.forEach((res: any) => {
+            const actor = res.actor;
+            const target = res.target;
+            const isTsumo = (actor === target);
+            const winningTile = res.winningTile;
+
+            if (winningTile === undefined) return; // Can't compute without winning tile
+
+            const player = this.current.players[actor];
+            const winTileId = mjaiToTileId(winningTile);
+            if (winTileId === null) return;
+
+            // Build hand tiles (136-encoding), excluding the winning tile for tsumo
+            let handForScoring = [...player.hand];
+            if (isTsumo) {
+                // For tsumo, hand has 14 tiles; remove the win tile to get 13
+                const winIdx = handForScoring.indexOf(winningTile);
+                if (winIdx >= 0) handForScoring.splice(winIdx, 1);
+            }
+
+            const tileIds = handForScoring
+                .map(t => mjaiToTileId(t))
+                .filter((id): id is number => id !== null);
+
+            const meldInputs = meldsToWasmInput(player.melds);
+
+            // Dora indicators
+            const doraIds = this.current.doraMarkers
+                .map(t => mjaiToTileId(t))
+                .filter((id): id is number => id !== null);
+
+            // Ura dora indicators
+            const uraIds = (res.uraMarkers || [])
+                .map((t: string) => mjaiToTileId(t))
+                .filter((id: number | null): id is number => id !== null);
+
+            // Build conditions from hora-time snapshot
+            const horaC = res._horaConditions || {};
+            const roundWind = Math.floor(this.current.round / this.config.playerCount); // 0=E, 1=S, 2=W, 3=N
+
+            const conditions: ConditionsInput = {
+                tsumo: isTsumo,
+                riichi: player.riichi,
+                double_riichi: horaC.doubleRiichi || false,
+                ippatsu: horaC.ippatsu || false,
+                haitei: (horaC.wallRemaining === 0) && isTsumo,
+                houtei: (horaC.wallRemaining === 0) && !isTsumo,
+                rinshan: horaC.rinshan || false,
+                chankan: horaC.chankan || false,
+                tsumo_first_turn: horaC.tsumoFirstTurn || false,
+                player_wind: player.wind,
+                round_wind: roundWind,
+                honba: this.current.honba,
+            };
+
+            const wasmResult = calculateScore(
+                tileIds,
+                meldInputs,
+                winTileId,
+                doraIds,
+                uraIds,
+                conditions
+            );
+
+            if (wasmResult && wasmResult.is_win) {
+                // Convert WASM result to renderer format
+                let points: number;
+                if (!isTsumo) {
+                    points = wasmResult.ron_agari;
+                } else if (player.wind === 0) {
+                    // Dealer tsumo
+                    points = wasmResult.tsumo_agari_ko * 3;
+                } else {
+                    // Non-dealer tsumo
+                    points = wasmResult.tsumo_agari_oya + wasmResult.tsumo_agari_ko * 2;
+                }
+
+                res.score = {
+                    han: wasmResult.han,
+                    fu: wasmResult.fu,
+                    points: points,
+                    yaku: wasmResult.yaku,
+                };
+            }
+            // If WASM failed, res.score retains its original meta value (fallback)
+        });
     }
 }

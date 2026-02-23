@@ -10,10 +10,10 @@ from riichienv.visualizer.viewer import MetadataInjector
 @pytest.fixture(scope="module")
 def enriched_log():
     # Use the .bak file as requested (now renamed)
-    path = os.path.join(os.path.dirname(__file__), "../tools/replay-visualizer/example_before_injection.jsonl")
+    path = os.path.join(os.path.dirname(__file__), "../riichienv-ui/example_before_injection.jsonl")
     if not os.path.exists(path):
         # Fallback if running from root relative path issues
-        path = "tools/replay-visualizer/example_before_injection.jsonl"
+        path = "riichienv-ui/example_before_injection.jsonl"
 
     with open(path, encoding="utf-8") as f:
         events = [json.loads(line) for line in f]

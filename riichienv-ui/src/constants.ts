@@ -25,5 +25,22 @@ export const COLORS = {
     text: '#ffffff',
     activePlayerBar: '#ffd700',
 
-    riverContainer: '#fff', // Or implicit? Actually river container layout doesn't use color?
+    riverContainer: '#fff',
+
+    callChiiBg: 'rgba(34, 139, 34, 0.85)',
+    callPonBg: 'rgba(30, 80, 180, 0.85)',
+    callKanBg: 'rgba(120, 50, 180, 0.85)',
+    callReachBg: 'rgba(220, 120, 20, 0.90)',
+    callHoraBg: 'rgba(200, 30, 30, 0.90)',
+    callDefaultBg: 'rgba(0, 0, 0, 0.6)',
+};
+
+export const CALL_TYPES: { [key: string]: { label: string; cssClass?: string } } = {
+    chi:       { label: 'Chii',  cssClass: 'call-chii' },
+    pon:       { label: 'Pon',   cssClass: 'call-pon' },
+    kan:       { label: 'Kan',   cssClass: 'call-kan' },
+    ankan:     { label: 'Kan',   cssClass: 'call-kan' },
+    daiminkan: { label: 'Kan',   cssClass: 'call-kan' },
+    kakan:     { label: 'Kan',   cssClass: 'call-kan' },
+    reach:     { label: 'Riichi', cssClass: 'call-reach' },
 };

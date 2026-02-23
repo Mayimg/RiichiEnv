@@ -1,12 +1,22 @@
-import { Viewer } from './index';
+import { GameState } from './game_state';
+import { IRenderer } from './renderers/renderer_interface';
+
+/** Common interface for Viewer and Viewer3D, consumed by ReplayController. */
+export interface ViewerLike {
+    gameState: GameState;
+    renderer: IRenderer;
+    debugPanel: HTMLElement;
+    isFrozen: boolean;
+    update(): void;
+}
 
 export class ReplayController {
-    viewer: Viewer;
+    viewer: ViewerLike;
     autoPlayTimer: number | null = null;
     private logBtn: HTMLElement | null = null;
     private autoBtn: HTMLElement | null = null;
 
-    constructor(viewer: Viewer) {
+    constructor(viewer: ViewerLike) {
         this.viewer = viewer;
     }
 

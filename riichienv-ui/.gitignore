@@ -1,5 +1,6 @@
 dist/
 src/tiles.ts
+src/wasm/pkg/
 node_modules/
 assets/ZenAntiqueSoft-Regular.ttf
 assets/char_sprite.png
