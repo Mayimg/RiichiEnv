@@ -116,8 +116,6 @@ Differences in standard ranked match rules across major platforms.
 | `.is_daisuushii_double` | `False` | `True` |
 | `.yakuman_pao_is_liability_only` | `False` | `True` |
 | `.sanchaho_is_draw` | `True` | `False` |
-
-| `.kuikae_forbidden` | `True` | `True` |
 | `.open_kan_dora_after_discard` | `False` | `True` |
 
 ### 3-Player (Sanma) Presets
@@ -130,6 +128,4 @@ Differences in standard ranked match rules across major platforms.
 | `.is_junsei_chuurenpoutou_double` | `False` | `True` |
 | `.is_daisuushii_double` | `False` | `True` |
 | `.yakuman_pao_is_liability_only` | `False` | `True` |
-
-| `.kuikae_forbidden` | `True` | `True` |
 | `.open_kan_dora_after_discard` | `False` | `True` |
