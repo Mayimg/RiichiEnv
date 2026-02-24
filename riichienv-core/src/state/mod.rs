@@ -700,40 +700,46 @@ impl GameState {
                             if pao_yakuman_val > 0 {
                                 let unit = if pid == self.oya { 48000 } else { 32000 };
                                 let honba_total = self.honba as i32 * (np as i32 - 1) * 100;
-                                let pao_amt = pao_yakuman_val * unit + honba_total;
-                                let non_pao_yakuman_val = total_yakuman_val - pao_yakuman_val;
-                                let non_pao_amt = non_pao_yakuman_val * unit;
 
-                                // Pao Payer pays for Pao Part
                                 if let Some(pp) = pao_payer {
-                                    deltas[pp as usize] -= pao_amt;
-                                    total_win += pao_amt;
-                                }
+                                    if self.rule.yakuman_pao_is_liability_only {
+                                        // Majsoul: PAO pays PAO portion only, non-PAO split normally
+                                        let pao_amt = pao_yakuman_val * unit + honba_total;
+                                        let non_pao_yakuman_val = total_yakuman_val - pao_yakuman_val;
 
-                                // Non-Pao Part split normally
-                                if non_pao_amt > 0 {
-                                    if pid == self.oya {
-                                        let share = non_pao_yakuman_val * 16000;
-                                        for i in 0..np as u8 {
-                                            if i != pid {
-                                                deltas[i as usize] -= share;
-                                                total_win += share;
-                                            }
-                                        }
-                                    } else {
-                                        let oya_pay = non_pao_yakuman_val * 16000;
-                                        let ko_pay = non_pao_yakuman_val * 8000;
-                                        for i in 0..np as u8 {
-                                            if i != pid {
-                                                if i == self.oya {
-                                                    deltas[i as usize] -= oya_pay;
-                                                    total_win += oya_pay;
-                                                } else {
-                                                    deltas[i as usize] -= ko_pay;
-                                                    total_win += ko_pay;
+                                        deltas[pp as usize] -= pao_amt;
+                                        total_win += pao_amt;
+
+                                        if non_pao_yakuman_val > 0 {
+                                            if pid == self.oya {
+                                                let share = non_pao_yakuman_val * 16000;
+                                                for i in 0..np as u8 {
+                                                    if i != pid {
+                                                        deltas[i as usize] -= share;
+                                                        total_win += share;
+                                                    }
+                                                }
+                                            } else {
+                                                let oya_pay = non_pao_yakuman_val * 16000;
+                                                let ko_pay = non_pao_yakuman_val * 8000;
+                                                for i in 0..np as u8 {
+                                                    if i != pid {
+                                                        if i == self.oya {
+                                                            deltas[i as usize] -= oya_pay;
+                                                            total_win += oya_pay;
+                                                        } else {
+                                                            deltas[i as usize] -= ko_pay;
+                                                            total_win += ko_pay;
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                    } else {
+                                        // Tenhou: PAO pays ALL yakuman (full amount)
+                                        let full_amt = total_yakuman_val * unit + honba_total;
+                                        deltas[pp as usize] -= full_amt;
+                                        total_win += full_amt;
                                     }
                                 }
                             } else {
@@ -925,33 +931,54 @@ impl GameState {
                         let score = res.ron_agari as i32;
 
                         let mut pao_payer = target_pid;
-                        let mut pao_amt = 0;
+                        let mut pao_amt = 0i32;
 
                         if res.yakuman {
                             let mut has_pao = false;
+                            let mut pao_yakuman_val = 0i32;
+                            let mut total_yakuman_val = 0i32;
+
                             for &yid in &res.yaku {
+                                let val = if [47, 48, 49, 50].contains(&yid) {
+                                    2
+                                } else {
+                                    1
+                                };
+                                total_yakuman_val += val;
                                 if let Some(liable) =
                                     self.players[w_pid as usize].pao.get(&(yid as u8))
                                 {
                                     has_pao = true;
                                     pao_payer = *liable;
+                                    pao_yakuman_val += val;
                                 }
                             }
 
                             if has_pao {
-                                // Ron with pao: pao player and discarder split total 50/50
-                                pao_amt = score as usize / 2;
+                                let is_oya = w_pid == self.oya;
+                                let unit: i32 = if is_oya { 48000 } else { 32000 };
+                                let honba_ron = ron_honba as i32 * (np as i32 - 1) * 100;
+
+                                if self.rule.yakuman_pao_is_liability_only {
+                                    // Majsoul: PAO portion only split 50/50, non-PAO paid by discarder
+                                    let pao_base = pao_yakuman_val * unit;
+                                    pao_amt = pao_base / 2 + honba_ron;
+                                } else {
+                                    // Tenhou: total score split 50/50 between PAO and discarder
+                                    let total_base = total_yakuman_val * unit;
+                                    pao_amt = total_base / 2 + honba_ron;
+                                }
                             }
                         }
 
                         let mut this_deltas = vec![0i32; np];
                         this_deltas[w_pid as usize] += score;
-                        this_deltas[pao_payer as usize] -= pao_amt as i32;
-                        this_deltas[target_pid as usize] -= score - pao_amt as i32;
+                        this_deltas[pao_payer as usize] -= pao_amt;
+                        this_deltas[target_pid as usize] -= score - pao_amt;
 
                         total_deltas[w_pid as usize] += score;
-                        total_deltas[pao_payer as usize] -= pao_amt as i32;
-                        total_deltas[target_pid as usize] -= score - pao_amt as i32;
+                        total_deltas[pao_payer as usize] -= pao_amt;
+                        total_deltas[target_pid as usize] -= score - pao_amt;
 
                         if !deposit_taken {
                             let stick_pts = (self.riichi_sticks * 1000) as i32;
