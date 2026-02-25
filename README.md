@@ -113,7 +113,7 @@ Action(action_type=Discard, tile=Some(1), consume_tiles=[])
 RiichiEnv is fully compatible with the Mortal MJAI bot processing flow. I have confirmed that MortalAgent can execute matches without errors in over 1,000,000+ hanchan games on RiichiEnv.
 
 ```python
-from riichienv import RiichiEnv, Action
+from riichienv import RiichiEnv, Action, GameRule
 from model import load_model
 
 class MortalAgent:
@@ -131,7 +131,7 @@ class MortalAgent:
         assert action is not None, "Mortal must return a legal action"
         return action
 
-env = RiichiEnv(game_mode="4p-red-half")
+env = RiichiEnv(game_mode="4p-red-half", rule=GameRule.default_mortal())
 agents = {pid: MortalAgent(pid) for pid in range(4)}
 obs_dict = env.reset()
 while not env.done():
