@@ -181,6 +181,11 @@ class PpoConfig(WandbConfig):
     grp_model: str | None = None
     pts_weight: list[float] = [10.0, 4.0, -4.0, -10.0]
     async_rollout: bool = False
+    # Mortal evaluation (4P only)
+    mortal_model_path: str | None = None
+    mortal_libriichi_path: str | None = None
+    mortal_eval_episodes: int = 48
+    mortal_device: str = "cpu"
 
 
 class Config(BaseModel):

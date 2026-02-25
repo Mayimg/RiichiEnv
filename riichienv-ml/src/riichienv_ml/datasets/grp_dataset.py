@@ -13,8 +13,8 @@ from riichienv_ml.datasets.mjai_logs import GrpFeatureEncoder, _compute_rank
 class GrpReplayDataset(IterableDataset):
     """GRP dataset that reads .jsonl.gz replay files via MjaiReplay.
 
-    For each kyoku in each replay, extracts GRP features and computes
-    end-of-kyoku rank for each player. Yields (features_tensor, rank_one_hot).
+    For each kyoku in each replay, extracts GRP features and predicts
+    the final hanchan ranking for each player. Yields (features_tensor, rank_one_hot).
     """
 
     def __init__(
@@ -33,7 +33,7 @@ class GrpReplayDataset(IterableDataset):
         files = sorted(glob.glob(self.data_glob, recursive=True))
         return files
 
-    def _encode_sample(self, grp_features: dict, player_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def _encode_features(self, grp_features: dict, player_idx: int) -> torch.Tensor:
         n = self.n_players
 
         scores = np.array(
@@ -52,13 +52,14 @@ class GrpReplayDataset(IterableDataset):
         player[player_idx] = 1.0
 
         x = np.concatenate([scores, round_meta, player])
+        return torch.from_numpy(x)
 
-        end_scores = [grp_features[f"p{i}_end_score"] for i in range(n)]
-        rank = _compute_rank(end_scores, player_idx, n)
+    def _encode_label(self, final_scores: list, player_idx: int) -> torch.Tensor:
+        n = self.n_players
+        rank = _compute_rank(final_scores, player_idx, n)
         y = np.zeros(n, dtype=np.float32)
         y[rank] = 1.0
-
-        return torch.from_numpy(x), torch.from_numpy(y)
+        return torch.from_numpy(y)
 
     def __iter__(self):
         files = self._get_files()
@@ -74,11 +75,24 @@ class GrpReplayDataset(IterableDataset):
         for file_path in files:
             try:
                 replay = MjaiReplay.from_jsonl(file_path, rule=self.replay_rule)
+                # Collect all kyoku features first to get final hanchan scores
+                kyoku_features_list = []
                 for kyoku in replay.take_kyokus():
                     grp_features = GrpFeatureEncoder(kyoku, self.n_players).encode()
+                    kyoku_features_list.append(grp_features)
+
+                if not kyoku_features_list:
+                    continue
+
+                # Final hanchan ranking from the last kyoku's end scores
+                last_features = kyoku_features_list[-1]
+                final_scores = [last_features[f"p{i}_end_score"] for i in range(self.n_players)]
+
+                for grp_features in kyoku_features_list:
                     for player_idx in range(self.n_players):
-                        sample = self._encode_sample(grp_features, player_idx)
-                        buffer.append(sample)
+                        x = self._encode_features(grp_features, player_idx)
+                        y = self._encode_label(final_scores, player_idx)
+                        buffer.append((x, y))
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
                 continue
