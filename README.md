@@ -6,7 +6,7 @@
 **Accelerating Reproducible Mahjong Research**
 
 [![CI](https://github.com/smly/RiichiEnv/actions/workflows/ci.yml/badge.svg)](https://github.com/smly/RiichiEnv/actions/workflows/ci.yml)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/smly/RiichiEnv/blob/main/demos/replay_demo.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/smly/RiichiEnv/blob/main/riichienv-ui/demos/replay_demo.ipynb)
 [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/code/confirm/riichienv-replay-viewer-demo/notebook)
 [![PyPI - Version](https://img.shields.io/pypi/v/riichienv)](https://pypi.org/project/riichienv/)
 [![crates.io](https://img.shields.io/crates/v/riichienv-core)](https://crates.io/crates/riichienv-core)
@@ -299,7 +299,7 @@ viewer.summary()        # list of round info dicts (bakaze, kyoku, honba, oya, s
 viewer.get_results(0)   # list[WinResult] for round 0
 ```
 
-See [demos/README.md](demos/README.md) for full API details and notebook examples.
+See [demos/README.md](riichienv-ui/demos/README.md) for full API details and notebook examples.
 
 ## 🛠 Development
 

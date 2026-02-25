@@ -50,6 +50,7 @@ exclude = [
     ".ruff_cache",
     ".venv",
     "demos",
+    "riichienv-ml",
     "tools",
 ]
 
@@ -93,15 +94,14 @@ testpaths = ["tests"]
 norecursedirs = ["trunk"]
 
 [tool.ty.src]
-exclude = ["scripts", "tests", "demos", "tools", "test_verifier_daiminkan.py"]
+exclude = ["scripts", "tests", "demos", "riichienv-ml"]
 
 [tool.importlinter]
 root_packages = ["riichienv"]
 
 [tool.uv.workspace]
 members = [
-    "tools/mjsoul-parser",
-    "tools/mjsoul-scoring-validation",
+    "riichienv-ml",
 ]
 
 [tool.ty.environment]
