@@ -249,13 +249,14 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 {
-                    use crate::parser::tid_to_mjai;
                     use crate::observation::sequence_features::process_single_event_progression;
+                    use crate::parser::tid_to_mjai;
 
                     if *is_liqi || *is_wliqi {
                         let ev = serde_json::json!({"type": "reach", "actor": s});
                         if let Some(entry) = process_single_event_progression(
-                            &ev, &mut self.round_seq_prog_pending_reach,
+                            &ev,
+                            &mut self.round_seq_prog_pending_reach,
                         ) {
                             self.round_seq_progression.push(entry);
                         }
@@ -268,7 +269,8 @@ impl GameStateEventHandler for GameState {
                         "tsumogiri": is_tsumogiri,
                     });
                     if let Some(entry) = process_single_event_progression(
-                        &ev, &mut self.round_seq_prog_pending_reach,
+                        &ev,
+                        &mut self.round_seq_prog_pending_reach,
                     ) {
                         self.round_seq_progression.push(entry);
                     }
@@ -337,8 +339,8 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 {
-                    use crate::parser::tid_to_mjai;
                     use crate::observation::sequence_features::process_single_event_progression;
+                    use crate::parser::tid_to_mjai;
 
                     let mtype_str = match meld_type {
                         MeldType::Chi => "chi",
@@ -347,19 +349,21 @@ impl GameStateEventHandler for GameState {
                         _ => "",
                     };
                     if !mtype_str.is_empty() {
-                        let target = froms.iter()
-                            .find(|&&f| f != *seat).copied().unwrap_or(0);
-                        let called_tile: Option<u8> = tiles.iter().zip(froms.iter())
+                        let target = froms.iter().find(|&&f| f != *seat).copied().unwrap_or(0);
+                        let called_tile: Option<u8> = tiles
+                            .iter()
+                            .zip(froms.iter())
                             .find(|(_, &f)| f != *seat)
                             .map(|(&t, _)| t);
-                        let consumed_tiles: Vec<u8> = tiles.iter().zip(froms.iter())
+                        let consumed_tiles: Vec<u8> = tiles
+                            .iter()
+                            .zip(froms.iter())
                             .filter(|(_, &f)| f == *seat)
                             .map(|(&t, _)| t)
                             .collect();
-                        let pai_str = called_tile
-                            .map(|t| tid_to_mjai(t)).unwrap_or_default();
-                        let consumed_strs: Vec<String> = consumed_tiles.iter()
-                            .map(|&t| tid_to_mjai(t)).collect();
+                        let pai_str = called_tile.map(|t| tid_to_mjai(t)).unwrap_or_default();
+                        let consumed_strs: Vec<String> =
+                            consumed_tiles.iter().map(|&t| tid_to_mjai(t)).collect();
                         let ev = serde_json::json!({
                             "type": mtype_str,
                             "actor": *seat,
@@ -368,7 +372,8 @@ impl GameStateEventHandler for GameState {
                             "consumed": consumed_strs,
                         });
                         if let Some(entry) = process_single_event_progression(
-                            &ev, &mut self.round_seq_prog_pending_reach,
+                            &ev,
+                            &mut self.round_seq_prog_pending_reach,
                         ) {
                             self.round_seq_progression.push(entry);
                         }
@@ -462,16 +467,15 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 {
-                    use crate::parser::tid_to_mjai;
                     use crate::observation::sequence_features::process_single_event_progression;
+                    use crate::parser::tid_to_mjai;
 
                     let ev = if *meld_type == MeldType::Ankan {
                         let t_val = tiles[0] / 4;
-                        let consumed_tids = vec![
-                            t_val * 4, t_val * 4 + 1, t_val * 4 + 2, t_val * 4 + 3,
-                        ];
-                        let consumed_strs: Vec<String> = consumed_tids.iter()
-                            .map(|&t| tid_to_mjai(t)).collect();
+                        let consumed_tids =
+                            vec![t_val * 4, t_val * 4 + 1, t_val * 4 + 2, t_val * 4 + 3];
+                        let consumed_strs: Vec<String> =
+                            consumed_tids.iter().map(|&t| tid_to_mjai(t)).collect();
                         serde_json::json!({
                             "type": "ankan",
                             "actor": *seat,
@@ -487,7 +491,8 @@ impl GameStateEventHandler for GameState {
                         })
                     };
                     if let Some(entry) = process_single_event_progression(
-                        &ev, &mut self.round_seq_prog_pending_reach,
+                        &ev,
+                        &mut self.round_seq_prog_pending_reach,
                     ) {
                         self.round_seq_progression.push(entry);
                     }

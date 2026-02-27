@@ -2,7 +2,9 @@ use crate::action::ActionType;
 use crate::shanten;
 use crate::types::MeldType;
 
-use super::helpers::{add_val, broadcast_scalar, get_next_tile_sanma, set_val, tile34_to_compact, TILE_DIM_3P};
+use super::helpers::{
+    add_val, broadcast_scalar, get_next_tile_sanma, set_val, tile34_to_compact, TILE_DIM_3P,
+};
 use super::Observation3P;
 
 const NP: usize = 3;

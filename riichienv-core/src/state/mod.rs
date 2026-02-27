@@ -2093,10 +2093,12 @@ impl GameState {
         // Uses the original (unmasked) event Value directly — no JSON parsing.
         #[cfg(feature = "python")]
         {
-            if let Some(entry) = crate::observation::sequence_features::process_single_event_progression(
-                &event,
-                &mut self.round_seq_prog_pending_reach,
-            ) {
+            if let Some(entry) =
+                crate::observation::sequence_features::process_single_event_progression(
+                    &event,
+                    &mut self.round_seq_prog_pending_reach,
+                )
+            {
                 self.round_seq_progression.push(entry);
             }
         }

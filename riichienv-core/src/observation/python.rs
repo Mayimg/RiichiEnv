@@ -1413,8 +1413,7 @@ impl Observation {
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let arr = self.encode_seq_numeric();
         let byte_len = arr.len() * std::mem::size_of::<f32>();
-        let byte_slice =
-            unsafe { std::slice::from_raw_parts(arr.as_ptr() as *const u8, byte_len) };
+        let byte_slice = unsafe { std::slice::from_raw_parts(arr.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 

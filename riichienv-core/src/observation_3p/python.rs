@@ -855,9 +855,9 @@ impl Observation3P {
                 }
 
                 match tile {
-                    20 => aka_flags[0] = true,  // 5mr - dead in sanma (tile34=5 → None)
-                    24 => aka_flags[1] = true,   // 5pr
-                    28 => aka_flags[2] = true,   // 5sr
+                    20 => aka_flags[0] = true, // 5mr - dead in sanma (tile34=5 → None)
+                    24 => aka_flags[1] = true, // 5pr
+                    28 => aka_flags[2] = true, // 5sr
                     _ => {}
                 }
             }

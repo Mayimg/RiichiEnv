@@ -3,9 +3,9 @@ mod encode;
 #[cfg(feature = "python")]
 pub(crate) mod helpers;
 #[cfg(feature = "python")]
-pub(crate) mod sequence_features;
-#[cfg(feature = "python")]
 mod python;
+#[cfg(feature = "python")]
+pub(crate) mod sequence_features;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};

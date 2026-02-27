@@ -231,7 +231,11 @@ pub fn process_single_event_progression(
             }
             let k37 = mjai_tile_to_kan37(pai)?;
             let type_idx = 1 + k37 as u16;
-            let moqie = if event["tsumogiri"].as_bool().unwrap_or(false) { 1 } else { 0 };
+            let moqie = if event["tsumogiri"].as_bool().unwrap_or(false) {
+                1
+            } else {
+                0
+            };
             let liqi = if *pending_reach_actor == Some(actor) {
                 *pending_reach_actor = None;
                 1
@@ -747,21 +751,17 @@ impl Observation {
                 Some([type_idx, 2, 2, 3])
             }
             ActionType::Kakan => {
-                let tile = action.tile.or_else(|| action.consume_tiles.first().copied())?;
+                let tile = action
+                    .tile
+                    .or_else(|| action.consume_tiles.first().copied())?;
                 let k37 = tile_id_to_kan37(tile as u32);
                 let type_idx = 71 + k37 as u16; // 71-107
 
                 Some([type_idx, 2, 2, 3])
             }
-            ActionType::Tsumo => {
-                Some([108, 2, 2, 3])
-            }
-            ActionType::KyushuKyuhai => {
-                Some([109, 2, 2, 3])
-            }
-            ActionType::Pass => {
-                Some([110, 2, 2, 3])
-            }
+            ActionType::Tsumo => Some([108, 2, 2, 3]),
+            ActionType::KyushuKyuhai => Some([109, 2, 2, 3]),
+            ActionType::Pass => Some([110, 2, 2, 3]),
             ActionType::Chi => {
                 let called_tile = action.tile?;
                 let consumed = &action.consume_tiles;
@@ -844,7 +844,7 @@ mod tests {
     #[test]
     fn test_tile_id_to_kan37() {
         // Red fives
-        assert_eq!(tile_id_to_kan37(16), 0);  // red 5m → 0
+        assert_eq!(tile_id_to_kan37(16), 0); // red 5m → 0
         assert_eq!(tile_id_to_kan37(52), 10); // red 5p → 10
         assert_eq!(tile_id_to_kan37(88), 20); // red 5s → 20
 
@@ -946,26 +946,26 @@ mod tests {
     #[test]
     fn test_progression_type_bounds() {
         // Verify type indices stay within PROG_DIMS[1] = 277
-        assert!(1 + 36 <= 276);       // dahai max: 1 + 36 = 37
-        assert!(38 + 89 <= 276);      // chi max: 38 + 89 = 127
-        assert!(128 + 39 <= 276);     // pon max: 128 + 39 = 167
-        assert!(168 + 36 <= 276);     // daiminkan max: 168 + 36 = 204
-        assert!(205 + 33 <= 276);     // ankan max: 205 + 33 = 238
-        assert!(239 + 36 <= 276);     // kakan max: 239 + 36 = 275
+        assert!(1 + 36 <= 276); // dahai max: 1 + 36 = 37
+        assert!(38 + 89 <= 276); // chi max: 38 + 89 = 127
+        assert!(128 + 39 <= 276); // pon max: 128 + 39 = 167
+        assert!(168 + 36 <= 276); // daiminkan max: 168 + 36 = 204
+        assert!(205 + 33 <= 276); // ankan max: 205 + 33 = 238
+        assert!(239 + 36 <= 276); // kakan max: 239 + 36 = 275
     }
 
     #[test]
     fn test_candidate_type_bounds() {
         // Verify type indices stay within CAND_DIMS[0] = 280
-        assert!(36 < 280);            // discard max: 36
-        assert!(37 + 33 < 280);       // ankan max: 70
-        assert!(71 + 36 < 280);       // kakan max: 107
-        assert!(108 < 280);           // tsumo
-        assert!(109 < 280);           // kyushu
-        assert!(110 < 280);           // pass
-        assert!(111 + 89 < 280);      // chi max: 200
-        assert!(201 + 39 < 280);      // pon max: 240
-        assert!(241 + 36 < 280);      // daiminkan max: 277
-        assert!(278 < 280);           // ron
+        assert!(36 < 280); // discard max: 36
+        assert!(37 + 33 < 280); // ankan max: 70
+        assert!(71 + 36 < 280); // kakan max: 107
+        assert!(108 < 280); // tsumo
+        assert!(109 < 280); // kyushu
+        assert!(110 < 280); // pass
+        assert!(111 + 89 < 280); // chi max: 200
+        assert!(201 + 39 < 280); // pon max: 240
+        assert!(241 + 36 < 280); // daiminkan max: 277
+        assert!(278 < 280); // ron
     }
 }
