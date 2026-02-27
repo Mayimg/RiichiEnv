@@ -3,7 +3,7 @@ name = "riichienv-ml"
 version = "0.1.0"
 description = "Mahjong RL training pipeline: GRP reward shaping, offline CQL, and online DQN+CQL"
 readme = "README.md"
-requires-python = "==3.13.5"
+requires-python = ">=3.12"
 dependencies = [
     "dotenv>=0.9.9",
     "numpy>=2.4.1",
