@@ -316,6 +316,22 @@ impl RiichiEnv {
         with_variant!(self, |s| s.is_done)
     }
 
+    /// Return a deep copy of this environment (full game state clone).
+    #[pyo3(name = "clone")]
+    pub fn py_clone(&self) -> Self {
+        Self {
+            variant: self.variant.clone(),
+        }
+    }
+
+    pub fn __copy__(&self) -> Self {
+        self.py_clone()
+    }
+
+    pub fn __deepcopy__(&self, _memo: &pyo3::Bound<'_, pyo3::types::PyAny>) -> Self {
+        self.py_clone()
+    }
+
     #[getter]
     pub fn get_is_done(&self) -> bool {
         with_variant!(self, |s| s.is_done)
