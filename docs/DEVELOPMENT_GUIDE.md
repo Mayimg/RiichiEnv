@@ -313,13 +313,6 @@ Benchmark cases are stored in `riichienv-core/benches/data/`:
 | `agari_3p.json` | 402 winning hands (3P) |
 | `hands_negative.json` | 200 non-winning hands |
 
-To regenerate fixture data from MJAI logs:
-
-```bash
-uv run maturin develop --release
-uv run python scripts/extract_agari_bench_data.py
-```
-
 ## Commit Messages
 
 We follow the **Conventional Commits** specification.

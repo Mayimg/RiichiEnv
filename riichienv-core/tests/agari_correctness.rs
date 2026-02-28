@@ -200,8 +200,8 @@ fn test_4p_calc_correctness() {
 #[test]
 fn test_3p_calc_correctness() {
     let data: BenchData = {
-        let s = fs::read_to_string("benches/data/agari_3p.json")
-            .expect("Failed to read agari_3p.json");
+        let s =
+            fs::read_to_string("benches/data/agari_3p.json").expect("Failed to read agari_3p.json");
         serde_json::from_str(&s).expect("Failed to parse agari_3p.json")
     };
     assert!(!data.cases.is_empty(), "3P data should not be empty");
