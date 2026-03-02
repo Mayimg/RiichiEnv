@@ -131,7 +131,7 @@ class MortalAgent:
         assert action is not None, "Mortal must return a legal action"
         return action
 
-env = RiichiEnv(game_mode="4p-red-half", rule=GameRule.default_mortal())
+env = RiichiEnv(game_mode="4p-red-half", rule=GameRule.default_tenhou())
 agents = {pid: MortalAgent(pid) for pid in range(4)}
 obs_dict = env.reset()
 while not env.done():

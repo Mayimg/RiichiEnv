@@ -277,14 +277,15 @@ impl MjaiReplay {
         let game_rule = match rule.as_deref() {
             Some("tenhou") => crate::rule::GameRule::default_tenhou(),
             Some("mjsoul") => crate::rule::GameRule::default_mjsoul(),
-            Some("mortal") | None => crate::rule::GameRule::default_mortal(),
-            Some("tenhou_sanma") => crate::rule::GameRule::default_tenhou_sanma(),
+            Some("tenhou") | Some("mortal") | None => crate::rule::GameRule::default_tenhou(),
+            Some("tenhou_sanma") | Some("mortal_sanma") => {
+                crate::rule::GameRule::default_tenhou_sanma()
+            }
             Some("mjsoul_sanma") => crate::rule::GameRule::default_mjsoul_sanma(),
-            Some("mortal_sanma") => crate::rule::GameRule::default_mortal_sanma(),
             Some(other) => {
                 return Err(PyValueError::new_err(format!(
-                    "Unknown rule: '{}'. Expected 'tenhou', 'mortal', 'mjsoul', \
-                     'tenhou_sanma', 'mortal_sanma', or 'mjsoul_sanma'",
+                    "Unknown rule: '{}'. Expected 'tenhou', 'mjsoul', \
+                     'tenhou_sanma', or 'mjsoul_sanma'",
                     other
                 )))
             }

@@ -21,7 +21,7 @@ pub struct GameRule {
 
 impl Default for GameRule {
     fn default() -> Self {
-        Self::default_mortal()
+        Self::default_tenhou()
     }
 }
 
@@ -56,21 +56,6 @@ impl GameRule {
         }
     }
 
-    pub fn default_mortal() -> Self {
-        Self {
-            allows_ron_on_ankan_for_kokushi_musou: false,
-            is_kokushi_musou_13machi_double: false,
-            is_suuankou_tanki_double: false,
-            is_junsei_chuurenpoutou_double: false,
-            is_daisuushii_double: false,
-            yakuman_pao_is_liability_only: false,
-
-            sanchaho_is_draw: true,
-
-            kuikae_forbidden: true,
-        }
-    }
-
     pub fn default_mjsoul_sanma() -> Self {
         Self {
             allows_ron_on_ankan_for_kokushi_musou: true,
@@ -87,21 +72,6 @@ impl GameRule {
     }
 
     pub fn default_tenhou_sanma() -> Self {
-        Self {
-            allows_ron_on_ankan_for_kokushi_musou: false,
-            is_kokushi_musou_13machi_double: false,
-            is_suuankou_tanki_double: false,
-            is_junsei_chuurenpoutou_double: false,
-            is_daisuushii_double: false,
-            yakuman_pao_is_liability_only: false,
-
-            sanchaho_is_draw: false,
-
-            kuikae_forbidden: true,
-        }
-    }
-
-    pub fn default_mortal_sanma() -> Self {
         Self {
             allows_ron_on_ankan_for_kokushi_musou: false,
             is_kokushi_musou_13machi_double: false,
@@ -158,21 +128,9 @@ impl GameRule {
     }
 
     #[staticmethod]
-    #[pyo3(name = "default_mortal")]
-    pub fn py_default_mortal() -> Self {
-        Self::default_mortal()
-    }
-
-    #[staticmethod]
     #[pyo3(name = "default_tenhou_sanma")]
     pub fn py_default_tenhou_sanma() -> Self {
         Self::default_tenhou_sanma()
-    }
-
-    #[staticmethod]
-    #[pyo3(name = "default_mortal_sanma")]
-    pub fn py_default_mortal_sanma() -> Self {
-        Self::default_mortal_sanma()
     }
 
     fn __repr__(&self) -> String {
