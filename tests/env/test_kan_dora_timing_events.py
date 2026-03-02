@@ -217,16 +217,16 @@ class TestKanDoraTimingEvents3P:
         env = RiichiEnv(seed=42, game_mode=GameType.SAN_IKKYOKU, rule=rule)
         env.reset()
 
-        # 3P tile IDs: 0-3=1m, 4-7=9m, 8-11=1p, 12-15=2p, ...
-        # Give player 0 four 1p tiles (tids 8,9,10,11) for ankan
+        # 3P uses the standard 0-135 tile ID scheme; 2m-8m (IDs 4-31) are excluded.
+        # 1p tiles are IDs 36-39. Give player 0 four 1p tiles for ankan.
         hands = env.hands
-        hands[0] = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        hands[0] = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]
         env.hands = hands
         env.active_players = [0]
         env.current_player = 0
         env.phase = Phase.WaitAct
         env.needs_tsumo = False
-        env.drawn_tile = 11
+        env.drawn_tile = 39
 
         player_id = 0
         obs_dict = env.get_observations([player_id])
@@ -265,19 +265,19 @@ class TestKanDoraTimingEvents3P:
         env = RiichiEnv(seed=42, game_mode=GameType.SAN_IKKYOKU, rule=rule)
         env.reset()
 
-        # 3P tile IDs: 8-11=1p (four copies)
-        # Give player 0 a pon of 1p (tiles 8,9,10) and the 4th tile (11) in hand
+        # 3P uses the standard 0-135 tile ID scheme; 1p tiles are 36-39.
+        # Give player 0 a pon of 1p (tiles 36,37,38) and the 4th tile (39) in hand.
         hands = env.hands
-        hands[0] = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 44]
+        hands[0] = [39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
         env.hands = hands
         melds = env.melds
-        melds[0] = [Meld(MeldType.Pon, tiles=[8, 9, 10], opened=True)]
+        melds[0] = [Meld(MeldType.Pon, tiles=[36, 37, 38], opened=True)]
         env.melds = melds
         env.active_players = [0]
         env.current_player = 0
         env.phase = Phase.WaitAct
         env.needs_tsumo = False
-        env.drawn_tile = 11
+        env.drawn_tile = 39
 
         player_id = 0
         obs_dict = env.get_observations([player_id])
