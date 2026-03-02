@@ -100,4 +100,3 @@ WinResult(is_win=True, yakuman=False, ron_agari=7700, ...)
 |---|---|
 | `replay_demo.ipynb` | Basic viewer usage with `from_jsonl` |
 | `replay_debug.ipynb` | Viewer with programmatically constructed events via `from_list` |
-| `replay_penalty_display.ipynb` | Penalty (ryukyoku) display example |
