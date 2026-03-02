@@ -480,6 +480,97 @@ describe('GameState', () => {
         });
     });
 
+    describe('kita processing', () => {
+        it('should remove N tile from hand', () => {
+            const tehais = Array(3).fill(null).map(() =>
+                ['1m', '9m', '1p', '9p', '1s', '9s', 'E', 'S', 'W', 'P', 'F', 'C', 'N']
+            );
+            const config = createGameConfig3P();
+            const events: MjaiEvent[] = [
+                makeStartKyoku({ tehais, scores: [35000, 35000, 35000] }),
+                { type: 'tsumo', actor: 0, pai: 'N' },
+                { type: 'kita', actor: 0 },
+            ];
+            const gs = new GameState(events, config);
+            gs.jumpTo(events.length);
+            const state = gs.getState();
+            // Hand should have 13 tiles (13 original - 1 N removed + 1 tsumo N - 1 kita N = 12? No:
+            // After start_kyoku: 13 tiles. After tsumo: 14 tiles. After kita: 13 tiles (one N removed).
+            expect(state.players[0].hand).toHaveLength(13);
+            // One N should remain (from initial hand)
+            expect(state.players[0].hand.filter(t => t === 'N')).toHaveLength(1);
+        });
+
+        it('should increment kitaCount', () => {
+            const tehais = Array(3).fill(null).map(() =>
+                ['1m', '9m', '1p', '9p', '1s', '9s', 'E', 'S', 'W', 'P', 'F', 'C', 'N']
+            );
+            const config = createGameConfig3P();
+            const events: MjaiEvent[] = [
+                makeStartKyoku({ tehais, scores: [35000, 35000, 35000] }),
+                { type: 'tsumo', actor: 0, pai: 'N' },
+                { type: 'kita', actor: 0 },
+            ];
+            const gs = new GameState(events, config);
+            gs.jumpTo(events.length);
+            const state = gs.getState();
+            expect(state.players[0].kitaCount).toBe(1);
+        });
+
+        it('should set afterKan for rinshan draw', () => {
+            const tehais = Array(3).fill(null).map(() =>
+                ['1m', '9m', '1p', '9p', '1s', '9s', 'E', 'S', 'W', 'P', 'F', 'C', 'N']
+            );
+            const config = createGameConfig3P();
+            const events: MjaiEvent[] = [
+                makeStartKyoku({ tehais, scores: [35000, 35000, 35000] }),
+                { type: 'tsumo', actor: 0, pai: 'N' },
+                { type: 'kita', actor: 0 },
+            ];
+            const gs = new GameState(events, config);
+            gs.jumpTo(events.length);
+            const state = gs.getState();
+            expect(state.conditions.afterKan).toBe(true);
+        });
+
+        it('should clear ippatsu on kita', () => {
+            const tehais = Array(3).fill(null).map(() =>
+                ['1m', '9m', '1p', '9p', '1s', '9s', 'E', 'S', 'W', 'P', 'F', 'C', 'N']
+            );
+            const config = createGameConfig3P();
+            const events: MjaiEvent[] = [
+                makeStartKyoku({ tehais, scores: [35000, 35000, 35000] }),
+                { type: 'tsumo', actor: 0, pai: '1m' },
+                { type: 'dahai', actor: 0, pai: '1m' },
+                { type: 'reach_accepted', actor: 0 },
+                { type: 'tsumo', actor: 1, pai: 'N' },
+                { type: 'kita', actor: 1 },
+            ];
+            const gs = new GameState(events, config);
+            gs.jumpTo(events.length);
+            const state = gs.getState();
+            expect(state.conditions.ippatsu.every(v => v === false)).toBe(true);
+        });
+
+        it('should reset kitaCount on new kyoku', () => {
+            const tehais = Array(3).fill(null).map(() =>
+                ['1m', '9m', '1p', '9p', '1s', '9s', 'E', 'S', 'W', 'P', 'F', 'C', 'N']
+            );
+            const config = createGameConfig3P();
+            const events: MjaiEvent[] = [
+                makeStartKyoku({ tehais, scores: [35000, 35000, 35000] }),
+                { type: 'tsumo', actor: 0, pai: 'N' },
+                { type: 'kita', actor: 0 },
+                { type: 'end_kyoku' },
+                makeStartKyoku({ tehais, scores: [35000, 35000, 35000], kyoku: 2 }),
+            ];
+            const gs = new GameState(events, config);
+            gs.jumpTo(events.length);
+            const state = gs.getState();
+            expect(state.players[0].kitaCount).toBe(0);
+        });
+    });
+
     describe('condition tracking with config', () => {
         it('should have condition arrays matching player count for 4P', () => {
             const events: MjaiEvent[] = [makeStartKyoku()];

@@ -8,6 +8,7 @@ export const YAKU_MAP: { [key: number]: string } = {
     35: "Tenhou", 36: "Chiihou", 37: "Daisangen", 38: "Suuankou", 39: "Tsuu Iisou",
     40: "Ryuu Iisou", 41: "Chinroutou", 42: "Kokushi Musou", 43: "Shousuushii", 44: "Suukantsu",
     45: "Chuuren Poutou", 47: "Junsei Chuuren Poutou", 48: "Suuankou Tanki", 49: "Kokushi Musou 13-wait",
+    34: "Nukidora",
     50: "Daisuushii"
 };
 
@@ -43,4 +44,5 @@ export const CALL_TYPES: { [key: string]: { label: string; cssClass?: string } }
     daiminkan: { label: 'Kan',   cssClass: 'call-kan' },
     kakan:     { label: 'Kan',   cssClass: 'call-kan' },
     reach:     { label: 'Riichi', cssClass: 'call-reach' },
+    kita:      { label: 'Kita',   cssClass: 'call-kan' },
 };

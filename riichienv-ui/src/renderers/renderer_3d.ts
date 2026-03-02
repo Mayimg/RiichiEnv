@@ -235,7 +235,7 @@ export class Renderer3D implements IRenderer {
         state.players.forEach((p, i) => {
             if (p.waits && p.waits.length > 0) {
                 const relIndex = (i - this.viewpoint + pc) % pc;
-                const waitEl = this.renderWaitIndicator(p.waits, relIndex);
+                const waitEl = this.renderWaitIndicator(p.waits, relIndex, pc);
                 uiOverlay.appendChild(waitEl);
             }
         });
@@ -308,17 +308,31 @@ export class Renderer3D implements IRenderer {
             const maxDim = Math.max(asset.w, asset.h);
             const scale = targetSize / maxDim;
 
-            let rotation = '0deg';
-            if (relPos === 1) rotation = '-90deg';
-            else if (relPos === 2) rotation = '180deg';
-            else if (relPos === 3) rotation = '90deg';
+            let rotation: string;
+            if (pc === 3) {
+                // 3P: 0=bottom, 1=right, 2=left (120° increments)
+                if (relPos === 1) rotation = '-120deg';
+                else if (relPos === 2) rotation = '120deg';
+                else rotation = '0deg';
+            } else {
+                if (relPos === 1) rotation = '-90deg';
+                else if (relPos === 2) rotation = '180deg';
+                else if (relPos === 3) rotation = '90deg';
+                else rotation = '0deg';
+            }
 
             icon.style.transform = `rotate(${rotation}) scale(${scale})`;
 
-            if (relPos === 0) { icon.style.bottom = '6px'; icon.style.left = '6px'; }
-            else if (relPos === 1) { icon.style.right = '6px'; icon.style.bottom = '6px'; }
-            else if (relPos === 2) { icon.style.top = '6px'; icon.style.right = '6px'; }
-            else if (relPos === 3) { icon.style.left = '6px'; icon.style.top = '6px'; }
+            if (pc === 3) {
+                if (relPos === 0) { icon.style.bottom = '6px'; icon.style.left = '6px'; }
+                else if (relPos === 1) { icon.style.right = '6px'; icon.style.bottom = '6px'; }
+                else if (relPos === 2) { icon.style.left = '6px'; icon.style.top = '6px'; }
+            } else {
+                if (relPos === 0) { icon.style.bottom = '6px'; icon.style.left = '6px'; }
+                else if (relPos === 1) { icon.style.right = '6px'; icon.style.bottom = '6px'; }
+                else if (relPos === 2) { icon.style.top = '6px'; icon.style.right = '6px'; }
+                else if (relPos === 3) { icon.style.left = '6px'; icon.style.top = '6px'; }
+            }
 
             center.appendChild(icon);
         });
@@ -395,26 +409,46 @@ export class Renderer3D implements IRenderer {
             const inset = 5;
             const nearEdge = Math.round(ts / 2 + centerHalf - inset);
             const farEdge = Math.round(ts / 2 - centerHalf + inset);
-            if (relPos === 0) {
-                Object.assign(stick.style, {
-                    left: '50%', top: `${nearEdge - 15}px`,
-                    transform: 'translateX(-50%)',
-                });
-            } else if (relPos === 1) {
-                Object.assign(stick.style, {
-                    left: `${nearEdge}px`, top: '50%',
-                    transform: 'translate(-50%, -50%) rotate(90deg)',
-                });
-            } else if (relPos === 2) {
-                Object.assign(stick.style, {
-                    left: '50%', top: `${farEdge}px`,
-                    transform: 'translateX(-50%)',
-                });
-            } else if (relPos === 3) {
-                Object.assign(stick.style, {
-                    left: `${farEdge}px`, top: '50%',
-                    transform: 'translate(-50%, -50%) rotate(90deg)',
-                });
+            if (pc === 3) {
+                // 3P: 0=bottom, 1=right, 2=left
+                if (relPos === 0) {
+                    Object.assign(stick.style, {
+                        left: '50%', top: `${nearEdge - 15}px`,
+                        transform: 'translateX(-50%)',
+                    });
+                } else if (relPos === 1) {
+                    Object.assign(stick.style, {
+                        left: `${nearEdge}px`, top: '50%',
+                        transform: 'translate(-50%, -50%) rotate(90deg)',
+                    });
+                } else if (relPos === 2) {
+                    Object.assign(stick.style, {
+                        left: `${farEdge}px`, top: '50%',
+                        transform: 'translate(-50%, -50%) rotate(90deg)',
+                    });
+                }
+            } else {
+                if (relPos === 0) {
+                    Object.assign(stick.style, {
+                        left: '50%', top: `${nearEdge - 15}px`,
+                        transform: 'translateX(-50%)',
+                    });
+                } else if (relPos === 1) {
+                    Object.assign(stick.style, {
+                        left: `${nearEdge}px`, top: '50%',
+                        transform: 'translate(-50%, -50%) rotate(90deg)',
+                    });
+                } else if (relPos === 2) {
+                    Object.assign(stick.style, {
+                        left: '50%', top: `${farEdge}px`,
+                        transform: 'translateX(-50%)',
+                    });
+                } else if (relPos === 3) {
+                    Object.assign(stick.style, {
+                        left: `${farEdge}px`, top: '50%',
+                        transform: 'translate(-50%, -50%) rotate(90deg)',
+                    });
+                }
             }
             table.appendChild(stick);
         });
@@ -440,30 +474,46 @@ export class Renderer3D implements IRenderer {
             const nearEdge = Math.round(ts / 2 + centerHalf - 5);
             const farEdge = Math.round(ts / 2 - centerHalf + 5);
 
-            if (relPos === 0) {
-                // Bottom player: stick at nearEdge-15, score above (closer to center)
-                Object.assign(el.style, {
-                    left: '50%', top: `${nearEdge - 15 - offset - 10}px`,
-                    transform: 'translateX(-50%)',
-                });
-            } else if (relPos === 1) {
-                // Right player (下家): rotated 180° from before, slightly outward
-                Object.assign(el.style, {
-                    left: `${nearEdge - offset + 15}px`, top: '50%',
-                    transform: 'translate(-50%, -50%) rotate(-90deg)',
-                });
-            } else if (relPos === 2) {
-                // Top player: stick at farEdge, score below (closer to center)
-                Object.assign(el.style, {
-                    left: '50%', top: `${farEdge + offset - 10}px`,
-                    transform: 'translateX(-50%) rotate(180deg)',
-                });
-            } else if (relPos === 3) {
-                // Left player (上家): rotated 180° from before, slightly outward
-                Object.assign(el.style, {
-                    left: `${farEdge + offset - 15}px`, top: '50%',
-                    transform: 'translate(-50%, -50%) rotate(90deg)',
-                });
+            if (pc === 3) {
+                // 3P: 0=bottom, 1=right, 2=left
+                if (relPos === 0) {
+                    Object.assign(el.style, {
+                        left: '50%', top: `${nearEdge - 15 - offset - 10}px`,
+                        transform: 'translateX(-50%)',
+                    });
+                } else if (relPos === 1) {
+                    Object.assign(el.style, {
+                        left: `${nearEdge - offset + 15}px`, top: '50%',
+                        transform: 'translate(-50%, -50%) rotate(-90deg)',
+                    });
+                } else if (relPos === 2) {
+                    Object.assign(el.style, {
+                        left: `${farEdge + offset - 15}px`, top: '50%',
+                        transform: 'translate(-50%, -50%) rotate(90deg)',
+                    });
+                }
+            } else {
+                if (relPos === 0) {
+                    Object.assign(el.style, {
+                        left: '50%', top: `${nearEdge - 15 - offset - 10}px`,
+                        transform: 'translateX(-50%)',
+                    });
+                } else if (relPos === 1) {
+                    Object.assign(el.style, {
+                        left: `${nearEdge - offset + 15}px`, top: '50%',
+                        transform: 'translate(-50%, -50%) rotate(-90deg)',
+                    });
+                } else if (relPos === 2) {
+                    Object.assign(el.style, {
+                        left: '50%', top: `${farEdge + offset - 10}px`,
+                        transform: 'translateX(-50%) rotate(180deg)',
+                    });
+                } else if (relPos === 3) {
+                    Object.assign(el.style, {
+                        left: `${farEdge + offset - 15}px`, top: '50%',
+                        transform: 'translate(-50%, -50%) rotate(90deg)',
+                    });
+                }
             }
 
             // Click to change viewpoint
@@ -502,12 +552,18 @@ export class Renderer3D implements IRenderer {
         // All rivers scaled up for better visibility
         const riverScale = 1.35;
         // Left/right rivers shifted toward center by one tile height
-        const positions: { [key: number]: { left: string; top: string; transform: string } } = {
+        const positions4P: { [key: number]: { left: string; top: string; transform: string } } = {
             0: { left: '50%', top: `${Math.round(ts * 0.70)}px`, transform: `translate(-50%, -50%) scale(${riverScale})` },
             1: { left: `${Math.round(ts * 0.73 - th)}px`, top: '50%', transform: `translate(-50%, -50%) rotate(-90deg) scale(${riverScale})` },
             2: { left: '50%', top: `${Math.round(ts * 0.30)}px`, transform: `translate(-50%, -50%) rotate(180deg) scale(${riverScale})` },
             3: { left: `${Math.round(ts * 0.27 + th)}px`, top: '50%', transform: `translate(-50%, -50%) rotate(90deg) scale(${riverScale})` },
         };
+        const positions3P: { [key: number]: { left: string; top: string; transform: string } } = {
+            0: { left: '50%', top: `${Math.round(ts * 0.70)}px`, transform: `translate(-50%, -50%) scale(${riverScale})` },
+            1: { left: `${Math.round(ts * 0.73 - th)}px`, top: '50%', transform: `translate(-50%, -50%) rotate(-90deg) scale(${riverScale})` },
+            2: { left: `${Math.round(ts * 0.27 + th)}px`, top: '50%', transform: `translate(-50%, -50%) rotate(90deg) scale(${riverScale})` },
+        };
+        const positions = state.playerCount === 3 ? positions3P : positions4P;
         const pos = positions[relIndex] || positions[0];
         Object.assign(wrapper.style, pos);
 
@@ -518,12 +574,18 @@ export class Renderer3D implements IRenderer {
         // relIndex 1 (right):    top + back + left
         // relIndex 2 (opposite): top + back
         // relIndex 3 (left):     top + right + back
-        const riverFaces: { [key: number]: { front?: boolean; back?: boolean; left?: boolean; right?: boolean } } = {
+        const riverFaces4P: { [key: number]: { front?: boolean; back?: boolean; left?: boolean; right?: boolean } } = {
             0: { front: true },
             1: { back: true, left: true },
             2: { back: true },
             3: { right: true, back: true },
         };
+        const riverFaces3P: { [key: number]: { front?: boolean; back?: boolean; left?: boolean; right?: boolean } } = {
+            0: { front: true },
+            1: { back: true, left: true },
+            2: { right: true, back: true },
+        };
+        const riverFaces = state.playerCount === 3 ? riverFaces3P : riverFaces4P;
         const faces = riverFaces[relIndex] || { front: true, right: true };
 
         // Split into 3 rows of 6
@@ -603,7 +665,7 @@ export class Renderer3D implements IRenderer {
         const halfRiverExtent = riverH * riverScale / 2;
 
         // Perpendicular offset (distance from table edge)
-        const positions: { [key: number]: { left: string; top: string; transform: string } } = {
+        const positions4P: { [key: number]: { left: string; top: string; transform: string } } = {
             1: {
                 left: `${Math.round((ts * 0.745 - rth + halfRiverExtent + ts) / 2)}px`,
                 top: '50%',
@@ -620,15 +682,33 @@ export class Renderer3D implements IRenderer {
                 transform: 'translate(-50%, -50%) rotate(90deg)',
             },
         };
+        const positions3P: { [key: number]: { left: string; top: string; transform: string } } = {
+            1: {
+                left: `${Math.round((ts * 0.745 - rth + halfRiverExtent + ts) / 2)}px`,
+                top: '50%',
+                transform: 'translate(-50%, -50%) rotate(-90deg)',
+            },
+            2: {
+                left: `${Math.round((ts * 0.255 + rth - halfRiverExtent) / 2)}px`,
+                top: '50%',
+                transform: 'translate(-50%, -50%) rotate(90deg)',
+            },
+        };
+        const positions = pc === 3 ? positions3P : positions4P;
         const pos = positions[relIndex];
         if (pos) Object.assign(wrapper.style, pos);
 
         // Determine visible side faces based on relIndex
-        const oppFaces: { [key: number]: { front?: boolean; back?: boolean; left?: boolean; right?: boolean } } = {
+        const oppFaces4P: { [key: number]: { front?: boolean; back?: boolean; left?: boolean; right?: boolean } } = {
             1: { back: true, left: true },
             2: { back: true, right: true, left: true },
             3: { right: true, back: true },
         };
+        const oppFaces3P: { [key: number]: { front?: boolean; back?: boolean; left?: boolean; right?: boolean } } = {
+            1: { back: true, left: true },
+            2: { right: true, back: true },
+        };
+        const oppFaces = pc === 3 ? oppFaces3P : oppFaces4P;
         const faces = oppFaces[relIndex] || { front: true, right: true };
         const normalize = (t: string) => t.replace('0', '5').replace('r', '');
 
@@ -920,12 +1000,19 @@ export class Renderer3D implements IRenderer {
         if (playerIdx === this.viewpoint) panel.classList.add('active-vp');
 
         // Position — corners and edges
-        const panelPositions: { [key: number]: { [k: string]: string } } = {
+        const pc = state.playerCount;
+        const panelPositions4P: { [key: number]: { [k: string]: string } } = {
             0: { bottom: '130px', left: '25%', transform: 'translateX(-50%)' },
             1: { right: '50px', top: '45%', transform: 'translateY(-50%)' },
             2: { top: '100px', right: '380px' },
             3: { left: '100px', top: '120px' },
         };
+        const panelPositions3P: { [key: number]: { [k: string]: string } } = {
+            0: { bottom: '130px', left: '25%', transform: 'translateX(-50%)' },
+            1: { right: '50px', top: '45%', transform: 'translateY(-50%)' },
+            2: { left: '100px', top: '120px' },
+        };
+        const panelPositions = pc === 3 ? panelPositions3P : panelPositions4P;
         const pos = panelPositions[relIndex] || panelPositions[0];
         Object.assign(panel.style, pos);
 
@@ -943,6 +1030,18 @@ export class Renderer3D implements IRenderer {
         playerName.className = 'player-name';
         playerName.textContent = `P${playerIdx}`;
         panel.appendChild(playerName);
+
+        // Kita count badge
+        if (player.kitaCount > 0) {
+            const kitaBadge = document.createElement('div');
+            Object.assign(kitaBadge.style, {
+                fontSize: '11px', color: '#fff', background: 'rgba(120, 50, 180, 0.85)',
+                borderRadius: '4px', padding: '1px 5px', marginTop: '2px',
+                fontWeight: 'bold', textAlign: 'center',
+            });
+            kitaBadge.textContent = `Kita ×${player.kitaCount}`;
+            panel.appendChild(kitaBadge);
+        }
 
         // Active player bar
         if (playerIdx === state.currentActor) {
@@ -1006,12 +1105,18 @@ export class Renderer3D implements IRenderer {
                 //   1: right: 50px, top: 45%
                 //   2: top: 100px, right: 380px
                 //   3: left: 100px, top: 120px
-                const callPositions: { [key: number]: { [k: string]: string } } = {
+                const callPositions4P: { [key: number]: { [k: string]: string } } = {
                     0: { bottom: '180px', left: '25%', top: 'auto', right: 'auto', transform: 'translateX(-50%)' },
                     1: { right: '120px', top: '45%', bottom: 'auto', left: 'auto', transform: 'translateY(-50%)' },
                     2: { top: '95px', right: '470px', bottom: 'auto', left: 'auto', transform: 'none' },
                     3: { left: '170px', top: '115px', bottom: 'auto', right: 'auto', transform: 'none' },
                 };
+                const callPositions3P: { [key: number]: { [k: string]: string } } = {
+                    0: { bottom: '180px', left: '25%', top: 'auto', right: 'auto', transform: 'translateX(-50%)' },
+                    1: { right: '120px', top: '45%', bottom: 'auto', left: 'auto', transform: 'translateY(-50%)' },
+                    2: { left: '170px', top: '115px', bottom: 'auto', right: 'auto', transform: 'none' },
+                };
+                const callPositions = pc === 3 ? callPositions3P : callPositions4P;
                 const pos = callPositions[relIndex];
                 if (pos) Object.assign(el.style, pos);
             }
@@ -1024,18 +1129,23 @@ export class Renderer3D implements IRenderer {
     // =========================================================================
     // Wait indicator
     // =========================================================================
-    private renderWaitIndicator(waits: string[], relIndex: number): HTMLElement {
+    private renderWaitIndicator(waits: string[], relIndex: number, pc: number = 4): HTMLElement {
         const el = document.createElement('div');
         el.className = 'wait-indicator-3d';
 
         // Position near each player's panel on UI overlay
-        // Panel positions: 0=bottom-left, 1=right, 2=top-right, 3=left
-        const waitPositions: { [key: number]: { [k: string]: string } } = {
+        const waitPositions4P: { [key: number]: { [k: string]: string } } = {
             0: { bottom: '110px', left: '40%' },
             1: { right: '50px', top: '55%' },
             2: { top: '55px', right: '380px' },
             3: { left: '70px', top: '30%' },
         };
+        const waitPositions3P: { [key: number]: { [k: string]: string } } = {
+            0: { bottom: '110px', left: '40%' },
+            1: { right: '50px', top: '55%' },
+            2: { left: '70px', top: '30%' },
+        };
+        const waitPositions = pc === 3 ? waitPositions3P : waitPositions4P;
         Object.assign(el.style, waitPositions[relIndex] || waitPositions[0]);
 
         const label = document.createElement('span');

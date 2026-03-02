@@ -120,6 +120,9 @@ class Conditions:
     round_wind: Wind
     riichi_sticks: int
     honba: int
+    kita_count: int
+    is_sanma: bool
+    num_players: int
     def __init__(
         self,
         tsumo: bool = False,
@@ -135,6 +138,9 @@ class Conditions:
         round_wind: Wind | int = 0,
         riichi_sticks: int = 0,
         honba: int = 0,
+        kita_count: int = 0,
+        is_sanma: bool = False,
+        num_players: int = 4,
     ): ...
 
 class Yaku:

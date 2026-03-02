@@ -1,5 +1,10 @@
 import { GameState } from './game_state';
-import { GameConfig, LayoutConfig3D, createGameConfig4P, createLayout3DConfig4P } from './config';
+import {
+    GameConfig, LayoutConfig3D,
+    createGameConfig4P, createLayout3DConfig4P,
+    createGameConfig3P, createLayout3DConfig3P,
+    detectPlayerCount
+} from './config';
 import { COLORS } from './constants';
 import { Renderer3D } from './renderers/renderer_3d';
 import { IRenderer } from './renderers/renderer_interface';
@@ -32,8 +37,16 @@ export class Viewer3D {
         config?: GameConfig,
         layout?: LayoutConfig3D
     ) {
-        const gc = config ?? createGameConfig4P();
-        const lc = layout ?? createLayout3DConfig4P();
+        let gc: GameConfig;
+        let lc: LayoutConfig3D;
+        if (config) {
+            gc = config;
+            lc = layout ?? (config.playerCount === 3 ? createLayout3DConfig3P() : createLayout3DConfig4P());
+        } else {
+            const pc = detectPlayerCount(log);
+            gc = pc === 3 ? createGameConfig3P() : createGameConfig4P();
+            lc = layout ?? (pc === 3 ? createLayout3DConfig3P() : createLayout3DConfig4P());
+        }
 
         this.isFrozen = freeze;
         const el = document.getElementById(containerId);

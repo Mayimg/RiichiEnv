@@ -42,20 +42,25 @@ def _get_viewer_js_compressed_base64() -> tuple[str, str]:
 class MetadataInjector:
     def __init__(self, events: list[dict[str, Any]]):
         self.events = copy.deepcopy(events)
-        self.hands: dict[int, list[int]] = {0: [], 1: [], 2: [], 3: []}
-        self.melds: dict[int, list[Meld]] = {0: [], 1: [], 2: [], 3: []}  # List of Meld objects
+
+        # Auto-detect player count from events
+        self.player_count = self._detect_player_count(events)
+        pc = self.player_count
+
+        self.hands: dict[int, list[int]] = {i: [] for i in range(pc)}
+        self.melds: dict[int, list[Meld]] = {i: [] for i in range(pc)}
         self.dora_markers: list[int] = []
         self.round_wind = 0  # 0: East, 1: South, etc.
         self.bakaze_map = {"E": 0, "S": 1, "W": 2, "N": 3}
         self.oya = 0
-        self.riichi_declared = [False] * 4
+        self.riichi_declared = [False] * pc
         self.tile_counts = {}  # To track unique IDs for string tiles
         self.kyoku_results = []
         self.last_tile: str | None = None
         self.last_tid: int | None = None
 
         # State for Conditions
-        self.ippatsu_eligible = [False] * 4
+        self.ippatsu_eligible = [False] * pc
         self.is_rinshan = False
         self.is_chankan = False
         self.is_haitei = False
@@ -64,10 +69,21 @@ class MetadataInjector:
         self.turn_count = 0
         self.kyoku_num = 0
         self.honba = 0
+        self.kita_count: dict[int, int] = {i: 0 for i in range(pc)}
 
         # Per-round WinResult storage
         self.round_win_results: list[list[WinResult]] = []
         self._current_round_results: list[WinResult] = []
+
+    @staticmethod
+    def _detect_player_count(events: list[dict[str, Any]]) -> int:
+        """Detect player count from events (3P or 4P)."""
+        for e in events:
+            if e.get("type") == "start_kyoku" and "tehais" in e:
+                return len(e["tehais"])
+            if e.get("type") == "start_game" and "names" in e:
+                return len(e["names"])
+        return 4
 
     def _get_tid(self, tile_str: str) -> int:
         """Get a unique 136-ID for a tile string to maintain valid state."""
@@ -114,19 +130,20 @@ class MetadataInjector:
                 ev["meta"] = {}
 
             if etype == "start_kyoku":
+                pc = self.player_count
                 self.tile_counts = {}  # Reset for new kyoku
                 self.dora_markers = [self._get_tid(ev["dora_marker"])]
                 self.round_wind = self.bakaze_map.get(ev.get("bakaze", "E"), 0)
                 self.oya = ev.get("oya", 0)
                 self.kyoku_num = ev.get("kyoku", 1)  # Default to 1
                 self.honba = ev.get("honba", 0)
-                self.riichi_declared = [False] * 4
-                self.hands = {0: [], 1: [], 2: [], 3: []}
-                self.melds = {0: [], 1: [], 2: [], 3: []}
+                self.riichi_declared = [False] * pc
+                self.hands = {i: [] for i in range(pc)}
+                self.melds = {i: [] for i in range(pc)}
+                self.kita_count = {i: 0 for i in range(pc)}
                 self.kyoku_results = []
-                self.kyoku_results = []
-                self.ippatsu_eligible = [False] * 4
-                self.just_reached = [False] * 4  # Track declaration discard
+                self.ippatsu_eligible = [False] * pc
+                self.just_reached = [False] * pc  # Track declaration discard
                 self.is_rinshan = False
                 self.is_chankan = False
                 self.is_haitei = False
@@ -169,7 +186,7 @@ class MetadataInjector:
                     self.ippatsu_eligible[actor] = True
 
                 # If anyone discards, first round might be over
-                if actor == 3:  # End of round
+                if actor == self.player_count - 1:  # End of round
                     self.is_first_round_of_kyoku = False
 
                 # Any discard clears ippatsu if it's not the riichi-er's first discard
@@ -224,7 +241,7 @@ class MetadataInjector:
                 self.melds[actor].append(Meld(m_type, m_tiles, True, actor))
                 self.any_melds_in_kyoku = True
                 # Clear all ippatsu on any call
-                self.ippatsu_eligible = [False] * 4
+                self.ippatsu_eligible = [False] * self.player_count
 
             elif etype == "kakan":
                 assert actor is not None
@@ -248,7 +265,7 @@ class MetadataInjector:
                     self.is_chankan = True  # Eligible for Chankan
 
                 self.any_melds_in_kyoku = True
-                self.ippatsu_eligible = [False] * 4
+                self.ippatsu_eligible = [False] * self.player_count
 
             elif etype == "ankan":
                 assert actor is not None
@@ -265,7 +282,17 @@ class MetadataInjector:
                 m_tiles.sort()
                 self.melds[actor].append(Meld(MeldType.Ankan, m_tiles, False, actor))
                 self.is_rinshan = True
-                self.ippatsu_eligible = [False] * 4
+                self.ippatsu_eligible = [False] * self.player_count
+
+            elif etype == "kita":
+                assert actor is not None
+                # Remove N tile from hand
+                tid = self._get_matching_tid(self.hands[actor], "N")
+                if tid in self.hands[actor]:
+                    self.hands[actor].remove(tid)
+                self.kita_count[actor] += 1
+                self.is_rinshan = True
+                self.ippatsu_eligible = [False] * self.player_count
 
             elif etype == "dora":
                 self.dora_markers.append(self._get_tid(ev["dora_marker"]))
@@ -318,8 +345,9 @@ class MetadataInjector:
                     chankan=self.is_chankan if not is_tsumo else False,
                     player_wind=get_wind(actor - self.oya),
                     round_wind=get_wind(self.round_wind),
-                    # haitei/houtei based on wall (if we had wall count)
-                    # double_riichi if first round and no calls
+                    kita_count=self.kita_count.get(actor, 0),
+                    is_sanma=self.player_count == 3,
+                    num_players=self.player_count,
                 )
 
                 # Ura markers

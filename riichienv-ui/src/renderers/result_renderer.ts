@@ -372,7 +372,7 @@ export class ResultRenderer {
         }
 
         // Score info (Deltas)
-        if (details.deltas && details.deltas.length === 4) {
+        if (details.deltas && details.deltas.length >= 3) {
             const scoreContainer = document.createElement('div');
             Object.assign(scoreContainer.style, {
                 display: 'flex',

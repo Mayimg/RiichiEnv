@@ -101,26 +101,31 @@ export class CenterRenderer {
             const maxDim = Math.max(asset.w, asset.h);
             const scale = Math.min(1, targetSize / maxDim);
 
-            let rotation = '0deg';
-            if (relPos === 1) rotation = '-90deg';
-            else if (relPos === 2) rotation = '180deg';
-            else if (relPos === 3) rotation = '90deg';
+            let rotation: string;
+            if (pc === 3) {
+                // 3P: 0=bottom, 1=right, 2=left (120° increments)
+                if (relPos === 1) rotation = '-120deg';
+                else if (relPos === 2) rotation = '120deg';
+                else rotation = '0deg';
+            } else {
+                if (relPos === 1) rotation = '-90deg';
+                else if (relPos === 2) rotation = '180deg';
+                else if (relPos === 3) rotation = '90deg';
+                else rotation = '0deg';
+            }
 
             icon.style.transform = `rotate(${rotation}) scale(${scale})`;
 
             // Positioning Logic
-            if (relPos === 0) { // Bottom
-                icon.style.bottom = '8px';
-                icon.style.left = '8px';
-            } else if (relPos === 1) { // Right
-                icon.style.right = '8px';
-                icon.style.bottom = '8px';
-            } else if (relPos === 2) { // Top
-                icon.style.top = '8px';
-                icon.style.right = '8px';
-            } else if (relPos === 3) { // Left
-                icon.style.left = '8px';
-                icon.style.top = '8px';
+            if (pc === 3) {
+                if (relPos === 0) { icon.style.bottom = '8px'; icon.style.left = '8px'; }
+                else if (relPos === 1) { icon.style.right = '8px'; icon.style.bottom = '8px'; }
+                else if (relPos === 2) { icon.style.left = '8px'; icon.style.top = '8px'; }
+            } else {
+                if (relPos === 0) { icon.style.bottom = '8px'; icon.style.left = '8px'; }
+                else if (relPos === 1) { icon.style.right = '8px'; icon.style.bottom = '8px'; }
+                else if (relPos === 2) { icon.style.top = '8px'; icon.style.right = '8px'; }
+                else if (relPos === 3) { icon.style.left = '8px'; icon.style.top = '8px'; }
             }
             center.appendChild(icon);
         });
@@ -150,23 +155,41 @@ export class CenterRenderer {
                 zIndex: '11'
             });
 
-            if (relPos === 0) { // Bottom (Self)
-                scoreRow.style.bottom = '20px';
-                scoreRow.style.left = '50%';
-                scoreRow.style.transform = 'translate(-50%, 0)';
-            } else if (relPos === 1) { // Right (Shimocha)
-                scoreRow.style.right = '26px';
-                scoreRow.style.top = '50%';
-                scoreRow.style.transform = 'translate(50%, -50%) rotate(-90deg)';
-                scoreRow.style.transformOrigin = 'center center';
-            } else if (relPos === 2) { // Top (Toimen)
-                scoreRow.style.top = '20px';
-                scoreRow.style.left = '50%';
-                scoreRow.style.transform = 'translate(-50%, 0) rotate(180deg)';
-            } else if (relPos === 3) { // Left (Kamicha)
-                scoreRow.style.left = '26px';
-                scoreRow.style.top = '50%';
-                scoreRow.style.transform = 'translate(-50%, -50%) rotate(90deg)';
+            if (pc === 3) {
+                // 3P: 0=bottom, 1=right, 2=left
+                if (relPos === 0) {
+                    scoreRow.style.bottom = '20px';
+                    scoreRow.style.left = '50%';
+                    scoreRow.style.transform = 'translate(-50%, 0)';
+                } else if (relPos === 1) {
+                    scoreRow.style.right = '26px';
+                    scoreRow.style.top = '50%';
+                    scoreRow.style.transform = 'translate(50%, -50%) rotate(-90deg)';
+                    scoreRow.style.transformOrigin = 'center center';
+                } else if (relPos === 2) {
+                    scoreRow.style.left = '26px';
+                    scoreRow.style.top = '50%';
+                    scoreRow.style.transform = 'translate(-50%, -50%) rotate(90deg)';
+                }
+            } else {
+                if (relPos === 0) {
+                    scoreRow.style.bottom = '20px';
+                    scoreRow.style.left = '50%';
+                    scoreRow.style.transform = 'translate(-50%, 0)';
+                } else if (relPos === 1) {
+                    scoreRow.style.right = '26px';
+                    scoreRow.style.top = '50%';
+                    scoreRow.style.transform = 'translate(50%, -50%) rotate(-90deg)';
+                    scoreRow.style.transformOrigin = 'center center';
+                } else if (relPos === 2) {
+                    scoreRow.style.top = '20px';
+                    scoreRow.style.left = '50%';
+                    scoreRow.style.transform = 'translate(-50%, 0) rotate(180deg)';
+                } else if (relPos === 3) {
+                    scoreRow.style.left = '26px';
+                    scoreRow.style.top = '50%';
+                    scoreRow.style.transform = 'translate(-50%, -50%) rotate(90deg)';
+                }
             }
             center.appendChild(scoreRow);
 
@@ -199,22 +222,39 @@ export class CenterRenderer {
                 // We place it slightly outside the box, towards the player
                 const offset = '10px'; // pushes it out by 10px
 
-                if (relPos === 0) { // Bottom
-                    stick.style.bottom = offset;
-                    stick.style.left = '50%';
-                    stick.style.transform = 'translate(-50%, 0)';
-                } else if (relPos === 1) { // Right
-                    stick.style.right = offset;
-                    stick.style.top = '50%';
-                    stick.style.transform = 'translate(50%, -50%) rotate(90deg)';
-                } else if (relPos === 2) { // Top
-                    stick.style.top = offset;
-                    stick.style.left = '50%';
-                    stick.style.transform = 'translate(-50%, 0)'; // No rotation needed for bar, it's symmetric. But if dot placement matters? Dot is centered.
-                } else if (relPos === 3) { // Left
-                    stick.style.left = offset;
-                    stick.style.top = '50%';
-                    stick.style.transform = 'translate(-50%, -50%) rotate(90deg)';
+                if (pc === 3) {
+                    // 3P: 0=bottom, 1=right, 2=left
+                    if (relPos === 0) {
+                        stick.style.bottom = offset;
+                        stick.style.left = '50%';
+                        stick.style.transform = 'translate(-50%, 0)';
+                    } else if (relPos === 1) {
+                        stick.style.right = offset;
+                        stick.style.top = '50%';
+                        stick.style.transform = 'translate(50%, -50%) rotate(90deg)';
+                    } else if (relPos === 2) {
+                        stick.style.left = offset;
+                        stick.style.top = '50%';
+                        stick.style.transform = 'translate(-50%, -50%) rotate(90deg)';
+                    }
+                } else {
+                    if (relPos === 0) {
+                        stick.style.bottom = offset;
+                        stick.style.left = '50%';
+                        stick.style.transform = 'translate(-50%, 0)';
+                    } else if (relPos === 1) {
+                        stick.style.right = offset;
+                        stick.style.top = '50%';
+                        stick.style.transform = 'translate(50%, -50%) rotate(90deg)';
+                    } else if (relPos === 2) {
+                        stick.style.top = offset;
+                        stick.style.left = '50%';
+                        stick.style.transform = 'translate(-50%, 0)';
+                    } else if (relPos === 3) {
+                        stick.style.left = offset;
+                        stick.style.top = '50%';
+                        stick.style.transform = 'translate(-50%, -50%) rotate(90deg)';
+                    }
                 }
                 center.appendChild(stick);
             }

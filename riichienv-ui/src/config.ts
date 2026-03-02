@@ -81,6 +81,27 @@ export function createLayoutConfig3P(): LayoutConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-detection of player count from log events
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect whether a log represents a 3-player or 4-player game.
+ * Checks start_kyoku.tehais.length or start_game.names.length.
+ * Falls back to 4 if detection fails.
+ */
+export function detectPlayerCount(events: { type: string; tehais?: any[]; names?: any[];[key: string]: any }[]): number {
+    for (const e of events) {
+        if (e.type === 'start_kyoku' && Array.isArray(e.tehais)) {
+            return e.tehais.length;
+        }
+        if (e.type === 'start_game' && Array.isArray(e.names)) {
+            return e.names.length;
+        }
+    }
+    return 4;
+}
+
+// ---------------------------------------------------------------------------
 // 3D layout configuration (16:9 perspective view)
 // ---------------------------------------------------------------------------
 

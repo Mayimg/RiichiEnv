@@ -33,6 +33,7 @@ export interface PlayerState {
     wind: number;
     waits?: string[];
     lastDrawnTile?: string;
+    kitaCount: number;
 }
 
 export interface ConditionTracker {

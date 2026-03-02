@@ -36,6 +36,9 @@ export interface ConditionsInput {
     player_wind?: number;
     round_wind?: number;
     honba?: number;
+    kita_count?: number;
+    is_sanma?: boolean;
+    num_players?: number;
 }
 
 /**
