@@ -109,8 +109,10 @@ class AgentEvaluator:
     def evaluate(self, hero_weights: dict, num_episodes: int = 48) -> dict:
         """Run evaluation games and return metrics dict.
 
-        Hero is rotated across all seat positions for fairness:
-        ``num_episodes`` games total, distributed evenly across N seats.
+        Hero is rotated across all seat positions for fairness.
+        ``num_episodes`` is a minimum target, distributed as evenly as possible
+        across N seats; the exact number of games played is reported in
+        ``agent_eval/episodes``.
         """
         # Load hero weights
         self.hero_model.load_state_dict(hero_weights, strict=False)

@@ -26,6 +26,7 @@ def _create_evaluator(cfg_kwargs: dict, model_config: dict):
         # Plugin-based evaluator (any player count)
         return load_evaluator(
             evaluator_name=evaluator_name,
+            model_path=cfg_kwargs.get("model_path"),
             model_class=cfg_kwargs.get("model_class"),
             model_config=model_config,
             encoder_class=cfg_kwargs.get("encoder_class"),

@@ -33,6 +33,7 @@ def _create_evaluator(cfg, model_config):
 
         return load_evaluator(
             evaluator_name=ev.evaluator_name,
+            model_path=ev.model_path,
             model_class=cfg.model_class,
             model_config=model_config,
             encoder_class=cfg.encoder_class,
