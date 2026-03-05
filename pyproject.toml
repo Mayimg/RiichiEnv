@@ -24,7 +24,7 @@ Homepage = "https://github.com/smly/RiichiEnv"
 Issues = "https://github.com/smly/RiichiEnv/issues"
 
 [build-system]
-requires = ["maturin >= 1.9.4,<2.0"]
+requires = ["maturin>=1.9.4,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
@@ -44,7 +44,14 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py310"
-extend-exclude = ["trunk", "scripts", "riichienv-ui/demos", "riichienv-ml", "riichienv-ml-xt", "riichienv-validation"]
+extend-exclude = [
+    "trunk",
+    "scripts",
+    "riichienv-ui/demos",
+    "riichienv-ml",
+    "riichienv-ml-xt",
+    "riichienv-validation",
+]
 
 [tool.ruff.lint]
 fixable = ["ALL"]
