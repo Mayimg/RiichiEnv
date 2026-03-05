@@ -88,11 +88,18 @@ class WandbConfig(BaseModel):
     wandb_group: str | None = None
 
 
+class OpponentConfig(BaseModel):
+    config_path: str
+    model_path: str
+
+
 class EvaluatorConfig(BaseModel):
     model_path: str | None = None
+    evaluator_name: str | None = None
     eval_episodes: int = 48
     eval_interval: int = 50000
     eval_device: str = "cpu"
+    opponents: list[OpponentConfig] = []
 
 
 class GrpConfig(WandbConfig):
@@ -214,6 +221,10 @@ class PpoConfig(WandbConfig):
     grp_model: str | None = None
     pts_weight: list[float] = [10.0, 4.0, -4.0, -10.0]
     async_rollout: bool = False
+    # Self-play baseline update interval (0 = never update, keep frozen)
+    baseline_update_interval: int = 0
+    # Fixed opponent model path (if set, baseline is loaded from this path instead of hero weights)
+    baseline_model: str | None = None
     # Third-party evaluator (4P only)
     evaluator: EvaluatorConfig = EvaluatorConfig()
 

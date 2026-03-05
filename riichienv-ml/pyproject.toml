@@ -20,6 +20,9 @@ dependencies = [
     "loguru>=0.7.3",
 ]
 
+[project.entry-points."riichienv_ml.evaluators"]
+riichienv = "riichienv_ml.agent_eval:AgentEvaluator"
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"

@@ -105,14 +105,49 @@ class Agent:
             "pass model_path explicitly")
 
     def _load_weights(self, state: dict):
-        """Load state dict with QNetwork → ActorCritic auto-conversion."""
-        has_actor = any(k.startswith("actor_head.") for k in state)
-        has_head = any(k.startswith("head.") for k in state)
-        if has_head and not has_actor:
+        """Load state dict with automatic key mapping between model formats.
+
+        Handles conversions between QNetwork (v_head/a_head/head) and
+        ActorCriticNetwork (actor_head/critic_head) in both directions.
+        """
+        model_keys = set(self.model.state_dict().keys())
+        model_has_actor = any(k.startswith("actor_head.") for k in model_keys)
+        model_has_v = any(k.startswith("v_head.") for k in model_keys)
+
+        ckpt_has_actor = any(k.startswith("actor_head.") for k in state)
+        ckpt_has_v = any(k.startswith("v_head.") for k in state)
+        ckpt_has_head = any(k.startswith("head.") for k in state)
+
+        if ckpt_has_head and not ckpt_has_actor and model_has_actor:
+            # Single-head QNetwork → ActorCriticNetwork
             new_state = {}
             for k, v in state.items():
                 if k.startswith("head."):
                     new_state[k.replace("head.", "actor_head.")] = v
+                else:
+                    new_state[k] = v
+            result = self.model.load_state_dict(new_state, strict=False)
+        elif ckpt_has_actor and not ckpt_has_v and model_has_v:
+            # ActorCriticNetwork → QNetwork (reverse mapping)
+            new_state = {}
+            for k, v in state.items():
+                if k.startswith("actor_head."):
+                    new_state[k.replace("actor_head.", "a_head.")] = v
+                elif k.startswith("critic_head."):
+                    new_state[k.replace("critic_head.", "v_head.")] = v
+                else:
+                    new_state[k] = v
+            result = self.model.load_state_dict(new_state, strict=False)
+        elif ckpt_has_v and not ckpt_has_actor and model_has_actor:
+            # Dueling QNetwork → ActorCriticNetwork
+            new_state = {}
+            for k, v in state.items():
+                if k.startswith("a_head."):
+                    new_state[k.replace("a_head.", "actor_head.")] = v
+                elif k.startswith("v_head."):
+                    new_state[k.replace("v_head.", "critic_head.")] = v
+                elif k.startswith("aux_head."):
+                    continue
                 else:
                     new_state[k] = v
             result = self.model.load_state_dict(new_state, strict=False)

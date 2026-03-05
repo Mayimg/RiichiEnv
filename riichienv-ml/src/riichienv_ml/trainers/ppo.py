@@ -25,21 +25,39 @@ from riichienv_ml.trainers._ppo_learner import PPOLearner
 
 
 def _create_evaluator(cfg, model_config):
-    """Create third-party evaluator if configured and 4P mode. Returns None otherwise."""
-    if cfg.evaluator.model_path is None or cfg.game.n_players != 4:
+    """Create third-party evaluator if configured. Returns None otherwise."""
+    ev = cfg.evaluator
+    if ev.evaluator_name is not None:
+        # Plugin-based evaluator (any player count)
+        from riichienv_ml.evaluator import load_evaluator
+
+        return load_evaluator(
+            evaluator_name=ev.evaluator_name,
+            model_class=cfg.model_class,
+            model_config=model_config,
+            encoder_class=cfg.encoder_class,
+            tile_dim=cfg.game.tile_dim,
+            n_players=cfg.game.n_players,
+            device=cfg.device,
+            eval_device=ev.eval_device,
+            opponents=[o.model_dump() for o in ev.opponents],
+        )
+
+    # Legacy: mortal evaluator (4P only, requires model_path)
+    if ev.model_path is None or cfg.game.n_players != 4:
         return None
 
     from riichienv_ml.evaluator import load_evaluator
 
     return load_evaluator(
         evaluator_name="mortal",
-        model_path=cfg.evaluator.model_path,
+        model_path=ev.model_path,
         model_class=cfg.model_class,
         model_config=model_config,
         encoder_class=cfg.encoder_class,
         tile_dim=cfg.game.tile_dim,
         device=cfg.device,
-        eval_device=cfg.evaluator.eval_device,
+        eval_device=ev.eval_device,
     )
 
 
@@ -143,7 +161,31 @@ def run_ppo_training(cfg):
         ]
 
     hero_weights = {k: v.cpu() for k, v in learner.get_weights().items()}
-    baseline_weights = {k: v.cpu() for k, v in learner.get_weights().items()}
+
+    # Load baseline (opponent) weights: either from a separate model or a copy of the hero
+    if cfg.baseline_model:
+        logger.info(f"Loading fixed baseline opponent from {cfg.baseline_model}")
+        _bl_state = torch.load(cfg.baseline_model, map_location="cpu", weights_only=True)
+        # Auto-convert QNetwork keys to ActorCriticNetwork format
+        _has_a = any(k.startswith("a_head.") for k in _bl_state)
+        _has_v = any(k.startswith("v_head.") for k in _bl_state)
+        if _has_a and _has_v:
+            _new = {}
+            for k, v in _bl_state.items():
+                if k.startswith("a_head."):
+                    _new[k.replace("a_head.", "actor_head.")] = v
+                elif k.startswith("v_head."):
+                    _new[k.replace("v_head.", "critic_head.")] = v
+                elif k.startswith("aux_head."):
+                    continue
+                else:
+                    _new[k] = v
+            _bl_state = _new
+        baseline_weights = _bl_state
+        logger.info(f"Loaded baseline model ({len(baseline_weights)} keys)")
+    else:
+        baseline_weights = {k: v.cpu() for k, v in learner.get_weights().items()}
+
     hero_ref = ray.put(hero_weights)
     baseline_ref = ray.put(baseline_weights)
 
@@ -272,19 +314,13 @@ def run_ppo_training(cfg):
                 if tp_evaluator is not None:
                     try:
                         hw = {k: v.cpu() for k, v in learner.get_weights().items()}
-                        mortal_metrics = tp_evaluator.evaluate(
+                        tp_metrics = tp_evaluator.evaluate(
                             hw, num_episodes=cfg.evaluator.eval_episodes)
-                        logger.info(
-                            f"Mortal Eval: rank={mortal_metrics['mortal_eval/rank_mean']:.2f}"
-                            f"\u00b1{mortal_metrics['mortal_eval/rank_se']:.2f}"
-                            f", score={mortal_metrics['mortal_eval/score_mean']:.0f}"
-                            f", 1st={mortal_metrics['mortal_eval/1st_rate']:.1%}"
-                            f", 4th={mortal_metrics['mortal_eval/4th_rate']:.1%}"
-                            f" ({mortal_metrics['mortal_eval/episodes']} eps"
-                            f", {mortal_metrics['mortal_eval/time']:.1f}s)")
-                        wandb.log(mortal_metrics, step=step)
+                        logline = tp_evaluator.metrics_to_logline(tp_metrics)
+                        logger.info(f"TP Eval @ step {step}: {logline}")
+                        wandb.log(tp_metrics, step=step)
                     except Exception as e:
-                        logger.error(f"Mortal evaluation failed at step {step}: {e}")
+                        logger.error(f"TP evaluation failed at step {step}: {e}")
 
             weights = {k: v.cpu() for k, v in learner.get_weights().items()}
 
@@ -300,6 +336,15 @@ def run_ppo_training(cfg):
             weight_ref = ray.put(weights)
             for w in workers:
                 w.update_weights.remote(weight_ref)
+
+            # Periodic baseline update for self-play curriculum
+            if (cfg.baseline_update_interval > 0
+                    and step > 0
+                    and step % cfg.baseline_update_interval == 0):
+                baseline_weights = {k: v.clone() for k, v in weights.items()}
+                baseline_ref = ray.put(baseline_weights)
+                ray.get([w.update_baseline_weights.remote(baseline_ref) for w in workers])
+                logger.info(f"Updated baseline weights at step {step}")
 
             if cfg.async_rollout and prefetched_futures is None and step < cfg.num_steps:
                 prefetched_futures = [w.collect_episodes.remote() for w in workers]
@@ -332,16 +377,12 @@ def run_ppo_training(cfg):
     if tp_evaluator is not None:
         try:
             hw = {k: v.cpu() for k, v in learner.get_weights().items()}
-            mortal_metrics = tp_evaluator.evaluate(
+            tp_metrics = tp_evaluator.evaluate(
                 hw, num_episodes=cfg.evaluator.eval_episodes)
-            logger.info(
-                f"Final Mortal Eval: rank={mortal_metrics['mortal_eval/rank_mean']:.2f}"
-                f"\u00b1{mortal_metrics['mortal_eval/rank_se']:.2f}"
-                f", score={mortal_metrics['mortal_eval/score_mean']:.0f}"
-                f", 1st={mortal_metrics['mortal_eval/1st_rate']:.1%}"
-                f", 4th={mortal_metrics['mortal_eval/4th_rate']:.1%}")
-            wandb.log(mortal_metrics, step=step)
+            logline = tp_evaluator.metrics_to_logline(tp_metrics)
+            logger.info(f"Final TP Eval: {logline}")
+            wandb.log(tp_metrics, step=step)
         except Exception as e:
-            logger.error(f"Final Mortal evaluation failed: {e}")
+            logger.error(f"Final TP evaluation failed: {e}")
 
     ray.shutdown()

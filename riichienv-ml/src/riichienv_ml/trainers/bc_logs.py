@@ -18,13 +18,29 @@ from riichienv_ml.utils import AverageMeter
 
 
 def _create_evaluator(cfg_kwargs: dict, model_config: dict):
-    """Create third-party evaluator if configured and 4P mode. Returns None otherwise."""
+    """Create third-party evaluator if configured. Returns None otherwise."""
+    from riichienv_ml.evaluator import load_evaluator
+
+    evaluator_name = cfg_kwargs.get("evaluator_name")
+    if evaluator_name is not None:
+        # Plugin-based evaluator (any player count)
+        return load_evaluator(
+            evaluator_name=evaluator_name,
+            model_class=cfg_kwargs.get("model_class"),
+            model_config=model_config,
+            encoder_class=cfg_kwargs.get("encoder_class"),
+            tile_dim=cfg_kwargs.get("tile_dim", 34),
+            n_players=cfg_kwargs.get("n_players", 4),
+            device=cfg_kwargs.get("device_str", "cuda"),
+            eval_device=cfg_kwargs.get("eval_device", "cpu"),
+            opponents=cfg_kwargs.get("opponents", []),
+        )
+
+    # Legacy: mortal evaluator (4P only, requires model_path)
     model_path = cfg_kwargs.get("model_path")
     n_players = cfg_kwargs.get("n_players", 4)
     if model_path is None or n_players != 4:
         return None
-
-    from riichienv_ml.evaluator import load_evaluator
 
     return load_evaluator(
         evaluator_name="mortal",
@@ -106,7 +122,9 @@ class Trainer:
         self.tp_evaluator = _create_evaluator(
             cfg_kwargs=dict(
                 model_path=evaluator_config.model_path,
+                evaluator_name=evaluator_config.evaluator_name,
                 eval_device=evaluator_config.eval_device,
+                opponents=[o.model_dump() for o in evaluator_config.opponents],
                 model_class=model_class,
                 encoder_class=encoder_class,
                 tile_dim=tile_dim,

@@ -1,0 +1,53 @@
+ppo:
+  game:
+    n_players: 3
+  algorithm: ppo
+  load_model: /data/workspace/riichienv-ml/3p/bc_logs_2M.pth
+  baseline_model: /data/workspace/riichienv-ml/3p/bc_logs_2M.pth
+  device: cuda
+  model_class: riichienv_ml.models.actor_critic.ActorCriticNetwork
+  encoder_class: riichienv_ml.features.feat_v1.ObservationEncoder
+  num_workers: 4
+  num_steps: 3000
+  lr: 5e-5
+  lr_min: 1e-6
+  gamma: 1.0
+  max_grad_norm: 0.5
+  batch_size: 256
+  ppo_clip: 0.08
+  ppo_epochs: 3
+  gae_lambda: 0.95
+  entropy_coef: 0.001
+  value_coef: 0.5
+  grp_model: /data/workspace/riichienv-ml/3p/grp_model.pth
+  pts_weight: [4.0, 0.0, -4.0]
+  weight_decay: 0.005
+  alpha_kl: 0.02
+  alpha_kl_warmup_steps: 50
+  aux_weight: 0.0
+  eval_interval: 100
+  eval_episodes: 192
+  baseline_update_interval: 50
+  worker_device: cuda
+  gpu_per_worker: 0.2
+  num_envs_per_worker: 48
+  checkpoint_dir: /data/workspace/riichienv-ml/3p/bc_ppo/checkpoints
+  wandb_entity: smly
+  wandb_project: riichienv-3p
+  wandb_tags: [online, ppo, bc-init, v10]
+  evaluator:
+    evaluator_name: riichienv
+    eval_episodes: 90
+    eval_interval: 100
+    eval_device: cuda
+    opponents:
+      - config_path: src/riichienv_ml/configs/3p/bc_logs.yml
+        model_path: /data/workspace/riichienv-ml/3p/bc_logs_2M.pth
+  model:
+    in_channels: 74
+    num_blocks: 16
+    conv_channels: 192
+    fc_dim: 512
+    num_actions: 60
+    tile_dim: 27
+    aux_dims: 3
