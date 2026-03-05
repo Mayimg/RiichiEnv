@@ -885,7 +885,6 @@ export class GameState {
                 honba: this.current.honba,
                 kita_count: player.kitaCount,
                 is_sanma: pc === 3,
-                num_players: pc,
             };
 
             const wasmResult = calculateScore(

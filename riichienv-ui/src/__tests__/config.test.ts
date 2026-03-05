@@ -111,13 +111,12 @@ describe('detectPlayerCount', () => {
         expect(detectPlayerCount(events)).toBe(3);
     });
 
-    it('should prefer start_kyoku over start_game', () => {
+    it('should return the count from whichever matching event comes first', () => {
         const events = [
             { type: 'start_game', names: ['P0', 'P1', 'P2', 'P3'] },
             { type: 'start_kyoku', tehais: [[], [], []] },
         ];
-        // start_game says 4 but start_kyoku (checked first in iteration) says...
-        // Actually iteration order matters — start_game comes first
+        // start_game appears first in the array, so its names.length (4) wins
         expect(detectPlayerCount(events)).toBe(4);
     });
 

@@ -38,7 +38,6 @@ export interface ConditionsInput {
     honba?: number;
     kita_count?: number;
     is_sanma?: boolean;
-    num_players?: number;
 }
 
 /**

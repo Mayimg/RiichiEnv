@@ -50,7 +50,6 @@ struct ConditionsInput {
     honba: u32,
     kita_count: u8,
     is_sanma: bool,
-    num_players: u8,
 }
 
 impl ConditionsInput {
@@ -71,7 +70,7 @@ impl ConditionsInput {
             honba: self.honba,
             kita_count: self.kita_count,
             is_sanma: self.is_sanma,
-            num_players: self.num_players,
+            num_players: if self.is_sanma { 3 } else { 4 },
         }
     }
 }

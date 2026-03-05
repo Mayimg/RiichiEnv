@@ -141,7 +141,6 @@ class MetadataInjector:
                 self.hands = {i: [] for i in range(pc)}
                 self.melds = {i: [] for i in range(pc)}
                 self.kita_count = {i: 0 for i in range(pc)}
-                self.kyoku_results = []
                 self.ippatsu_eligible = [False] * pc
                 self.just_reached = [False] * pc  # Track declaration discard
                 self.is_rinshan = False
