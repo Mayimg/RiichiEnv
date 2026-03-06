@@ -391,6 +391,44 @@ export const VIEWER_3D_CSS = `
         transform: translate(-50%, -50%) rotate(90deg);
         transform-origin: center center;
     }
+    .meld-tile-own-rotated-stacked {
+        width: 56px;
+        height: 56px;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    .meld-tile-own-rotated-stacked .tile-layer:first-child {
+        position: absolute;
+        width: 40px;
+        height: 56px;
+        left: 50%;
+        bottom: 8px;
+        transform: translateX(-50%) rotate(90deg);
+        transform-origin: center center;
+        border-radius: 4px;
+        background: #f0ead6;
+        box-shadow:
+            0 2px 0 0 #c8c0a8,
+            1px 2px 0 0 #bfb7a3,
+            1px 3px 5px rgba(0,0,0,0.25);
+    }
+    .meld-tile-own-rotated-stacked .tile-layer:last-child {
+        position: absolute;
+        width: 40px;
+        height: 56px;
+        left: 50%;
+        top: 0;
+        transform: translateX(-50%) rotate(90deg);
+        transform-origin: center center;
+        border-radius: 4px;
+        background: #f0ead6;
+        box-shadow:
+            0 2px 0 0 #c8c0a8,
+            1px 2px 0 0 #bfb7a3,
+            1px 3px 5px rgba(0,0,0,0.25);
+    }
 
     /* ========================================
        UI Overlay

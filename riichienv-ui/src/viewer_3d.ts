@@ -58,17 +58,18 @@ export class Viewer3D extends BaseViewer {
         }
 
         Viewer3D._pendingLayout = layout;
-
-        super({
-            container: el,
-            log,
-            initialStep: effectiveInitialStep,
-            perspective,
-            freeze,
-            config,
-        });
-
-        Viewer3D._pendingLayout = undefined;
+        try {
+            super({
+                container: el,
+                log,
+                initialStep: effectiveInitialStep,
+                perspective,
+                freeze,
+                config,
+            });
+        } finally {
+            Viewer3D._pendingLayout = undefined;
+        }
     }
 
     protected getLayoutInfo(gc: GameConfig, _log: MjaiEvent[]) {

@@ -58,17 +58,18 @@ export class Viewer extends BaseViewer {
         }
 
         Viewer._pendingLayout = layout;
-
-        super({
-            container: el,
-            log,
-            initialStep: effectiveInitialStep,
-            perspective,
-            freeze,
-            config,
-        });
-
-        Viewer._pendingLayout = undefined;
+        try {
+            super({
+                container: el,
+                log,
+                initialStep: effectiveInitialStep,
+                perspective,
+                freeze,
+                config,
+            });
+        } finally {
+            Viewer._pendingLayout = undefined;
+        }
     }
 
     protected getLayoutInfo(gc: GameConfig, _log: MjaiEvent[]) {

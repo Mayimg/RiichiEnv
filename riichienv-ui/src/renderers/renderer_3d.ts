@@ -1009,6 +1009,13 @@ export class Renderer3D implements IRenderer {
             d.appendChild(TileRenderer.getTileElement(t));
             mGroup.appendChild(d);
         };
+        const addRotatedStacked = (bottom: string, top: string) => {
+            const d = document.createElement('div');
+            d.className = 'meld-tile-own-rotated-stacked';
+            d.appendChild(TileRenderer.getTileElement(bottom));
+            d.appendChild(TileRenderer.getTileElement(top));
+            mGroup.appendChild(d);
+        };
 
         if (m.type === 'ankan') {
             tiles.forEach((t, i) => {
@@ -1016,7 +1023,7 @@ export class Renderer3D implements IRenderer {
                 addUpright(tileId);
             });
         } else if (m.type === 'kakan') {
-            const _added = tiles.pop()!;
+            const added = tiles.pop()!;
             const ponTiles = tiles;
             const stolen = ponTiles.pop()!;
             const consumed = ponTiles;
@@ -1024,18 +1031,18 @@ export class Renderer3D implements IRenderer {
             // Kakan: stolen tile + added tile stacked rotated
             if (rel === 1) {
                 consumed.forEach((t) => addUpright(t));
-                addRotated(stolen);
+                addRotatedStacked(stolen, added);
             } else if (rel === 3) {
-                addRotated(stolen);
+                addRotatedStacked(stolen, added);
                 consumed.forEach((t) => addUpright(t));
             } else {
                 if (consumed.length >= 2) {
                     addUpright(consumed[0]);
-                    addRotated(stolen);
+                    addRotatedStacked(stolen, added);
                     addUpright(consumed[1]);
                 } else {
                     consumed.forEach((t) => addUpright(t));
-                    addRotated(stolen);
+                    addRotatedStacked(stolen, added);
                 }
             }
         } else {

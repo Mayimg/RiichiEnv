@@ -221,9 +221,8 @@ export abstract class BaseViewer {
         return pc === 3 ? createGameConfig3P() : createGameConfig4P();
     }
 
-    private createBtn(id: string, svgContent: string, tooltip: string): HTMLDivElement {
+    private createBtn(_id: string, svgContent: string, tooltip: string): HTMLDivElement {
         const btn = document.createElement('div');
-        btn.id = id;
         btn.className = 'icon-btn';
         btn.title = tooltip;
 
