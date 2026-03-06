@@ -350,11 +350,13 @@ export const VIEWER_3D_CSS = `
         flex-direction: row-reverse;
         gap: 3px;
         align-items: flex-end;
+        flex-shrink: 0;
     }
     .own-meld-group-3d {
         display: flex;
         align-items: flex-end;
         margin-left: 5px;
+        flex-shrink: 0;
     }
     .meld-tile-own {
         width: 40px;

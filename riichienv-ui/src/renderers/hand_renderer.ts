@@ -193,13 +193,13 @@ export class HandRenderer {
                 // Front
                 if (consumed.length >= 3) {
                     columns.push({ tiles: [consumed[0]], rotate: false });
-                    columns.push({ tiles: [consumed[1]], rotate: false });
                     columns.push({ tiles: [stolen], rotate: true });
+                    columns.push({ tiles: [consumed[1]], rotate: false });
                     columns.push({ tiles: [consumed[2]], rotate: false });
                 } else {
                     columns.push({ tiles: [consumed[0]], rotate: false });
-                    columns.push({ tiles: [consumed[1]], rotate: false });
-                    columns.push({ tiles: [stolen], rotate: true }); // Fallback
+                    columns.push({ tiles: [stolen], rotate: true });
+                    columns.push({ tiles: [consumed[1]], rotate: false }); // Fallback
                 }
             } else if (rel === 3) {
                 // Left
@@ -241,9 +241,23 @@ export class HandRenderer {
             const div = document.createElement('div');
             if (col.rotate) {
                 // Rotated Column
+                const isStacked = col.tiles.length > 1;
+                const tileW = 30;
+                const tileH = 42;
+                // Before rotation: (N * tileW) x tileH
+                // After rotation:  tileH x (N * tileW)
+                const preRotW = col.tiles.length * tileW;
+                const preRotH = tileH;
+                const visualW = preRotH; // 42px after rotation
+                const visualH = preRotW; // 30px or 60px after rotation
+
+                // For single rotated tile, use 45px to align baseline with upright tiles (42px).
+                // The extra 3px compensates for the rotator's top offset. For stacked (kakan), use visualH (60px).
+                const parentH = isStacked ? visualH : 45;
+
                 Object.assign(div.style, {
-                    width: '42px', // Rotated height becomes width (42px)
-                    height: '42px', // Match upright height
+                    width: `${visualW}px`,
+                    height: `${parentH}px`,
                     position: 'relative',
                     marginLeft: '0px',
                     marginRight: '0px',
@@ -251,26 +265,52 @@ export class HandRenderer {
 
                 // Wrapper to rotate
                 const rotator = document.createElement('div');
-                Object.assign(rotator.style, {
-                    transform: 'rotate(90deg)',
-                    transformOrigin: 'center center',
-                    width: '100%',
-                    height: '100%',
-                    display: 'flex', // Use flex to stack
-                    gap: '0px',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    position: 'relative',
-                    top: '6px', // Push down to align visual bottom with baseline (42-30)/2 = 6px gap to close
-                });
+                if (isStacked) {
+                    // Stacked tiles (kakan): position absolutely to handle size mismatch
+                    const offsetX = (visualW - preRotW) / 2; // (42 - 60) / 2 = -9
+                    const offsetY = (visualH - preRotH) / 2; // (60 - 42) / 2 = 9
+                    Object.assign(rotator.style, {
+                        transform: 'rotate(90deg)',
+                        transformOrigin: 'center center',
+                        width: `${preRotW}px`,
+                        height: `${preRotH}px`,
+                        display: 'flex',
+                        gap: '0px',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        position: 'absolute',
+                        left: `${offsetX}px`,
+                        top: `${offsetY}px`,
+                    });
+                } else {
+                    Object.assign(rotator.style, {
+                        transform: 'rotate(90deg)',
+                        transformOrigin: 'center center',
+                        width: '100%',
+                        height: '100%',
+                        display: 'flex',
+                        gap: '0px',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        position: 'relative',
+                        top: '6px', // Push down to align visual bottom with baseline (42-30)/2 = 6px gap to close
+                    });
+                }
 
                 col.tiles.forEach((t, _idx) => {
                     const inner = document.createElement('div');
-                    inner.appendChild(TileRenderer.getTileElement(t));
+                    const tileEl = TileRenderer.getTileElement(t);
+                    // Remove box-shadow on rotated tiles to prevent shadow
+                    // overlapping adjacent upright tiles in the meld
+                    const tileBg = tileEl.querySelector('.tile-bg') as HTMLElement | null;
+                    if (tileBg) {
+                        tileBg.style.boxShadow = 'none';
+                    }
+                    inner.appendChild(tileEl);
                     Object.assign(inner.style, {
-                        width: '30px',
-                        height: '42px',
-                        display: 'block', // Ensure block
+                        width: `${tileW}px`,
+                        height: `${tileH}px`,
+                        display: 'block',
                     });
 
                     rotator.appendChild(inner);

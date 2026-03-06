@@ -872,7 +872,13 @@ export class Renderer3D implements IRenderer {
                         addRotated(stolen);
                         consumed.forEach((t) => addUpright(t));
                     } else {
-                        if (consumed.length >= 2) {
+                        if (consumed.length >= 3) {
+                            // daiminkan / kakan from front: [c0, stolen_rot, c1, c2]
+                            addUpright(consumed[0]);
+                            addRotated(stolen);
+                            addUpright(consumed[1]);
+                            addUpright(consumed[2]);
+                        } else if (consumed.length >= 2) {
                             addUpright(consumed[0]);
                             addRotated(stolen);
                             addUpright(consumed[1]);
@@ -1048,8 +1054,8 @@ export class Renderer3D implements IRenderer {
                 } else {
                     if (consumed.length >= 3) {
                         addUpright(consumed[0]);
-                        addUpright(consumed[1]);
                         addRotated(stolen);
+                        addUpright(consumed[1]);
                         addUpright(consumed[2]);
                     } else {
                         consumed.forEach((t) => addUpright(t));
