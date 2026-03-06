@@ -47,6 +47,37 @@ export interface ConditionTracker {
     doubleRiichi: boolean[];         // Per-player double riichi declared
 }
 
+// --- Public API types ---
+
+export interface ViewerOptions {
+    log: MjaiEvent[];
+    renderer?: '2d' | '3d';
+    perspective?: number;
+    freeze?: boolean;
+    initialPosition?: { kyoku?: number; step?: number };
+}
+
+export interface ViewerPosition {
+    kyokuIndex: number;
+    step: number;
+    totalSteps: number;
+}
+
+export interface KyokuInfo {
+    index: number;
+    round: number;
+    honba: number;
+    scores: number[];
+}
+
+export type ViewerEventMap = {
+    positionChange: { kyokuIndex: number; step: number };
+    kyokuChange: { kyokuIndex: number; round: number; honba: number };
+    viewpointChange: { viewpoint: number };
+};
+
+// --- Internal types ---
+
 export interface BoardState {
     playerCount: number;
     players: PlayerState[];
