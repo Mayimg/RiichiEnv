@@ -1891,6 +1891,10 @@ impl GameState3P {
     pub(crate) fn _process_end_game(&mut self) {
         self.is_done = true;
         if !self.skip_mjai_logging {
+            let mut ek = serde_json::Map::new();
+            ek.insert("type".to_string(), Value::String("end_kyoku".to_string()));
+            self._push_mjai_event(Value::Object(ek));
+
             let mut ev = serde_json::Map::new();
             ev.insert("type".to_string(), Value::String("end_game".to_string()));
             self._push_mjai_event(Value::Object(ev));

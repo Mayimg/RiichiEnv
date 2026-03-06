@@ -361,6 +361,17 @@ mod unit_tests {
             state.is_done,
             "Game should be done due to tobi (player with negative score)"
         );
+
+        // Verify MJAI log contains end_kyoku followed by end_game
+        let log = &state.mjai_log;
+        let ek_pos = log.iter().position(|s| s.contains("\"end_kyoku\""));
+        let eg_pos = log.iter().position(|s| s.contains("\"end_game\""));
+        assert!(ek_pos.is_some(), "end_kyoku must be emitted before end_game on tobi");
+        assert!(eg_pos.is_some(), "end_game must be emitted on tobi");
+        assert!(
+            ek_pos.unwrap() < eg_pos.unwrap(),
+            "end_kyoku must appear before end_game"
+        );
     }
 
     #[test]
