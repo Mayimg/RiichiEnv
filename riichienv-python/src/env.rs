@@ -765,14 +765,16 @@ impl RiichiEnv {
         self.get_observations(py, players)
     }
 
-    /// Start a new hanchan (half-game).
+    /// Start a new game (hanchan, tonpuusen, or single-round).
     ///
     /// This resets the entire game to its initial state: scores return to their
-    /// starting values, oya/round_wind/honba/kyotaku are set to 0, and logs are
-    /// cleared.  All parameters are optional — when omitted they default to the
-    /// initial hanchan state (NOT the previous round's values).
+    /// starting values, oya/round_wind/honba/kyotaku default to 0 when omitted,
+    /// and logs from the previous game are cleared. A new game is then started,
+    /// emitting a fresh `start_game` event into the log. All parameters are
+    /// optional — when omitted they default to the initial game state
+    /// (NOT the previous round's values).
     ///
-    /// To re-initialize a single round within an ongoing hanchan (e.g. for
+    /// To re-initialize a single round within an ongoing game (e.g. for
     /// replay validation), pass explicit values for every parameter.
     #[pyo3(signature = (oya=None, wall=None, round_wind=None, scores=None, honba=None, kyotaku=None, seed=None))]
     #[allow(clippy::too_many_arguments)]
@@ -787,7 +789,20 @@ impl RiichiEnv {
         kyotaku: Option<u32>,
         seed: Option<u64>,
     ) -> PyResult<Py<PyAny>> {
-        // For a new hanchan, default starting scores based on the variant
+        let np = self.variant.num_players() as usize;
+
+        // Validate scores length when explicitly provided.
+        if let Some(ref sc) = scores {
+            if sc.len() != np {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "scores length {} does not match number of players {}",
+                    sc.len(),
+                    np,
+                )));
+            }
+        }
+
+        // For a new game, default starting scores based on the variant
         // (25000 for 4-player, 35000 for 3-player).
         let default_scores = match &self.variant {
             GameStateVariant::FourPlayer(s) => vec![s.mode.starting_score(); 4],
