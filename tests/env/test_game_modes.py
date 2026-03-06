@@ -37,7 +37,7 @@ class TestGameModes:
             game_mode=GameType.YON_IKKYOKU,
             round_wind=1,  # South
         )
-        env.reset()
+        env.reset(round_wind=1)
 
         start_kyoku = env.mjai_log[1]
         assert start_kyoku["bakaze"] == "S"

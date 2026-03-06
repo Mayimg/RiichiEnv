@@ -166,6 +166,8 @@ impl GameState {
         state
     }
 
+    /// Clear logs and event counters in preparation for a new hanchan.
+    /// Call `_initialize_round()` afterwards to set up the first round.
     pub fn reset(&mut self) {
         self.mjai_log = Vec::new();
         self.mjai_log_per_player = Default::default();
@@ -1658,6 +1660,11 @@ impl GameState {
         );
     }
 
+    /// Initialize (or re-initialize) a single round.
+    ///
+    /// Used both at the start of a new hanchan and when advancing to the next
+    /// round within a hanchan.  When `scores` is `None`, player scores are
+    /// carried over from the previous round (normal round progression).
     pub fn _initialize_round(
         &mut self,
         oya: u8,

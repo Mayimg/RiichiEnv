@@ -108,7 +108,7 @@ class TestRiichiScoring:
 
     def test_south_round_win(self):
         env = RiichiEnv(seed=42, round_wind=1)
-        env.reset()
+        env.reset(round_wind=1)
 
         # Verify start_kyoku event has bakaze="S"
         start_kyoku = next(e for e in env.mjai_log if e["type"] == "start_kyoku")
