@@ -124,7 +124,6 @@ export const VIEWER_3D_CSS = `
         position: absolute;
         top: 0; left: 0;
         width: 100%; height: 100%;
-        border-radius: 3px;
         overflow: hidden;
         background: #f0ead6;
     }
