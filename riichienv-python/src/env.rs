@@ -765,6 +765,17 @@ impl RiichiEnv {
         self.get_observations(py, players)
     }
 
+    /// Start a new game (hanchan, tonpuusen, or single-round).
+    ///
+    /// This resets the entire game to its initial state: scores return to their
+    /// starting values, oya/round_wind/honba/kyotaku default to 0 when omitted,
+    /// and logs from the previous game are cleared. A new game is then started,
+    /// emitting a fresh `start_game` event into the log. All parameters are
+    /// optional — when omitted they default to the initial game state
+    /// (NOT the previous round's values).
+    ///
+    /// To re-initialize a single round within an ongoing game (e.g. for
+    /// replay validation), pass explicit values for every parameter.
     #[pyo3(signature = (oya=None, wall=None, round_wind=None, scores=None, honba=None, kyotaku=None, seed=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn reset<'py>(
@@ -778,11 +789,27 @@ impl RiichiEnv {
         kyotaku: Option<u32>,
         seed: Option<u64>,
     ) -> PyResult<Py<PyAny>> {
-        // Read defaults before mutable borrow
-        let default_oya = with_variant!(self, |s| s.oya);
-        let default_round_wind = with_variant!(self, |s| s.round_wind);
-        let default_honba = with_variant!(self, |s| s.honba);
-        let default_riichi_sticks = with_variant!(self, |s| s.riichi_sticks);
+        let np = self.variant.num_players() as usize;
+
+        // Validate scores length when explicitly provided.
+        if let Some(ref sc) = scores
+            && sc.len() != np
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "scores length {} does not match number of players {}",
+                sc.len(),
+                np,
+            )));
+        }
+
+        // For a new game, default starting scores based on the variant
+        // (25000 for 4-player, 35000 for 3-player).
+        let default_scores = match &self.variant {
+            GameStateVariant::FourPlayer(s) => vec![s.mode.starting_score(); 4],
+            GameStateVariant::ThreePlayer(_) => {
+                vec![riichienv_core::state_3p::game_mode::starting_score(); 3]
+            }
+        };
 
         with_variant_mut!(self, |s| {
             if let Some(sd) = seed {
@@ -790,12 +817,12 @@ impl RiichiEnv {
             }
             s.reset();
             s._initialize_round(
-                oya.unwrap_or(default_oya),
-                round_wind.unwrap_or(default_round_wind),
-                honba.unwrap_or(default_honba),
-                kyotaku.unwrap_or(default_riichi_sticks),
+                oya.unwrap_or(0),
+                round_wind.unwrap_or(0),
+                honba.unwrap_or(0),
+                kyotaku.unwrap_or(0),
                 wall,
-                scores,
+                Some(scores.unwrap_or(default_scores)),
             );
         });
 

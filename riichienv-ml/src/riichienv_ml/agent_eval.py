@@ -185,7 +185,7 @@ class AgentEvaluator:
     def _play_one_game(self, RiichiEnv, hero_seat: int) -> tuple[int, float]:
         """Play a single game and return (hero_rank, hero_score)."""
         env = RiichiEnv(game_mode=self.game_mode)
-        obs_dict = env.reset(starting_scores=self.starting_scores)
+        obs_dict = env.reset(scores=list(self.starting_scores))
 
         # Map seat -> agent (opponents fill non-hero seats)
         opp_idx = 0

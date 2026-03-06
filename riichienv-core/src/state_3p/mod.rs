@@ -143,6 +143,8 @@ impl GameState3P {
         state
     }
 
+    /// Clear logs and event counters in preparation for a new game.
+    /// Call `_initialize_round()` afterwards to set up the first round.
     pub fn reset(&mut self) {
         self.mjai_log = Vec::new();
         self.mjai_log_per_player = Default::default();
@@ -245,10 +247,14 @@ impl GameState3P {
 
         let mut obs = self.get_observation(pid);
 
-        let mut exists = obs
-            ._legal_actions
-            .iter()
-            .any(|a| a.action_type == env_action.action_type && a.tile == env_action.tile);
+        let mut exists = obs._legal_actions.iter().any(|a| {
+            if env_action.action_type == ActionType::Kita {
+                // Kita: any North tile is equivalent; match on action_type only
+                a.action_type == ActionType::Kita
+            } else {
+                a.action_type == env_action.action_type && a.tile == env_action.tile
+            }
+        });
 
         if !exists
             && env_action.action_type == ActionType::Discard
@@ -1560,6 +1566,11 @@ impl GameState3P {
         );
     }
 
+    /// Initialize (or re-initialize) a single round.
+    ///
+    /// Used both at the start of a new game and when advancing to the next
+    /// round within a game.  When `scores` is `None`, player scores are
+    /// carried over from the previous round (normal round progression).
     pub fn _initialize_round(
         &mut self,
         oya: u8,
