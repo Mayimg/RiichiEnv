@@ -64,9 +64,10 @@ const cleanSvg = (content) => {
     // 3. Remove inkscape:path-effect elements (not rendered by browsers)
     content = content.replace(/<inkscape:path-effect[^>]*\/?>/g, '');
 
-    // 4. Remove namespaced attributes (Inkscape, Sodipodi, etc.) but keep xlink:href and viewBox
+    // 4. Remove namespaced attributes (Inkscape, Sodipodi, etc.) but keep xlink:href, xmlns:xlink, and viewBox
     content = content.replace(/\s\w+:[^=]+="[^"]*"/g, (match) => {
         if (match.includes('xlink:href')) return match;
+        if (match.includes('xmlns:xlink')) return match;
         if (match.includes('viewBox')) return match;
         return '';
     });

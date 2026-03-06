@@ -17,9 +17,12 @@ export class Viewer3D extends BaseViewer {
     ): Viewer3D {
         Viewer3D._pendingLayout = layout;
         Viewer3D._pendingElement = el;
-        const v = new Viewer3D('__fromElement__', log, initialStep, perspective, freeze, config, layout);
-        Viewer3D._pendingElement = undefined;
-        return v;
+        try {
+            return new Viewer3D('__fromElement__', log, initialStep, perspective, freeze, config, layout);
+        } finally {
+            Viewer3D._pendingElement = undefined;
+            Viewer3D._pendingLayout = undefined;
+        }
     }
 
     private static _pendingElement?: HTMLElement;

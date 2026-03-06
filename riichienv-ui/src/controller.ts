@@ -163,7 +163,6 @@ export class ReplayController {
     }
 
     toggleLog(btn: HTMLElement, panel: HTMLElement) {
-        this.logBtn = btn;
         const display = panel.style.display;
         if (display === 'none' || !display) {
             panel.style.display = 'block';

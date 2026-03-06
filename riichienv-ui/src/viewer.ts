@@ -17,9 +17,12 @@ export class Viewer extends BaseViewer {
     ): Viewer {
         Viewer._pendingLayout = layout;
         Viewer._pendingElement = el;
-        const v = new Viewer('__fromElement__', log, initialStep, perspective, freeze, config, layout);
-        Viewer._pendingElement = undefined;
-        return v;
+        try {
+            return new Viewer('__fromElement__', log, initialStep, perspective, freeze, config, layout);
+        } finally {
+            Viewer._pendingElement = undefined;
+            Viewer._pendingLayout = undefined;
+        }
     }
 
     private static _pendingElement?: HTMLElement;

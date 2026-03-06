@@ -34,7 +34,7 @@ export interface LayoutResult {
 
 /**
  * Abstract base class shared by Viewer (2D) and Viewer3D.
- * Subclasses implement createRendererAndLayout() to configure the specific renderer.
+ * Subclasses implement getLayoutInfo() and createRenderer() to configure the specific renderer.
  */
 export abstract class BaseViewer {
     gameState: GameState;

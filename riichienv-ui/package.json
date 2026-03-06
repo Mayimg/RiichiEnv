@@ -6,8 +6,7 @@
   "module": "dist/viewer.esm.js",
   "exports": {
     ".": {
-      "import": "./dist/viewer.esm.js",
-      "require": "./dist/viewer.js"
+      "import": "./dist/viewer.esm.js"
     }
   },
   "scripts": {
