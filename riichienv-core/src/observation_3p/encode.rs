@@ -635,21 +635,21 @@ mod tests {
             ],
             melds,
             discards,
-            vec![],       // dora_indicators
-            [35000; 3],   // scores
-            [false; 3],   // riichi_declared
-            vec![],       // legal_actions
-            vec![],       // events
-            0,            // honba
-            0,            // riichi_sticks
-            27,           // round_wind
-            0,            // oya
-            0,            // kyoku_index
-            vec![],       // waits
-            false,        // is_tenpai
-            [None; 3],    // riichi_sutehais
-            [None; 3],    // last_tedashis
-            None,         // last_discard
+            vec![],     // dora_indicators
+            [35000; 3], // scores
+            [false; 3], // riichi_declared
+            vec![],     // legal_actions
+            vec![],     // events
+            0,          // honba
+            0,          // riichi_sticks
+            27,         // round_wind
+            0,          // oya
+            0,          // kyoku_index
+            vec![],     // waits
+            false,      // is_tenpai
+            [None; 3],  // riichi_sutehais
+            [None; 3],  // last_tedashis
+            None,       // last_discard
         )
     }
 
@@ -682,10 +682,7 @@ mod tests {
             read_val(&buf1, 0, 2) > 0.0,
             "ch0 should have player1's 1p (self)"
         );
-        assert!(
-            read_val(&buf1, 2, 0) > 0.0,
-            "ch2 should have player0's 1m"
-        );
+        assert!(read_val(&buf1, 2, 0) > 0.0, "ch2 should have player0's 1m");
     }
 
     #[test]

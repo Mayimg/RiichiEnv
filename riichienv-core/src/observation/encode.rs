@@ -601,21 +601,21 @@ mod tests {
             ],
             melds,
             discards,
-            vec![],        // dora_indicators
-            [25000; 4],    // scores
-            [false; 4],    // riichi_declared
-            vec![],        // legal_actions
-            vec![],        // events
-            0,             // honba
-            0,             // riichi_sticks
-            27,            // round_wind
-            0,             // oya
-            0,             // kyoku_index
-            vec![],        // waits
-            false,         // is_tenpai
-            [None; 4],     // riichi_sutehais
-            [None; 4],     // last_tedashis
-            None,          // last_discard
+            vec![],     // dora_indicators
+            [25000; 4], // scores
+            [false; 4], // riichi_declared
+            vec![],     // legal_actions
+            vec![],     // events
+            0,          // honba
+            0,          // riichi_sticks
+            27,         // round_wind
+            0,          // oya
+            0,          // kyoku_index
+            vec![],     // waits
+            false,      // is_tenpai
+            [None; 4],  // riichi_sutehais
+            [None; 4],  // last_tedashis
+            None,       // last_discard
         )
     }
 
