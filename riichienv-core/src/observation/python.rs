@@ -950,7 +950,7 @@ impl Observation {
 
             // Turn count
             let turn_count = self.discards[abs_idx].len() as f32;
-            arr[[ch_idx, 3]] = turn_count / 18.0; // Normalize by typical max turns
+            arr[[ch_idx, 3]] = (turn_count / 18.0).min(1.0);
         }
 
         // Convert to bytes

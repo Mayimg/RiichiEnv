@@ -820,7 +820,7 @@ impl Observation3P {
             }
 
             let turn_count = self.discards[abs_idx].len() as f32;
-            arr[[ch_idx, 3]] = turn_count / 18.0;
+            arr[[ch_idx, 3]] = (turn_count / 18.0).min(1.0);
         }
 
         let slice = arr.as_slice().ok_or_else(|| {

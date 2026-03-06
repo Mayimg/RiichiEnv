@@ -684,29 +684,21 @@ mod tests {
             "Player 0's turn count should appear at ch0 for obs0 and ch2 for obs2"
         );
 
-        // Self always at channel 0-3: obs0 self should NOT be 0.5 (has real shanten)
-        // obs2 self (player 2) should NOT be 0.5 either
-        assert_ne!(
-            read_val(&buf0, 0, 0),
-            0.5,
-            "obs0 self shanten should be computed"
-        );
-        assert_ne!(
-            read_val(&buf2, 0, 0),
-            0.5,
-            "obs2 self shanten should be computed"
+        // Self always at channel 0-3: self shanten should differ from opponent placeholder
+        let obs0_self_shanten = read_val(&buf0, 0, 0);
+        let obs0_shimocha_shanten = read_val(&buf0, 4, 0);
+        assert_eq!(obs0_shimocha_shanten, 0.5, "opponent shanten should be 0.5");
+        assert!(
+            (obs0_self_shanten - obs0_shimocha_shanten).abs() > 1e-6,
+            "obs0 self shanten should differ from opponent placeholder"
         );
 
-        // Opponent channels should be 0.5
-        assert_eq!(
-            read_val(&buf0, 4, 0),
-            0.5,
-            "obs0 shimocha shanten should be 0.5"
-        );
-        assert_eq!(
-            read_val(&buf2, 4, 0),
-            0.5,
-            "obs2 next player shanten should be 0.5"
+        let obs2_self_shanten = read_val(&buf2, 0, 0);
+        let obs2_next_shanten = read_val(&buf2, 4, 0);
+        assert_eq!(obs2_next_shanten, 0.5, "opponent shanten should be 0.5");
+        assert!(
+            (obs2_self_shanten - obs2_next_shanten).abs() > 1e-6,
+            "obs2 self shanten should differ from opponent placeholder"
         );
     }
 

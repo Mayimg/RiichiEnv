@@ -310,7 +310,7 @@ Features:
 - **Best Ukeire (normalized /80)**: Maximum number of tiles that improve hand after optimal discard
 - **Turn Progress (normalized /18)**: Current turn number in the round
 
-Values for opponents (indices 1-3) are set to 0.5 (unknown) since their hands are hidden.
+For opponents (relative seat indices 1-3), the hand-related features **shanten**, **effective_tiles**, and **best_ukeire** (dimension 1 indices 0-2) are set to 0.5 (unknown) since their hands are hidden. The **turn_progress** feature (dimension 1 index 3) remains observable and is filled with the actual normalized turn/discard count for all players.
 
 ### Usage
 
