@@ -208,8 +208,8 @@ export const VIEWER_CSS = `
     }
 
     .icon-btn {
-        width: 40px;
-        height: 40px;
+        width: 46px;
+        height: 46px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -231,9 +231,10 @@ export const VIEWER_CSS = `
         background: rgba(255, 255, 255, 0.2);
     }
     .active-btn {
-        background: ${COLORS.modalBackground} !important;
-        border-color: ${COLORS.highlightButton} !important;
-        box-shadow: 0 0 5px ${COLORS.highlightButton};
+        background: rgba(200, 180, 0, 0.3) !important;
+        border-color: #e0c800 !important;
+        box-shadow: 0 0 6px rgba(224, 200, 0, 0.5);
+        color: #ffdd00 !important;
     }
 
     .debug-panel {

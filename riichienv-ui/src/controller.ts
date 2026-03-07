@@ -54,9 +54,9 @@ export class ReplayController {
                 lastWheelTime = now;
 
                 if (e.deltaY > 0) {
-                    this.nextTurn();
+                    this.stepForward();
                 } else {
-                    this.prevTurn();
+                    this.stepBackward();
                 }
             },
             { passive: false },
@@ -96,6 +96,22 @@ export class ReplayController {
         if (this.isThrottled()) return;
         const vp = this.viewer.renderer.viewpoint;
         if (this.viewer.gameState.jumpToPrevTurn(vp)) {
+            this.viewer.update();
+            this.notifyPositionChange();
+        }
+    }
+
+    nextKyoku() {
+        if (this.isThrottled()) return;
+        if (this.viewer.gameState.jumpToNextKyoku()) {
+            this.viewer.update();
+            this.notifyPositionChange();
+        }
+    }
+
+    prevKyoku() {
+        if (this.isThrottled()) return;
+        if (this.viewer.gameState.jumpToPrevKyoku()) {
             this.viewer.update();
             this.notifyPositionChange();
         }

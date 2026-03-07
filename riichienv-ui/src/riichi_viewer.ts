@@ -134,7 +134,7 @@ export class RiichiViewer {
     toggleAutoPlay() {
         if (!this._viewer.controller) return;
         // Find or create a dummy button for the controller
-        const btn = this._viewer.container.querySelector('.icon-btn[title="Play/Pause"]') as HTMLElement;
+        const btn = this._viewer.container.querySelector('.icon-btn[title="Auto"], .icon-btn[title="Play/Pause"]') as HTMLElement;
         if (btn) {
             this._viewer.controller.toggleAutoPlay(btn);
         }
