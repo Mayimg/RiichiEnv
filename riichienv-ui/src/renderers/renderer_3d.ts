@@ -977,11 +977,7 @@ export class Renderer3D implements IRenderer {
     // =========================================================================
     // Own player melds on 3D table (relIndex=0, bottom edge)
     // =========================================================================
-    private renderOwnMeldsOnTable(
-        player: PlayerState,
-        playerIdx: number,
-        pc: number,
-    ): HTMLElement {
+    private renderOwnMeldsOnTable(player: PlayerState, playerIdx: number, pc: number): HTMLElement {
         const tw = this.layout.tileSizes.opponentTile[0];
         const ts = this.layout.tableSize;
         const [_rtw, rth] = this.layout.tileSizes.riverTile;
@@ -1112,7 +1108,7 @@ export class Renderer3D implements IRenderer {
         player: PlayerState,
         vpIdx: number,
         state: BoardState,
-        pc: number,
+        _pc: number,
         activeWaits: Set<string>,
     ): HTMLElement {
         const [_tw, _th] = this.layout.tileSizes.ownTile;

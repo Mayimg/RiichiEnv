@@ -2,14 +2,18 @@ import { YAKU_MAP } from './constants';
 import type { GameState } from './game_state';
 import type { KyokuKeyEvent, KyokuPlayerAction, KyokuResult, KyokuSummary, KyokuWinner, MjaiEvent } from './types';
 
-const MELD_TYPES = new Set(['chi', 'pon', 'daiminkan', 'ankan', 'kakan']);
-
 function meldLabel(type: string): string {
     switch (type) {
-        case 'chi': return 'Chi';
-        case 'pon': return 'Pon';
-        case 'daiminkan': case 'ankan': case 'kakan': return 'Kan';
-        default: return type;
+        case 'chi':
+            return 'Chi';
+        case 'pon':
+            return 'Pon';
+        case 'daiminkan':
+        case 'ankan':
+        case 'kakan':
+            return 'Kan';
+        default:
+            return type;
     }
 }
 
@@ -230,7 +234,13 @@ export function computeKyokuKeyEvents(gameState: GameState, kyokuIndex: number):
                 } else if (prevKey !== '' && waitsKey === '') {
                     keyEvents.push({ step, type: 'tenpai_lost', actor: p, label: 'Lost Tenpai' });
                 } else if (prevKey !== '' && waitsKey !== '' && prevKey !== waitsKey) {
-                    keyEvents.push({ step, type: 'wait_change', actor: p, label: 'Wait Change', detail: waits!.join(' ') });
+                    keyEvents.push({
+                        step,
+                        type: 'wait_change',
+                        actor: p,
+                        label: 'Wait Change',
+                        detail: waits!.join(' '),
+                    });
                 }
 
                 prevWaits[p] = waitsKey;

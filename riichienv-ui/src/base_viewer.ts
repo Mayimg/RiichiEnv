@@ -287,7 +287,6 @@ export abstract class BaseViewer {
                 backdropFilter: 'blur(4px)',
             });
 
-            const btnLog = this.createBtn('btn-log', ICON_EYE, 'Debug');
             const logWrapper = this.createLabeledBtn('btn-log', ICON_EYE, 'Debug');
             // Re-wire click to use the actual btn for toggle state
             const logBtn = logWrapper.querySelector('.icon-btn') as HTMLElement;

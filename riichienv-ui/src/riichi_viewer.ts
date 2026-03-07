@@ -42,9 +42,7 @@ export class RiichiViewer {
     }
 
     static mount(container: HTMLElement | string, options: ViewerOptions): RiichiViewer {
-        const el = typeof container === 'string'
-            ? document.getElementById(container.replace(/^#/, ''))
-            : container;
+        const el = typeof container === 'string' ? document.getElementById(container.replace(/^#/, '')) : container;
         if (!el) throw new Error(`Container ${container} not found`);
 
         const rendererType = options.renderer ?? '3d';
@@ -52,9 +50,27 @@ export class RiichiViewer {
 
         let viewer: BaseViewer;
         if (rendererType === '2d') {
-            viewer = Viewer.fromElement(el, options.log, initialStep, options.perspective, options.freeze ?? false, undefined, undefined, options.players);
+            viewer = Viewer.fromElement(
+                el,
+                options.log,
+                initialStep,
+                options.perspective,
+                options.freeze ?? false,
+                undefined,
+                undefined,
+                options.players,
+            );
         } else {
-            viewer = Viewer3D.fromElement(el, options.log, initialStep, options.perspective, options.freeze ?? false, undefined, undefined, options.players);
+            viewer = Viewer3D.fromElement(
+                el,
+                options.log,
+                initialStep,
+                options.perspective,
+                options.freeze ?? false,
+                undefined,
+                undefined,
+                options.players,
+            );
         }
 
         const rv = new RiichiViewer(viewer);
@@ -135,7 +151,9 @@ export class RiichiViewer {
     toggleAutoPlay() {
         if (!this._viewer.controller) return;
         // Find or create a dummy button for the controller
-        const btn = this._viewer.container.querySelector('.icon-btn[title="Auto"], .icon-btn[title="Play/Pause"]') as HTMLElement;
+        const btn = this._viewer.container.querySelector(
+            '.icon-btn[title="Auto"], .icon-btn[title="Play/Pause"]',
+        ) as HTMLElement;
         if (btn) {
             this._viewer.controller.toggleAutoPlay(btn);
         }
