@@ -82,6 +82,52 @@ export type ViewerEventMap = {
     viewpointChange: { viewpoint: number };
 };
 
+// --- Analysis types ---
+
+export interface KyokuSummary {
+    index: number;
+    round: number;
+    honba: number;
+    startScores: number[];
+    endScores: number[];
+    deltas: number[];
+    result: KyokuResult | null;
+    playerActions: KyokuPlayerAction[];
+}
+
+export interface KyokuResult {
+    type: 'hora' | 'ryukyoku';
+    winners?: KyokuWinner[];
+    reason?: string;
+}
+
+export interface KyokuWinner {
+    actor: number;
+    target: number;
+    isTsumo: boolean;
+    points: number;
+    han: number;
+    fu: number;
+    yaku: string[];
+}
+
+export interface KyokuPlayerAction {
+    riichi: boolean;
+    tenpai: boolean;
+    houjuu: boolean;
+    hora: boolean;
+    tsumo: boolean;
+    meldTypes: string[];
+}
+
+export interface KyokuKeyEvent {
+    step: number;
+    type: string;
+    actor: number;
+    label: string;
+    detail?: string;
+}
+
 // --- Internal types ---
 
 export interface BoardState {

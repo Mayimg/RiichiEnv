@@ -5,16 +5,235 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Player Customization Demo</title>
 <style>
-  body { margin: 0; background: #111; color: #fff; font-family: sans-serif; }
-  #viewer { width: 100vw; height: 100vh; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0a0a0f; color: #fff; font-family: 'Segoe UI', sans-serif; }
+
+  .app-layout {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #viewer {
+    flex: 1;
+    min-width: 0;
+    height: 100vh;
+  }
+
+  /* --- Analysis Panel --- */
+  #analysis-panel {
+    width: 340px;
+    flex-shrink: 0;
+    background: #0f1118;
+    border-left: 1px solid #1e2233;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-size: 13px;
+  }
+  .panel-header {
+    padding: 12px 14px;
+    font-size: 15px;
+    font-weight: 600;
+    border-bottom: 1px solid #1e2233;
+    color: #ccc;
+    flex-shrink: 0;
+  }
+
+  /* --- Kyoku List --- */
+  .kyoku-list {
+    flex-shrink: 0;
+    max-height: 40%;
+    overflow-y: auto;
+    border-bottom: 1px solid #1e2233;
+  }
+  .kyoku-item {
+    padding: 8px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid #151822;
+    transition: background 0.15s;
+  }
+  .kyoku-item:hover { background: #181d2a; }
+  .kyoku-item.active { background: #1a2040; border-left: 3px solid #ffdd00; }
+  .kyoku-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .kyoku-round {
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .kyoku-result-tag {
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 500;
+  }
+  .tag-tsumo { background: #1b5e20; color: #81c784; }
+  .tag-ron { background: #b71c1c33; color: #ef9a9a; }
+  .tag-draw { background: #33333a; color: #999; }
+
+  .kyoku-scores {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+  }
+  .score-chip {
+    font-size: 11px;
+    color: #888;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .score-delta { font-size: 10px; font-weight: 600; }
+  .score-delta.pos { color: #4caf50; }
+  .score-delta.neg { color: #e57373; }
+  .score-delta.zero { color: #555; }
+
+  .player-badges {
+    display: flex;
+    gap: 3px;
+    margin-top: 3px;
+  }
+  .badge {
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 2px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .badge-riichi { background: #e65100; color: #fff; }
+  .badge-tsumo { background: #1b5e20; color: #81c784; }
+  .badge-ron { background: #880e4f; color: #f48fb1; }
+  .badge-houjuu { background: #b71c1c; color: #ef9a9a; }
+  .badge-meld { background: #1a237e; color: #9fa8da; }
+  .badge-tenpai { background: #004d40; color: #80cbc4; }
+
+  /* --- Kyoku Detail --- */
+  .kyoku-detail {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0;
+  }
+  .detail-section {
+    padding: 10px 14px;
+    border-bottom: 1px solid #1e2233;
+  }
+  .detail-section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #666;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+
+  /* Result info */
+  .result-winner {
+    background: #151822;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+  }
+  .result-winner-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .result-winner-name { font-weight: 600; }
+  .result-winner-points { color: #ffdd00; font-weight: 600; }
+  .result-yaku-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .yaku-tag {
+    font-size: 11px;
+    background: #1a2040;
+    color: #8899cc;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  /* Key events timeline */
+  .event-timeline {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .event-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+  .event-item:hover { background: #181d2a; }
+  .event-item.active-event { background: #1a2040; }
+  .event-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot-reach { background: #ff9800; }
+  .dot-meld { background: #42a5f5; }
+  .dot-tenpai { background: #66bb6a; }
+  .dot-tenpai_lost { background: #ef5350; }
+  .dot-wait_change { background: #ab47bc; }
+  .dot-hora { background: #ffd700; }
+  .dot-ryukyoku { background: #666; }
+  .event-player {
+    font-size: 11px;
+    color: #888;
+    min-width: 50px;
+  }
+  .event-label {
+    font-size: 12px;
+    color: #ccc;
+  }
+  .event-detail {
+    font-size: 11px;
+    color: #666;
+    margin-left: auto;
+  }
+
+  .empty-msg {
+    color: #555;
+    text-align: center;
+    padding: 20px;
+    font-size: 12px;
+  }
+
+  /* Scrollbar styling */
+  #analysis-panel ::-webkit-scrollbar { width: 6px; }
+  #analysis-panel ::-webkit-scrollbar-track { background: transparent; }
+  #analysis-panel ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+  #analysis-panel ::-webkit-scrollbar-thumb:hover { background: #555; }
 </style>
 </head>
 <body>
-<div id="viewer"></div>
+<div class="app-layout">
+  <div id="viewer"></div>
+  <div id="analysis-panel">
+    <div class="panel-header">Game Analysis</div>
+    <div class="kyoku-list" id="kyoku-list"></div>
+    <div class="kyoku-detail" id="kyoku-detail">
+      <div class="empty-msg">Select a round to view details</div>
+    </div>
+  </div>
+</div>
 <script src="dist/viewer.js"></script>
 <script>
   if (typeof RiichiViewer === 'undefined') {
-    document.getElementById('viewer').textContent = 'Error: RiichiViewer not loaded. Check console.';
+    document.getElementById('viewer').textContent = 'Error: RiichiViewer not loaded.';
   } else {
     fetch('example_after_injection.jsonl')
       .then(r => {
@@ -23,7 +242,7 @@
       })
       .then(text => {
         const log = text.trim().split('\n').map(line => JSON.parse(line));
-        RiichiViewer.mount('#viewer', {
+        const viewer = RiichiViewer.mount('viewer', {
           log: log,
           renderer: '3d',
           players: [
@@ -33,6 +252,260 @@
             { name: 'smlybot3', avatarUrl: 'https://avatars.githubusercontent.com/u/19337?v=4' },
           ],
         });
+
+        const playerNames = viewer.getPlayerNames();
+        const summaries = viewer.getKyokuSummaries();
+        const winds = ['E', 'S', 'W', 'N'];
+        const windFull = { E: 'East', S: 'South', W: 'West', N: 'North' };
+        const pc = 4;
+
+        function roundLabel(round, honba) {
+          const w = winds[Math.floor(round / pc)] || 'E';
+          const r = (round % pc) + 1;
+          return windFull[w] + ' ' + r + (honba > 0 ? ' - ' + honba : '');
+        }
+
+        // --- Build kyoku list ---
+        const listEl = document.getElementById('kyoku-list');
+        const items = [];
+
+        summaries.forEach((s, idx) => {
+          const item = document.createElement('div');
+          item.className = 'kyoku-item';
+
+          // Header row
+          const header = document.createElement('div');
+          header.className = 'kyoku-item-header';
+
+          const roundEl = document.createElement('span');
+          roundEl.className = 'kyoku-round';
+          roundEl.textContent = roundLabel(s.round, s.honba);
+          header.appendChild(roundEl);
+
+          const tag = document.createElement('span');
+          tag.className = 'kyoku-result-tag';
+          if (s.result) {
+            if (s.result.type === 'hora') {
+              const w = s.result.winners?.[0];
+              if (w?.isTsumo) {
+                tag.classList.add('tag-tsumo');
+                tag.textContent = 'Tsumo';
+              } else {
+                tag.classList.add('tag-ron');
+                tag.textContent = 'Ron';
+              }
+            } else {
+              tag.classList.add('tag-draw');
+              tag.textContent = s.result.reason || 'Draw';
+            }
+          }
+          header.appendChild(tag);
+          item.appendChild(header);
+
+          // Score deltas
+          const scores = document.createElement('div');
+          scores.className = 'kyoku-scores';
+          for (let p = 0; p < pc; p++) {
+            const chip = document.createElement('span');
+            chip.className = 'score-chip';
+            const d = s.deltas[p];
+            const cls = d > 0 ? 'pos' : d < 0 ? 'neg' : 'zero';
+            const sign = d > 0 ? '+' : '';
+            chip.innerHTML = `<span style="color:#aaa">${shortName(playerNames[p])}</span> <span class="score-delta ${cls}">${sign}${d}</span>`;
+            scores.appendChild(chip);
+          }
+          item.appendChild(scores);
+
+          // Player action badges
+          const badges = document.createElement('div');
+          badges.className = 'player-badges';
+          for (let p = 0; p < pc; p++) {
+            const a = s.playerActions[p];
+            if (a.tsumo) badges.appendChild(makeBadge(shortName(playerNames[p]) + ' Tsumo', 'badge-tsumo'));
+            else if (a.hora) badges.appendChild(makeBadge(shortName(playerNames[p]) + ' Ron', 'badge-ron'));
+            if (a.houjuu) badges.appendChild(makeBadge(shortName(playerNames[p]) + ' Deal-in', 'badge-houjuu'));
+            if (a.riichi) badges.appendChild(makeBadge(shortName(playerNames[p]) + ' Riichi', 'badge-riichi'));
+            if (a.meldTypes.length > 0) badges.appendChild(makeBadge(shortName(playerNames[p]) + ' Meld', 'badge-meld'));
+            if (a.tenpai && !a.hora) badges.appendChild(makeBadge(shortName(playerNames[p]) + ' Tenpai', 'badge-tenpai'));
+          }
+          item.appendChild(badges);
+
+          item.onclick = () => selectKyoku(idx);
+          listEl.appendChild(item);
+          items.push(item);
+        });
+
+        let selectedKyoku = -1;
+        let keyEventsCache = {};
+
+        function selectKyoku(idx) {
+          selectedKyoku = idx;
+          items.forEach((el, i) => el.classList.toggle('active', i === idx));
+
+          viewer.goToKyoku(idx);
+
+          // Get key events (cached)
+          if (!keyEventsCache[idx]) {
+            keyEventsCache[idx] = viewer.getKyokuKeyEvents(idx);
+          }
+          renderDetail(summaries[idx], keyEventsCache[idx]);
+        }
+
+        function renderDetail(summary, keyEvents) {
+          const detail = document.getElementById('kyoku-detail');
+          detail.innerHTML = '';
+
+          // Result section
+          if (summary.result) {
+            const sec = makeSection('Result');
+            if (summary.result.type === 'hora' && summary.result.winners) {
+              summary.result.winners.forEach(w => {
+                const block = document.createElement('div');
+                block.className = 'result-winner';
+
+                const hdr = document.createElement('div');
+                hdr.className = 'result-winner-header';
+                const name = document.createElement('span');
+                name.className = 'result-winner-name';
+                const winType = w.isTsumo ? 'Tsumo' : 'Ron';
+                const fromStr = w.isTsumo ? '' : ` from ${playerNames[w.target]}`;
+                name.textContent = `${playerNames[w.actor]} - ${winType}${fromStr}`;
+                hdr.appendChild(name);
+
+                const pts = document.createElement('span');
+                pts.className = 'result-winner-points';
+                pts.textContent = w.points > 0 ? `${w.points} pts` : '';
+                if (w.han > 0) pts.textContent += ` (${w.han}h/${w.fu}f)`;
+                hdr.appendChild(pts);
+                block.appendChild(hdr);
+
+                if (w.yaku.length > 0) {
+                  const yakuList = document.createElement('div');
+                  yakuList.className = 'result-yaku-list';
+                  w.yaku.forEach(y => {
+                    const t = document.createElement('span');
+                    t.className = 'yaku-tag';
+                    t.textContent = y;
+                    yakuList.appendChild(t);
+                  });
+                  block.appendChild(yakuList);
+                }
+                sec.appendChild(block);
+              });
+            } else if (summary.result.type === 'ryukyoku') {
+              const block = document.createElement('div');
+              block.className = 'result-winner';
+              block.innerHTML = `<span style="color:#999">Draw: ${summary.result.reason || 'Exhaustive'}</span>`;
+              sec.appendChild(block);
+            }
+            detail.appendChild(sec);
+          }
+
+          // Score changes section
+          const scoreSec = makeSection('Score Changes');
+          const scoreTable = document.createElement('div');
+          scoreTable.style.cssText = 'display:grid; grid-template-columns:1fr auto auto auto; gap:2px 8px; font-size:12px;';
+          for (let p = 0; p < pc; p++) {
+            const d = summary.deltas[p];
+            const cls = d > 0 ? 'pos' : d < 0 ? 'neg' : 'zero';
+            const sign = d > 0 ? '+' : '';
+            scoreTable.innerHTML += `
+              <span style="color:#aaa">${playerNames[p]}</span>
+              <span style="color:#777">${summary.startScores[p]}</span>
+              <span style="color:#555">&rarr;</span>
+              <span class="score-delta ${cls}">${summary.endScores[p]} (${sign}${d})</span>
+            `;
+          }
+          scoreSec.appendChild(scoreTable);
+          detail.appendChild(scoreSec);
+
+          // Key events timeline
+          const eventSec = makeSection('Key Events');
+          if (keyEvents.length === 0) {
+            eventSec.innerHTML += '<div class="empty-msg">No key events</div>';
+          } else {
+            const list = document.createElement('ul');
+            list.className = 'event-timeline';
+            keyEvents.forEach(evt => {
+              const li = document.createElement('li');
+              li.className = 'event-item';
+
+              const dot = document.createElement('div');
+              dot.className = 'event-dot dot-' + dotClass(evt.type);
+              li.appendChild(dot);
+
+              const player = document.createElement('span');
+              player.className = 'event-player';
+              player.textContent = evt.actor >= 0 ? shortName(playerNames[evt.actor]) : '';
+              li.appendChild(player);
+
+              const label = document.createElement('span');
+              label.className = 'event-label';
+              label.textContent = evt.label;
+              li.appendChild(label);
+
+              if (evt.detail) {
+                const det = document.createElement('span');
+                det.className = 'event-detail';
+                det.textContent = evt.detail;
+                li.appendChild(det);
+              }
+
+              li.onclick = (e) => {
+                e.stopPropagation();
+                viewer.goToStep(evt.step + 1);
+                // Highlight active
+                list.querySelectorAll('.event-item').forEach(el => el.classList.remove('active-event'));
+                li.classList.add('active-event');
+              };
+              list.appendChild(li);
+            });
+            eventSec.appendChild(list);
+          }
+          detail.appendChild(eventSec);
+        }
+
+        // Update active kyoku on navigation
+        viewer.on('positionChange', ({ kyokuIndex }) => {
+          if (kyokuIndex !== selectedKyoku) {
+            selectedKyoku = kyokuIndex;
+            items.forEach((el, i) => el.classList.toggle('active', i === kyokuIndex));
+            // Scroll into view
+            items[kyokuIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }
+        });
+
+        // Auto-select first kyoku
+        if (summaries.length > 0) {
+          selectKyoku(0);
+        }
+
+        // Helpers
+        function shortName(name) {
+          return name.length > 8 ? name.slice(0, 7) + '..' : name;
+        }
+
+        function makeBadge(text, cls) {
+          const el = document.createElement('span');
+          el.className = 'badge ' + cls;
+          el.textContent = text;
+          return el;
+        }
+
+        function makeSection(title) {
+          const sec = document.createElement('div');
+          sec.className = 'detail-section';
+          const t = document.createElement('div');
+          t.className = 'detail-section-title';
+          t.textContent = title;
+          sec.appendChild(t);
+          return sec;
+        }
+
+        function dotClass(type) {
+          if (['chi','pon','daiminkan','ankan','kakan'].includes(type)) return 'meld';
+          return type;
+        }
       })
       .catch(err => {
         document.getElementById('viewer').textContent = 'Error: ' + err.message;

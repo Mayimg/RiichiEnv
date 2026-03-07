@@ -4,7 +4,7 @@ import { Viewer } from './viewer';
 import { Viewer3D } from './viewer_3d';
 
 export { Viewer, Viewer3D, LiveViewer, RiichiViewer };
-export type { KyokuInfo, PlayerConfig, ViewerEventMap, ViewerOptions, ViewerPosition } from './types';
+export type { KyokuInfo, KyokuKeyEvent, KyokuPlayerAction, KyokuResult, KyokuSummary, KyokuWinner, PlayerConfig, ViewerEventMap, ViewerOptions, ViewerPosition } from './types';
 
 if (typeof window !== 'undefined') {
     (window as any).RiichiEnvViewer = Viewer;

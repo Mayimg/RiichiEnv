@@ -1,5 +1,6 @@
+import { computeKyokuKeyEvents, computeKyokuSummaries } from './analyzer';
 import type { BaseViewer } from './base_viewer';
-import type { KyokuInfo, ViewerEventMap, ViewerOptions, ViewerPosition } from './types';
+import type { KyokuInfo, KyokuKeyEvent, KyokuSummary, ViewerEventMap, ViewerOptions, ViewerPosition } from './types';
 import { Viewer } from './viewer';
 import { Viewer3D } from './viewer_3d';
 
@@ -161,6 +162,19 @@ export class RiichiViewer {
 
     getViewpoint(): number {
         return this._viewer.renderer.viewpoint;
+    }
+
+    getPlayerNames(): string[] {
+        return [...this._viewer.gameState.getState().playerNames];
+    }
+
+    // Analysis
+    getKyokuSummaries(): KyokuSummary[] {
+        return computeKyokuSummaries(this._viewer.gameState);
+    }
+
+    getKyokuKeyEvents(kyokuIndex: number): KyokuKeyEvent[] {
+        return computeKyokuKeyEvents(this._viewer.gameState, kyokuIndex);
     }
 
     // Events
