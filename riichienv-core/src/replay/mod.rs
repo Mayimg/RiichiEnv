@@ -126,9 +126,24 @@ impl KyokuStepIterator {
 
         loop {
             if let Some((pid, action)) = slf.pending_action.take() {
-                let obs =
+                let mut staged_riichi = false;
+                if action.action_type == crate::action::ActionType::Discard {
+                    let p = &mut slf.state.players[pid as usize];
+                    if !p.riichi_declared && !p.riichi_stage {
+                        // Replay reach+dahai as two decisions. For the second
+                        // (discard) decision, legal actions must reflect that
+                        // reach has already been declared.
+                        p.riichi_stage = true;
+                        staged_riichi = true;
+                    }
+                }
+                let obs_result =
                     slf.state
-                        .get_observation_for_replay(pid, &action, &format!("{:?}", action))?;
+                        .get_observation_for_replay(pid, &action, &format!("{:?}", action));
+                if staged_riichi {
+                    slf.state.players[pid as usize].riichi_stage = false;
+                }
+                let obs = obs_result?;
 
                 let current_log_action = &actions[slf.idx];
                 slf.state.apply_log_action(current_log_action);
@@ -406,9 +421,24 @@ impl KyokuStepIterator3P {
 
         loop {
             if let Some((pid, action)) = slf.pending_action.take() {
-                let obs =
+                let mut staged_riichi = false;
+                if action.action_type == crate::action::ActionType::Discard {
+                    let p = &mut slf.state.players[pid as usize];
+                    if !p.riichi_declared && !p.riichi_stage {
+                        // Replay reach+dahai as two decisions. For the second
+                        // (discard) decision, legal actions must reflect that
+                        // reach has already been declared.
+                        p.riichi_stage = true;
+                        staged_riichi = true;
+                    }
+                }
+                let obs_result =
                     slf.state
-                        .get_observation_for_replay(pid, &action, &format!("{:?}", action))?;
+                        .get_observation_for_replay(pid, &action, &format!("{:?}", action));
+                if staged_riichi {
+                    slf.state.players[pid as usize].riichi_stage = false;
+                }
+                let obs = obs_result?;
 
                 let current_log_action = &actions[slf.idx];
                 slf.state.apply_log_action(current_log_action);

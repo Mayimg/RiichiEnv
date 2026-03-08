@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from riichienv import MjaiReplay
+from riichienv import ActionType, MjaiReplay
 
 
 @pytest.fixture
@@ -98,3 +98,100 @@ def test_mjai_replay_real_file():
     assert kyokus[0].grp_features()["delta_scores"] == [-4000, -3000, -2000, 9000]
     for idx in range(len(kyokus) - 1):
         assert kyokus[idx + 1].grp_features()["scores"] == kyokus[idx].grp_features()["end_scores"]
+
+
+def test_mjai_replay_3p_reach_discard_observation_is_not_duplicated_state(tmp_path):
+    data = [
+        {"type": "start_game", "names": ["A", "B", "C"], "id": "test_3p_reach"},
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 1,
+            "honba": 0,
+            "kyoutaku": 0,
+            "oya": 0,
+            "scores": [35000, 35000, 35000],
+            "dora_marker": "1p",
+            "tehais": [
+                ["1p", "1p", "2p", "2p", "2p", "3p", "3p", "3p", "4p", "4p", "4p", "5z", "5z"],
+                ["1s", "1s", "1s", "2s", "2s", "2s", "3s", "3s", "3s", "4s", "4s", "4s", "6z"],
+                ["1z", "1z", "2z", "2z", "3z", "3z", "4z", "4z", "5z", "5z", "6z", "6z", "7z"],
+            ],
+        },
+        {"type": "tsumo", "actor": 0, "pai": "1p"},
+        {"type": "reach", "actor": 0},
+        {"type": "dahai", "actor": 0, "pai": "1p", "tsumogiri": True},
+        {"type": "ryukyoku", "reason": "test"},
+        {"type": "end_kyoku"},
+        {"type": "end_game"},
+    ]
+
+    file_path = tmp_path / "test_3p_reach.jsonl"
+    with open(file_path, "w") as f:
+        for event in data:
+            f.write(json.dumps(event) + "\n")
+
+    replay = MjaiReplay.from_jsonl(str(file_path), rule="mjsoul_sanma")
+    kyoku = list(replay.take_kyokus())[0]
+    steps = list(kyoku.steps(0, skip_single_action=False))
+
+    assert len(steps) >= 2
+    riichi_obs, riichi_act = steps[0]
+    discard_obs, discard_act = steps[1]
+
+    assert riichi_act.action_type == ActionType.Riichi
+    assert discard_act.action_type == ActionType.Discard
+
+    riichi_legals = [a.action_type for a in riichi_obs.legal_actions()]
+    discard_legals = [a.action_type for a in discard_obs.legal_actions()]
+    assert ActionType.Riichi in riichi_legals
+    assert ActionType.Riichi not in discard_legals
+
+
+def test_mjai_replay_4p_reach_discard_observation_is_not_duplicated_state(tmp_path):
+    data = [
+        {"type": "start_game", "names": ["A", "B", "C", "D"], "id": "test_4p_reach"},
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 1,
+            "honba": 0,
+            "kyoutaku": 0,
+            "oya": 0,
+            "scores": [25000, 25000, 25000, 25000],
+            "dora_marker": "1p",
+            "tehais": [
+                ["1p", "1p", "2p", "2p", "2p", "3p", "3p", "3p", "4p", "4p", "4p", "5z", "5z"],
+                ["1s", "1s", "1s", "2s", "2s", "2s", "3s", "3s", "3s", "4s", "4s", "4s", "6z"],
+                ["1z", "1z", "2z", "2z", "3z", "3z", "4z", "4z", "5z", "5z", "6z", "6z", "7z"],
+                ["5m", "5m", "6m", "6m", "7m", "7m", "8m", "8m", "9m", "9m", "1m", "1m", "2m"],
+            ],
+        },
+        {"type": "tsumo", "actor": 0, "pai": "1p"},
+        {"type": "reach", "actor": 0},
+        {"type": "dahai", "actor": 0, "pai": "1p", "tsumogiri": True},
+        {"type": "ryukyoku", "reason": "test"},
+        {"type": "end_kyoku"},
+        {"type": "end_game"},
+    ]
+
+    file_path = tmp_path / "test_4p_reach.jsonl"
+    with open(file_path, "w") as f:
+        for event in data:
+            f.write(json.dumps(event) + "\n")
+
+    replay = MjaiReplay.from_jsonl(str(file_path))
+    kyoku = list(replay.take_kyokus())[0]
+    steps = list(kyoku.steps(0, skip_single_action=False))
+
+    assert len(steps) >= 2
+    riichi_obs, riichi_act = steps[0]
+    discard_obs, discard_act = steps[1]
+
+    assert riichi_act.action_type == ActionType.Riichi
+    assert discard_act.action_type == ActionType.Discard
+
+    riichi_legals = [a.action_type for a in riichi_obs.legal_actions()]
+    discard_legals = [a.action_type for a in discard_obs.legal_actions()]
+    assert ActionType.Riichi in riichi_legals
+    assert ActionType.Riichi not in discard_legals
