@@ -137,12 +137,13 @@ impl KyokuStepIterator {
                         staged_riichi = true;
                     }
                 }
-                let obs =
+                let obs_result =
                     slf.state
-                        .get_observation_for_replay(pid, &action, &format!("{:?}", action))?;
+                        .get_observation_for_replay(pid, &action, &format!("{:?}", action));
                 if staged_riichi {
                     slf.state.players[pid as usize].riichi_stage = false;
                 }
+                let obs = obs_result?;
 
                 let current_log_action = &actions[slf.idx];
                 slf.state.apply_log_action(current_log_action);
@@ -431,12 +432,13 @@ impl KyokuStepIterator3P {
                         staged_riichi = true;
                     }
                 }
-                let obs =
+                let obs_result =
                     slf.state
-                        .get_observation_for_replay(pid, &action, &format!("{:?}", action))?;
+                        .get_observation_for_replay(pid, &action, &format!("{:?}", action));
                 if staged_riichi {
                     slf.state.players[pid as usize].riichi_stage = false;
                 }
+                let obs = obs_result?;
 
                 let current_log_action = &actions[slf.idx];
                 slf.state.apply_log_action(current_log_action);
