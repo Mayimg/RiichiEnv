@@ -141,13 +141,27 @@ export class Renderer2D implements IRenderer {
 
         const angles = this.layout.playerAngles;
 
-        // Collect active waits once (shared across all players)
+        // Collect waits and build per-player "danger waits" (exclude own waits from own hand highlight)
         const activeWaits = new Set<string>();
+        const ownWaitsByPlayer = state.players.map(() => new Set<string>());
         const normalize = (t: string) => t.replace('0', '5').replace('r', '');
-        state.players.forEach((pl) => {
+        state.players.forEach((pl, idx) => {
             if (pl.waits && pl.waits.length > 0) {
-                pl.waits.forEach((w) => activeWaits.add(normalize(w)));
+                pl.waits.forEach((w) => {
+                    const normW = normalize(w);
+                    activeWaits.add(normW);
+                    ownWaitsByPlayer[idx].add(normW);
+                });
             }
+        });
+        const dangerWaitsByPlayer = ownWaitsByPlayer.map((_, idx) => {
+            const dangerWaits = new Set<string>();
+            ownWaitsByPlayer.forEach((waits, otherIdx) => {
+                if (otherIdx !== idx) {
+                    waits.forEach((w) => dangerWaits.add(w));
+                }
+            });
+            return dangerWaits;
         });
 
         state.players.forEach((p, i) => {
@@ -281,7 +295,7 @@ export class Renderer2D implements IRenderer {
                 playerState.hand,
                 playerState.melds,
                 i,
-                activeWaits,
+                dangerWaitsByPlayer[i],
                 hasDraw,
                 dAnim,
                 shouldAnimate,
