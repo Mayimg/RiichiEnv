@@ -423,9 +423,7 @@ impl MjaiReplay {
                 });
 
                 builder.first_discard[actor] = false;
-
                 if is_liqi {
-                    builder.liqibang += 1;
                     builder.liqi_flags[actor] = false;
                 }
             }
