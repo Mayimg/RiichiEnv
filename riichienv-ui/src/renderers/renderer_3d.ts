@@ -204,13 +204,23 @@ export class Renderer3D implements IRenderer {
         // Floating score labels on table (above riichi sticks)
         this.renderFloatingScores(tableInner, state, pc);
 
-        // Collect active waits for highlighting
+        // Collect waits and build per-player "danger waits" (exclude own waits from own hand highlight)
         const activeWaits = new Set<string>();
+        const ownWaitsByPlayer = state.players.map(() => new Set<string>());
         const normalize = (t: string) => t.replace('0', '5').replace('r', '');
-        state.players.forEach((pl) => {
+        state.players.forEach((pl, idx) => {
             if (pl.waits && pl.waits.length > 0) {
-                pl.waits.forEach((w) => activeWaits.add(normalize(w)));
+                pl.waits.forEach((w) => {
+                    const normW = normalize(w);
+                    activeWaits.add(normW);
+                    ownWaitsByPlayer[idx].add(normW);
+                });
             }
+        });
+        const dangerWaitsByPlayer = ownWaitsByPlayer.map((ownWaits) => {
+            const dangerWaits = new Set(activeWaits);
+            ownWaits.forEach((w) => dangerWaits.delete(w));
+            return dangerWaits;
         });
 
         // Per-player table elements
@@ -223,7 +233,7 @@ export class Renderer3D implements IRenderer {
 
             // Opponent hand + melds on table (skip viewpoint player)
             if (relIndex !== 0) {
-                const oppHand = this.renderOpponentHandArea(p, i, relIndex, pc, activeWaits);
+                const oppHand = this.renderOpponentHandArea(p, i, relIndex, pc, dangerWaitsByPlayer[i]);
                 tableInner.appendChild(oppHand);
             }
         });
@@ -240,7 +250,7 @@ export class Renderer3D implements IRenderer {
 
         const vpPlayer = state.players[this.viewpoint];
         if (vpPlayer) {
-            const handEl = this.renderOwnHand(vpPlayer, this.viewpoint, state, pc, activeWaits);
+            const handEl = this.renderOwnHand(vpPlayer, this.viewpoint, state, pc, dangerWaitsByPlayer[this.viewpoint]);
             handLayer.appendChild(handEl);
         }
         sceneFrag.appendChild(handLayer);
