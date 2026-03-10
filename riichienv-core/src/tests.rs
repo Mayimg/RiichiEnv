@@ -418,7 +418,10 @@ mod unit_tests {
 
         state._initialize_next_round(true, false);
 
-        assert!(!state.is_done, "Game should continue if the orasu dealer is top but below 30000");
+        assert!(
+            !state.is_done,
+            "Game should continue if the orasu dealer is top but below 30000"
+        );
     }
 
     #[test]
