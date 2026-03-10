@@ -575,6 +575,96 @@ describe('GameState', () => {
         });
     });
 
+    describe('chankan winning tile inference', () => {
+        it('should use kakan tile as winning tile for chankan ron', () => {
+            const events: MjaiEvent[] = [
+                makeStartKyoku({
+                    tehais: [
+                        ['1m', '2m', '3m', '4m', '5m', '6m', '7m', '8m', '9m', '1p', '2p', '3p', '5p'],
+                        ['1s', '2s', '3s', '4s', '5s', '6s', '7s', '8s', '9s', '1p', '2p', '3p', '4p'],
+                        ['1m', '2m', '3m', '4m', '5m', '6m', '7m', '8m', '9m', '5p', '5p', '4p', '3p'],
+                        ['1s', '2s', '3s', '4s', '5s', '6s', '7s', '8s', '9s', '1p', '2p', '3p', '4p'],
+                    ],
+                }),
+                { type: 'tsumo', actor: 0, pai: '1s' },
+                { type: 'dahai', actor: 0, pai: '1s' },
+                { type: 'tsumo', actor: 1, pai: '9s' },
+                { type: 'dahai', actor: 1, pai: '9s' },
+                { type: 'tsumo', actor: 2, pai: '9s' },
+                { type: 'dahai', actor: 2, pai: '9s' },
+                { type: 'tsumo', actor: 3, pai: '9s' },
+                { type: 'dahai', actor: 3, pai: '5p' },
+                // Player 2 pons the 5p (hand has two 5p, consumed two, receives one from target)
+                { type: 'pon', actor: 2, target: 3, pai: '5p', consumed: ['5p', '5p'] },
+                { type: 'dahai', actor: 2, pai: '4p' },
+                // Player 2 draws the 4th 5p and does kakan
+                { type: 'tsumo', actor: 3, pai: '9s' },
+                { type: 'dahai', actor: 3, pai: '9s' },
+                { type: 'tsumo', actor: 0, pai: '9s' },
+                { type: 'dahai', actor: 0, pai: '9s' },
+                { type: 'tsumo', actor: 1, pai: '9s' },
+                { type: 'dahai', actor: 1, pai: '9s' },
+                { type: 'tsumo', actor: 2, pai: '5p' },
+                { type: 'kakan', actor: 2, pai: '5p', consumed: ['5p'] },
+                // Player 0 chankan rons
+                { type: 'hora', actor: 0, target: 2, deltas: [8000, 0, -8000, 0], ura_markers: [] },
+                { type: 'end_kyoku' },
+            ];
+            const gs = new GameState(events);
+            gs.jumpTo(events.length);
+            const state = gs.getState();
+            const results = state.lastEvent?.meta?.results;
+            expect(results).toBeDefined();
+            expect(results[0].winningTile).toBe('5p');
+        });
+
+        it('should use ankan tile as winning tile for chankan ron on kokushi', () => {
+            const events: MjaiEvent[] = [
+                makeStartKyoku({
+                    tehais: [
+                        // Kokushi tenpai waiting on 1m
+                        ['9m', '1p', '9p', '1s', '9s', 'E', 'S', 'W', 'N', 'P', 'F', 'C', '2m'],
+                        ['2s', '3s', '4s', '5s', '6s', '7s', '8s', '9s', '2p', '3p', '4p', '5p', '6p'],
+                        ['1m', '1m', '1m', '1m', '2m', '3m', '4m', '5m', '6m', '7m', '8m', '9m', '4p'],
+                        ['2s', '3s', '4s', '5s', '6s', '7s', '8s', '9s', '2p', '3p', '4p', '5p', '6p'],
+                    ],
+                }),
+                { type: 'tsumo', actor: 0, pai: '8p' },
+                { type: 'dahai', actor: 0, pai: '2m' },
+                { type: 'tsumo', actor: 1, pai: '7p' },
+                { type: 'dahai', actor: 1, pai: '7p' },
+                // Player 2 does ankan with 1m (terminal tile)
+                { type: 'tsumo', actor: 2, pai: '8p' },
+                { type: 'ankan', actor: 2, consumed: ['1m', '1m', '1m', '1m'] },
+                // Player 0 chankan rons with kokushi (waiting on 1m)
+                { type: 'hora', actor: 0, target: 2, deltas: [32000, 0, -32000, 0], ura_markers: [] },
+                { type: 'end_kyoku' },
+            ];
+            const gs = new GameState(events);
+            gs.jumpTo(events.length);
+            const state = gs.getState();
+            const results = state.lastEvent?.meta?.results;
+            expect(results).toBeDefined();
+            expect(results[0].winningTile).toBe('1m');
+        });
+
+        it('should infer winning tile from dahai for normal ron', () => {
+            const events: MjaiEvent[] = [
+                makeStartKyoku(),
+                { type: 'tsumo', actor: 0, pai: '1s' },
+                { type: 'dahai', actor: 0, pai: '1m' },
+                { type: 'hora', actor: 1, target: 0, deltas: [0, 8000, -8000, 0], ura_markers: [] },
+                { type: 'end_kyoku' },
+            ];
+            const gs = new GameState(events);
+            gs.jumpTo(events.length);
+            const state = gs.getState();
+            const results = state.lastEvent?.meta?.results;
+            expect(results).toBeDefined();
+            expect(results[0].winningTile).toBe('1m');
+        });
+    });
+
     describe('condition tracking with config', () => {
         it('should have condition arrays matching player count for 4P', () => {
             const events: MjaiEvent[] = [makeStartKyoku()];
