@@ -848,9 +848,12 @@ export class GameState {
                                                         e2.type === 'ankan') &&
                                                     e2.actor === target
                                                 ) {
-                                                    // ankan has no pai field; use consumed[0]
-                                                    res.winningTile = e2.pai ?? e2.consumed?.[0];
-                                                    found = true;
+                                                    // Some ankan logs omit pai; use consumed[0] as a fallback
+                                                    const tile = e2.pai ?? e2.consumed?.[0];
+                                                    if (tile) {
+                                                        res.winningTile = tile;
+                                                        found = true;
+                                                    }
                                                     break;
                                                 }
                                             } else {
