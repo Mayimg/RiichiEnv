@@ -1,5 +1,5 @@
 from . import consts, convert
-from ._riichienv import (  # type: ignore
+from ._riichienv import (
     GameRule,
     Kyoku,
     Meld,
@@ -33,7 +33,7 @@ WEST = Wind.West
 NORTH = Wind.North
 
 
-def _get_viewer(self):  # type: ignore[no-untyped-def]
+def _get_viewer(self):
     # Lazy import to avoid circular dependency: visualizer imports from riichienv
     from riichienv.visualizer import GameViewer  # noqa: PLC0415
 

@@ -1,8 +1,8 @@
 import dataclasses
 from dataclasses import dataclass
 
-from . import _riichienv as rust_core  # type: ignore
-from ._riichienv import (  # type: ignore
+from . import _riichienv as rust_core
+from ._riichienv import (
     Meld,
     Wind,
     WinResult,
