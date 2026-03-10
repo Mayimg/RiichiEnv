@@ -106,9 +106,7 @@ class TestObservationSerialization:
             discard = obs.hand[0]
             obs_dict = env.step({pid: Action(ActionType.Discard, tile=discard)})
             if env.phase == Phase.WaitResponse:
-                obs_dict = env.step(
-                    {player: Action(ActionType.Pass) for player in env.active_players}
-                )
+                obs_dict = env.step({player: Action(ActionType.Pass) for player in env.active_players})
 
         dealer_obs_2 = obs_dict[0]
         assert [event["type"] for event in dealer_obs_2.events] == [
@@ -122,9 +120,7 @@ class TestObservationSerialization:
             "tsumo",
         ]
 
-        restored = Observation.deserialize_from_base64(
-            dealer_obs_2.serialize_to_base64()
-        )
+        restored = Observation.deserialize_from_base64(dealer_obs_2.serialize_to_base64())
         assert [event["type"] for event in restored.events] == [
             "dahai",
             "tsumo",
