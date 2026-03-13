@@ -116,6 +116,7 @@ impl Observation3P {
     }
 
     /// Return absolute player indices in relative order: [self, next, prev].
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) fn rel_order(&self) -> [usize; 3] {
         let pid = self.player_id as usize;
         [pid, (pid + 1) % 3, (pid + 2) % 3]

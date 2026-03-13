@@ -35,6 +35,7 @@ pub struct Observation {
     /// Pre-computed progression tuples (set by GameState for O(1) access).
     /// When Some, encode_seq_progression() returns this directly.
     #[serde(skip)]
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) cached_progression: Option<Vec<[u16; 5]>>,
 
     pub honba: u8,
@@ -122,6 +123,7 @@ impl Observation {
     }
 
     /// Return absolute player indices in relative order: [self, shimocha, toimen, kamicha].
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) fn rel_order(&self) -> [usize; 4] {
         let pid = self.player_id as usize;
         [pid, (pid + 1) % 4, (pid + 2) % 4, (pid + 3) % 4]

@@ -2,6 +2,8 @@ use rand::prelude::*;
 use rand::rngs::StdRng;
 use sha2::{Digest, Sha256};
 
+use crate::types::TILES_4P;
+
 /// Wall state for 4-player mahjong (136 tiles).
 #[derive(Debug, Clone)]
 pub struct WallState {
@@ -30,7 +32,7 @@ impl WallState {
     }
 
     pub fn shuffle(&mut self) {
-        let mut w: Vec<u8> = (0..136).collect();
+        let mut w: Vec<u8> = (0..TILES_4P as u8).collect();
         let mut rng = if let Some(episode_seed) = self.seed {
             let hand_seed = splitmix64(episode_seed.wrapping_add(self.hand_index));
             self.hand_index = self.hand_index.wrapping_add(1);

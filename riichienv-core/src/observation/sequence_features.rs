@@ -71,13 +71,6 @@ fn tile_type_to_kan37(tile_type: u8) -> u8 {
     }
 }
 
-/// Convert a tile type (0-33) to kan34 (identity).
-#[inline]
-#[allow(dead_code)]
-pub fn tile_type_to_kan34(tile_type: u8) -> u8 {
-    tile_type
-}
-
 /// Convert MJAI tile string to kan37.
 fn mjai_tile_to_kan37(mjai: &str) -> Option<u8> {
     let tid = mjai_to_tid(mjai)?;

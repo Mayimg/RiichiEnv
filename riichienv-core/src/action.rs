@@ -139,7 +139,7 @@ impl Action {
 
         if !self.consume_tiles.is_empty() {
             let cons: Vec<String> = self.consume_tiles.iter().map(|&t| tid_to_mjai(t)).collect();
-            data.insert("consumed".to_string(), serde_json::to_value(cons).unwrap());
+            data.insert("consumed".to_string(), serde_json::to_value(cons).expect("valid JSON"));
         }
 
         Value::Object(data).to_string()
