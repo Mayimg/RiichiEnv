@@ -516,7 +516,10 @@ impl GameState3P {
                             ev.insert("pai".to_string(), Value::String(tid_to_mjai(tile)));
                             let cons: Vec<String> =
                                 act.consume_tiles.iter().map(|&t| tid_to_mjai(t)).collect();
-                            ev.insert("consumed".to_string(), serde_json::to_value(cons).expect("valid JSON"));
+                            ev.insert(
+                                "consumed".to_string(),
+                                serde_json::to_value(cons).expect("valid JSON"),
+                            );
                             self._push_mjai_event(Value::Object(ev));
                         }
 
@@ -1689,7 +1692,10 @@ impl GameState3P {
                 let hand_strs: Vec<String> = p.hand.iter().map(|&t| tid_to_mjai(t)).collect();
                 tehais.push(hand_strs);
             }
-            ev.insert("tehais".to_string(), serde_json::to_value(tehais).expect("valid JSON"));
+            ev.insert(
+                "tehais".to_string(),
+                serde_json::to_value(tehais).expect("valid JSON"),
+            );
             self._push_mjai_event(Value::Object(ev));
         }
 
@@ -1828,7 +1834,10 @@ impl GameState3P {
             ev.insert("type".to_string(), Value::String("ryukyoku".to_string()));
             ev.insert("reason".to_string(), Value::String(final_reason.clone()));
             let deltas: Vec<i32> = self.players.iter().map(|p| p.score_delta).collect();
-            ev.insert("deltas".to_string(), serde_json::to_value(deltas).expect("valid JSON"));
+            ev.insert(
+                "deltas".to_string(),
+                serde_json::to_value(deltas).expect("valid JSON"),
+            );
             self._push_mjai_event(Value::Object(ev));
         }
 
@@ -1880,7 +1889,11 @@ impl GameState3P {
                 ev.insert(
                     "dora_marker".to_string(),
                     Value::String(tid_to_mjai(
-                        self.wall.dora_indicators.last().copied().expect("dora_indicators must not be empty"),
+                        self.wall
+                            .dora_indicators
+                            .last()
+                            .copied()
+                            .expect("dora_indicators must not be empty"),
                     )),
                 );
                 self._push_mjai_event(Value::Object(ev));
@@ -1953,17 +1966,25 @@ impl GameState3P {
                             masked_tehais.push(serde_json::to_value(masked).expect("valid JSON"));
                         }
                     }
-                    let mut masked_event = event.as_object().expect("event must be a JSON object").clone();
+                    let mut masked_event = event
+                        .as_object()
+                        .expect("event must be a JSON object")
+                        .clone();
                     masked_event.insert("tehais".to_string(), Value::Array(masked_tehais));
-                    final_json = serde_json::to_string(&Value::Object(masked_event)).expect("valid JSON");
+                    final_json =
+                        serde_json::to_string(&Value::Object(masked_event)).expect("valid JSON");
                 }
             } else if type_str == "tsumo"
                 && let Some(act_id) = actor
                 && act_id != pid
             {
-                let mut masked_event = event.as_object().expect("event must be a JSON object").clone();
+                let mut masked_event = event
+                    .as_object()
+                    .expect("event must be a JSON object")
+                    .clone();
                 masked_event.insert("pai".to_string(), Value::String("?".to_string()));
-                final_json = serde_json::to_string(&Value::Object(masked_event)).expect("valid JSON");
+                final_json =
+                    serde_json::to_string(&Value::Object(masked_event)).expect("valid JSON");
             }
 
             if should_push {
