@@ -9,7 +9,7 @@ use crate::parser::tid_to_mjai;
 use crate::replay::Action as LogAction;
 use crate::replay::MjaiEvent;
 use crate::rule::GameRule;
-use crate::types::{Conditions, Meld, MeldType, WinResult, Wind};
+use crate::types::{Conditions, INITIAL_HAND_SIZE, Meld, MeldType, WinResult, Wind};
 
 pub mod event_handler;
 pub mod game_mode;
@@ -516,7 +516,10 @@ impl GameState3P {
                             ev.insert("pai".to_string(), Value::String(tid_to_mjai(tile)));
                             let cons: Vec<String> =
                                 act.consume_tiles.iter().map(|&t| tid_to_mjai(t)).collect();
-                            ev.insert("consumed".to_string(), serde_json::to_value(cons).unwrap());
+                            ev.insert(
+                                "consumed".to_string(),
+                                serde_json::to_value(cons).expect("valid JSON"),
+                            );
                             self._push_mjai_event(Value::Object(ev));
                         }
 
@@ -801,7 +804,7 @@ impl GameState3P {
                                 ev.insert("target".to_string(), Value::Number(pid.into()));
                                 ev.insert(
                                     "deltas".to_string(),
-                                    serde_json::to_value(deltas).unwrap(),
+                                    serde_json::to_value(deltas).expect("valid JSON"),
                                 );
                                 ev.insert("tsumo".to_string(), Value::Bool(true));
                                 let mut ura_markers = Vec::new();
@@ -810,7 +813,7 @@ impl GameState3P {
                                 }
                                 ev.insert(
                                     "ura_markers".to_string(),
-                                    serde_json::to_value(&ura_markers).unwrap(),
+                                    serde_json::to_value(&ura_markers).expect("valid JSON"),
                                 );
                                 self._push_mjai_event(Value::Object(ev));
                             }
@@ -1042,7 +1045,7 @@ impl GameState3P {
                             ev.insert("target".to_string(), Value::Number(target_pid.into()));
                             ev.insert(
                                 "deltas".to_string(),
-                                serde_json::to_value(this_deltas).unwrap(),
+                                serde_json::to_value(this_deltas).expect("valid JSON"),
                             );
                             let mut ura_markers = Vec::new();
                             if self.players[w_pid as usize].riichi_declared {
@@ -1050,7 +1053,7 @@ impl GameState3P {
                             }
                             ev.insert(
                                 "ura_markers".to_string(),
-                                serde_json::to_value(&ura_markers).unwrap(),
+                                serde_json::to_value(&ura_markers).expect("valid JSON"),
                             );
                             self._push_mjai_event(Value::Object(ev));
                         }
@@ -1095,7 +1098,7 @@ impl GameState3P {
                         self.players[claimer as usize].hand.remove(idx);
                     }
                 }
-                let (discarder, tile) = self.last_discard.unwrap();
+                let (discarder, tile) = self.last_discard.expect("last_discard must be set");
                 let mut tiles = action.consume_tiles.clone();
                 tiles.push(tile);
                 tiles.sort();
@@ -1130,7 +1133,7 @@ impl GameState3P {
                             .collect();
                         ev.insert(
                             "consumed".to_string(),
-                            serde_json::to_value(cons_strs).unwrap(),
+                            serde_json::to_value(cons_strs).expect("valid JSON"),
                         );
                         self._push_mjai_event(Value::Object(ev));
                     }
@@ -1324,7 +1327,7 @@ impl GameState3P {
             let (m_type, tiles, from_who, ct) = if action.action_type == ActionType::Ankan {
                 (MeldType::Ankan, action.consume_tiles.clone(), -1i8, None)
             } else {
-                let (discarder, tile) = self.last_discard.unwrap();
+                let (discarder, tile) = self.last_discard.expect("last_discard must be set");
                 let mut t_vec = action.consume_tiles.clone();
                 t_vec.push(tile);
                 t_vec.sort();
@@ -1340,7 +1343,7 @@ impl GameState3P {
 
             // PAO check for Daiminkan
             if action.action_type == ActionType::Daiminkan {
-                let (discarder, tile) = self.last_discard.unwrap();
+                let (discarder, tile) = self.last_discard.expect("last_discard must be set");
                 let tile_val = tile / 4;
                 if (31..=33).contains(&tile_val) {
                     let dragon_melds = self.players[p_idx]
@@ -1409,7 +1412,7 @@ impl GameState3P {
                         .collect();
                     ev.insert(
                         "consumed".to_string(),
-                        serde_json::to_value(cons_strs).unwrap(),
+                        serde_json::to_value(cons_strs).expect("valid JSON"),
                     );
                     self._push_mjai_event(Value::Object(ev));
                 }
@@ -1678,7 +1681,7 @@ impl GameState3P {
             let scores_vec: Vec<i32> = self.players.iter().map(|p| p.score).collect();
             ev.insert(
                 "scores".to_string(),
-                serde_json::to_value(scores_vec).unwrap(),
+                serde_json::to_value(scores_vec).expect("valid JSON"),
             );
             ev.insert(
                 "dora_marker".to_string(),
@@ -1689,7 +1692,10 @@ impl GameState3P {
                 let hand_strs: Vec<String> = p.hand.iter().map(|&t| tid_to_mjai(t)).collect();
                 tehais.push(hand_strs);
             }
-            ev.insert("tehais".to_string(), serde_json::to_value(tehais).unwrap());
+            ev.insert(
+                "tehais".to_string(),
+                serde_json::to_value(tehais).expect("valid JSON"),
+            );
             self._push_mjai_event(Value::Object(ev));
         }
 
@@ -1828,7 +1834,10 @@ impl GameState3P {
             ev.insert("type".to_string(), Value::String("ryukyoku".to_string()));
             ev.insert("reason".to_string(), Value::String(final_reason.clone()));
             let deltas: Vec<i32> = self.players.iter().map(|p| p.score_delta).collect();
-            ev.insert("deltas".to_string(), serde_json::to_value(deltas).unwrap());
+            ev.insert(
+                "deltas".to_string(),
+                serde_json::to_value(deltas).expect("valid JSON"),
+            );
             self._push_mjai_event(Value::Object(ev));
         }
 
@@ -1880,7 +1889,11 @@ impl GameState3P {
                 ev.insert(
                     "dora_marker".to_string(),
                     Value::String(tid_to_mjai(
-                        self.wall.dora_indicators.last().copied().unwrap(),
+                        self.wall
+                            .dora_indicators
+                            .last()
+                            .copied()
+                            .expect("dora_indicators must not be empty"),
                     )),
                 );
                 self._push_mjai_event(Value::Object(ev));
@@ -1931,7 +1944,7 @@ impl GameState3P {
         if self.skip_mjai_logging {
             return;
         }
-        let json_str = serde_json::to_string(&event).unwrap();
+        let json_str = serde_json::to_string(&event).expect("valid JSON");
         self.mjai_log.push(json_str.clone());
 
         let type_str = event["type"].as_str().unwrap_or("");
@@ -1948,22 +1961,33 @@ impl GameState3P {
                         if i == pid {
                             masked_tehais.push(hand_val.clone());
                         } else {
-                            let len = hand_val.as_array().map(|a| a.len()).unwrap_or(13);
+                            let len = hand_val
+                                .as_array()
+                                .map(|a| a.len())
+                                .unwrap_or(INITIAL_HAND_SIZE);
                             let masked = vec!["?".to_string(); len];
-                            masked_tehais.push(serde_json::to_value(masked).unwrap());
+                            masked_tehais.push(serde_json::to_value(masked).expect("valid JSON"));
                         }
                     }
-                    let mut masked_event = event.as_object().unwrap().clone();
+                    let mut masked_event = event
+                        .as_object()
+                        .expect("event must be a JSON object")
+                        .clone();
                     masked_event.insert("tehais".to_string(), Value::Array(masked_tehais));
-                    final_json = serde_json::to_string(&Value::Object(masked_event)).unwrap();
+                    final_json =
+                        serde_json::to_string(&Value::Object(masked_event)).expect("valid JSON");
                 }
             } else if type_str == "tsumo"
                 && let Some(act_id) = actor
                 && act_id != pid
             {
-                let mut masked_event = event.as_object().unwrap().clone();
+                let mut masked_event = event
+                    .as_object()
+                    .expect("event must be a JSON object")
+                    .clone();
                 masked_event.insert("pai".to_string(), Value::String("?".to_string()));
-                final_json = serde_json::to_string(&Value::Object(masked_event)).unwrap();
+                final_json =
+                    serde_json::to_string(&Value::Object(masked_event)).expect("valid JSON");
             }
 
             if should_push {

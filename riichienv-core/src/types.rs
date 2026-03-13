@@ -3,6 +3,10 @@ use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 pub const TILE_MAX: usize = 34;
+pub const TILE_COPIES: usize = 4;
+pub const TILES_4P: usize = 136;
+pub const TILES_3P: usize = 108;
+pub const INITIAL_HAND_SIZE: usize = 13;
 
 /// A hand representation using a histogram of tile types (0-33).
 #[derive(Debug, Clone)]

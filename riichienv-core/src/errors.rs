@@ -1,37 +1,18 @@
-use std::fmt;
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RiichiError {
-    /// 牌文字列・手牌文字列のパースエラー
+    /// Parse error for tile strings or hand strings
+    #[error("Parse error on '{input}': {message}")]
     Parse { input: String, message: String },
-    /// アクション構成・エンコードのバリデーションエラー
+    /// Validation error for action construction or encoding
+    #[error("Invalid action: {message}")]
     InvalidAction { message: String },
-    /// ゲーム状態の不整合（リプレイ同期ずれ等）
+    /// Game state inconsistency (e.g. replay desync)
+    #[error("Invalid state: {message}")]
     InvalidState { message: String },
-    /// シリアライズ/デシリアライズの失敗
+    /// Serialization or deserialization failure
+    #[error("Serialization error: {message}")]
     Serialization { message: String },
 }
-
-impl fmt::Display for RiichiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RiichiError::Parse { input, message } => {
-                write!(f, "Parse error on '{}': {}", input, message)
-            }
-            RiichiError::InvalidAction { message } => {
-                write!(f, "Invalid action: {}", message)
-            }
-            RiichiError::InvalidState { message } => {
-                write!(f, "Invalid state: {}", message)
-            }
-            RiichiError::Serialization { message } => {
-                write!(f, "Serialization error: {}", message)
-            }
-        }
-    }
-}
-
-impl std::error::Error for RiichiError {}
 
 pub type RiichiResult<T> = Result<T, RiichiError>;
 

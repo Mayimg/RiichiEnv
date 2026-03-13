@@ -139,7 +139,10 @@ impl Action {
 
         if !self.consume_tiles.is_empty() {
             let cons: Vec<String> = self.consume_tiles.iter().map(|&t| tid_to_mjai(t)).collect();
-            data.insert("consumed".to_string(), serde_json::to_value(cons).unwrap());
+            data.insert(
+                "consumed".to_string(),
+                serde_json::to_value(cons).expect("valid JSON"),
+            );
         }
 
         Value::Object(data).to_string()
@@ -432,28 +435,19 @@ impl Action {
     feature = "python",
     pyclass(module = "riichienv._riichienv", from_py_object)
 )]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    derive_more::Deref,
+    derive_more::DerefMut,
+    derive_more::Into,
+)]
 #[serde(transparent)]
 pub struct Action3P(pub Action);
-
-impl From<Action3P> for Action {
-    fn from(a: Action3P) -> Self {
-        a.0
-    }
-}
-
-impl std::ops::Deref for Action3P {
-    type Target = Action;
-    fn deref(&self) -> &Action {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for Action3P {
-    fn deref_mut(&mut self) -> &mut Action {
-        &mut self.0
-    }
-}
 
 impl Action3P {
     pub fn from_action(action: Action) -> Self {

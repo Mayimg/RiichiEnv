@@ -4,7 +4,7 @@ use crate::parser::mjai_to_tid;
 use crate::replay::{Action as LogAction, MjaiEvent};
 use crate::state_3p::GameState3P;
 use crate::state_3p::legal_actions::GameState3PLegalActions;
-use crate::types::{Meld, MeldType, Wind};
+use crate::types::{INITIAL_HAND_SIZE, Meld, MeldType, TILES_3P, Wind};
 
 fn parse_mjai_tile(s: &str) -> u8 {
     mjai_to_tid(s).unwrap_or(0)
@@ -71,7 +71,7 @@ impl GameState3PEventHandler for GameState3P {
                 self.is_after_kan = false;
                 self.riichi_sutehais = [None; 3];
                 self.last_tedashis = [None; 3];
-                self.wall.tiles = vec![0; 108 - 13 * 3];
+                self.wall.tiles = vec![0; TILES_3P - INITIAL_HAND_SIZE * 3];
                 self.wall.dora_indicators = vec![parse_mjai_tile(&dora_marker)];
                 self.wall.rinshan_draw_count = 0;
                 self.wall.pending_kan_dora_count = 0;
