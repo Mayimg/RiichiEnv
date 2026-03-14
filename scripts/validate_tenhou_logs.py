@@ -10,12 +10,17 @@ Validates Tenhou logs by replaying each kyoku step-by-step and checking:
   6. Score continuity: end_scores of kyoku k == scores of kyoku k+1
   7. Score conservation: sum(delta) accounts for riichi stick movement
   8. First obs scores match kyoku starting scores
+  9. Win consistency: tsumo/ron actions have tenpai obs with matching waits
 """
 import argparse
 from pathlib import Path
 
 from riichienv import MjaiReplay
-from riichienv._riichienv import Action, Action3P, Observation, Observation3P
+from riichienv._riichienv import (
+    Action, Action3P, ActionType, Observation, Observation3P,
+    HandEvaluator, HandEvaluator3P,
+    calculate_shanten, calculate_shanten_3p,
+)
 import numpy as np
 
 
@@ -151,6 +156,82 @@ def validate_obs_encoding_3p(obs: Observation3P) -> None:
 
     feat = np.frombuffer(obs.encode_extended(), dtype=np.float32).reshape(215, 27)
     _check_finite(feat, "extended")
+
+
+# ---------------------------------------------------------------------------
+# Win action consistency validation
+# ---------------------------------------------------------------------------
+
+def validate_win_action(obs: Observation | Observation3P, action: Action | Action3P,
+                        seat: int, *, ctx: str) -> None:
+    """When the action is tsumo/ron, validate tenpai and wait consistency."""
+    d = action.to_dict()
+    atype = d["type"]
+    is_tsumo = atype == int(ActionType.TSUMO)
+    is_ron = atype == int(ActionType.RON)
+    if not is_tsumo and not is_ron:
+        return
+
+    tile = d["tile"]
+    tile_t34 = tile // 4
+    is_3p = isinstance(obs, Observation3P)
+
+    if is_ron:
+        # Ron: obs should already show tenpai (13-tile hand), and
+        # the ron tile (tile_t34) must be in obs.waits.
+        assert obs.is_tenpai, (
+            f"{ctx}: RON but obs.is_tenpai is False"
+        )
+        waits_set = set(obs.waits)
+        assert tile_t34 in waits_set, (
+            f"{ctx}: RON tile t34={tile_t34} not in obs.waits={sorted(waits_set)}"
+        )
+
+        # Cross-check: shanten of the 13-tile hand must be 0 (tenpai).
+        # This validates the shanten calculation (Nyanten tables) against
+        # the agari-based is_tenpai from HandEvaluator.
+        hand_13 = list(obs.hand)
+        shanten_fn = calculate_shanten_3p if is_3p else calculate_shanten
+        shanten = shanten_fn(hand_13)
+        assert shanten == 0, (
+            f"{ctx}: RON but shanten={shanten} (expected 0)"
+        )
+    else:
+        # Tsumo: hand has 3n+2 tiles (e.g. 14). Remove the tsumo tile to
+        # get a 3n+1 hand and verify it is tenpai for the drawn tile.
+        hand = list(obs.hand)
+        assert tile in hand, (
+            f"{ctx}: TSUMO tile {tile} not in hand {hand}"
+        )
+        hand_sub = list(hand)
+        hand_sub.remove(tile)
+
+        melds = list(obs.melds[seat])
+        if is_3p:
+            ev = HandEvaluator3P(hand_sub, melds)
+        else:
+            ev = HandEvaluator(hand_sub, melds)
+
+        assert ev.is_tenpai(), (
+            f"{ctx}: TSUMO but 13-tile hand is not tenpai"
+        )
+        waits_u8 = set(ev.get_waits_u8())
+        assert tile_t34 in waits_u8, (
+            f"{ctx}: TSUMO tile t34={tile_t34} not in waits={sorted(waits_u8)}"
+        )
+
+        # Cross-check: shanten of the 13-tile hand must be 0.
+        shanten_fn = calculate_shanten_3p if is_3p else calculate_shanten
+        shanten = shanten_fn(hand_sub)
+        assert shanten == 0, (
+            f"{ctx}: TSUMO but shanten={shanten} on 13-tile hand (expected 0)"
+        )
+
+        # Also verify shanten of the complete 14-tile hand is -1 (agari).
+        shanten_full = shanten_fn(hand)
+        assert shanten_full == -1, (
+            f"{ctx}: TSUMO but shanten={shanten_full} on 14-tile hand (expected -1)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +403,8 @@ def validate_tenhou_log(log_path: Path, *, rule: str | None = None) -> None:
                 assert isinstance(obs, Observation), f"{ctx}: Expected Observation, got {type(obs)}"
                 validate_obs_encoding_4p(obs)
                 validate_action_in_legals(obs, action, ctx=ctx)
+
+            validate_win_action(obs, action, seat, ctx=ctx)
 
             step_count += 1
 
