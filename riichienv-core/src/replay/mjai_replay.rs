@@ -363,9 +363,8 @@ impl MjaiReplay {
             rounds.push(b.build());
         }
 
-        // MJAI logs converted from MjSoul often omit end-of-round scores on
-        // hora/ryukyoku events. For all non-final rounds, the next round's
-        // start scores are the authoritative post-round scores.
+        // For all non-final rounds, the next round's start scores are the
+        // authoritative post-round scores.
         for i in 0..rounds.len().saturating_sub(1) {
             rounds[i].end_scores = rounds[i + 1].scores.clone();
         }
