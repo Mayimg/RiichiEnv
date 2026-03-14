@@ -306,13 +306,155 @@ class Observation:
         """
         ...
     def encode_discard_history_decay(self, decay_rate: float | None = None) -> bytes:
-        """Encode discard history as a decayed feature plane."""
+        """Encode discard history with exponential decay.
+
+        Shape: ``(4, 34)`` / dtype: ``float32``.
+
+        Each of the 4 players has a 34-tile plane where earlier discards
+        are exponentially decayed toward zero.
+        """
         ...
     def encode_yaku_possibility(self) -> bytes:
-        """Encode yaku possibility features for each player."""
+        """Encode yaku possibility features for each player.
+
+        Shape: ``(4, 21, 2)`` / dtype: ``float32``.
+
+        For each of the 4 players, 21 yaku types × 2 (tsumo / ron).
+        """
         ...
     def encode_furiten_ron_possibility(self) -> bytes:
-        """Encode furiten / ron possibility features."""
+        """Encode furiten / ron possibility features.
+
+        Shape: ``(4, 21)`` / dtype: ``float32``.
+
+        For each of the 4 players, ron-possibility flags based on
+        tsumogiri patterns across 21 yaku types.
+        """
+        ...
+    def encode_shanten_efficiency(self) -> bytes:
+        """Encode shanten and tile efficiency features.
+
+        Shape: ``(4, 4)`` / dtype: ``float32``.
+
+        For each of the 4 players: ``[shanten, effective_tiles,
+        best_ukeire, turn_count]``.
+        """
+        ...
+    def encode_kawa_overview(self) -> bytes:
+        """Encode river (kawa) overview features for all players.
+
+        Shape: ``(4, 7, 34)`` / dtype: ``float32``.
+
+        For each of the 4 players, 7 channels
+        (count1–count4, aka5m, aka5p, aka5s) × 34 tile types.
+        """
+        ...
+    def encode_fuuro_overview(self) -> bytes:
+        """Encode open-meld (fuuro) overview features for all players.
+
+        Shape: ``(4, 4, 5, 34)`` / dtype: ``float32``.
+
+        For each of the 4 players, up to 4 melds × 5 channels
+        (tile1–tile4, aka) × 34 tile types.
+        """
+        ...
+    def encode_ankan_overview(self) -> bytes:
+        """Encode closed-kan (ankan) overview features for all players.
+
+        Shape: ``(4, 34)`` / dtype: ``float32``.
+
+        Binary flags indicating which tile types each player has
+        declared as closed kan.
+        """
+        ...
+    def encode_action_availability(self) -> bytes:
+        """Encode which action types are currently available.
+
+        Shape: ``(11,)`` / dtype: ``float32``.
+
+        Flags for: ``[riichi, chi_low, chi_mid, chi_high, pon,
+        daiminkan, ankan, kakan, agari, kyuushukyuuhai, pass]``.
+        """
+        ...
+    def encode_riichi_sutehais(self) -> bytes:
+        """Encode the riichi declaration discard tiles for all players.
+
+        Shape: ``(3, 3)`` / dtype: ``float32``.
+
+        For each of the 3 opponents: ``[tile_type, is_aka, is_dora]``.
+        """
+        ...
+    def encode_last_tedashis(self) -> bytes:
+        """Encode the last hand-picked discard for all players.
+
+        Shape: ``(3, 3)`` / dtype: ``float32``.
+
+        For each of the 3 opponents: ``[tile_type, is_aka, is_dora]``.
+        """
+        ...
+    def encode_pass_context(self) -> bytes:
+        """Encode contextual features relevant to the pass action.
+
+        Shape: ``(3,)`` / dtype: ``float32``.
+
+        Context about the currently offered tile:
+        ``[tile_type, is_aka, is_dora]``.
+        """
+        ...
+    def encode_discard_candidates(self) -> bytes:
+        """Encode candidate tiles for discard selection.
+
+        Shape: ``(5,)`` / dtype: ``float32``.
+
+        ``[hand_size, keep_shanten_ratio, increase_shanten_ratio,
+        is_tenpai, riichi_declared]``.
+        """
+        ...
+    def encode_extended(self) -> bytes:
+        """Encode extended features (combination of multiple feature planes).
+
+        Shape: ``(215, 34)`` / dtype: ``float32``.
+
+        Concatenation of base (74) + discard_decay (4) + shanten (16) +
+        ankan (4) + fuuro (80) + action_avail (11) + discard_cand (5) +
+        pass_ctx (3) + last_tedashis (9) + riichi_sutehais (9) = 215
+        channels, each with 34 tile-type columns.
+
+        Example::
+
+            import numpy as np
+
+            buf = obs.encode_extended()
+            features = np.frombuffer(buf, dtype=np.float32).reshape(215, 34)
+        """
+        ...
+    def encode_seq_sparse(self, game_style: int = 1) -> bytes:
+        """Encode sequence features as sparse token ids.
+
+        Shape: variable-length 1-D array (up to 25 elements) / dtype: ``uint16``.
+        """
+        ...
+    def encode_seq_numeric(self) -> bytes:
+        """Encode sequence features as numeric values.
+
+        Shape: ``(12,)`` / dtype: ``float32``.
+        """
+        ...
+    def encode_seq_progression(self) -> bytes:
+        """Encode sequence progression features.
+
+        Shape: ``(N, 5)`` / dtype: ``uint16``.
+
+        Each row represents one action-history step with 5 token values.
+        """
+        ...
+    def encode_seq_candidates(self) -> bytes:
+        """Encode sequence candidate features.
+
+        Shape: ``(M, 4)`` / dtype: ``uint16``.
+
+        Each row represents one legal action candidate with 4 token values.
+        """
         ...
     def __init__(self, *args: Any, **kwargs: Any): ...
 
@@ -434,24 +576,44 @@ class Observation3P:
         """Deserialize from a base64-encoded JSON string."""
         ...
     def encode_discard_history_decay(self, decay_rate: float | None = None) -> bytes:
-        """Encode discard history as a decayed feature plane."""
+        """Encode discard history with exponential decay.
+
+        Shape: ``(3, 27)`` / dtype: ``float32``.
+
+        Each of the 3 players has a 27-tile plane where earlier discards
+        are exponentially decayed toward zero.
+        """
         ...
     def encode_furiten_ron_possibility(self) -> bytes:
-        """Encode furiten / ron possibility features."""
+        """Encode furiten / ron possibility features.
+
+        Shape: ``(3, 21)`` / dtype: ``float32``.
+
+        For each of the 3 players, ron-possibility flags based on
+        tsumogiri patterns across 21 yaku types.
+        """
         ...
     def encode_yaku_possibility(self) -> bytes:
-        """Encode yaku possibility features for each player."""
+        """Encode yaku possibility features for each player.
+
+        Shape: ``(3, 21, 2)`` / dtype: ``float32``.
+
+        For each of the 3 players, 21 yaku types × 2 (tsumo / ron).
+        """
         ...
     def encode(self) -> bytes:
         """Encode the observation into a compact binary feature representation.
 
-        Produces a feature tensor serialized as raw bytes (float32).
-        Channels include hand tile counts, melds, dora indicators, discard
-        history, riichi status, wind, scores, waits, and more.  The tile
-        dimension uses the 27-tile compact encoding for 3-player mahjong.
+        Shape: ``(74, 27)`` / dtype: ``float32``.
+
+        Produces a ``(74, 27)`` float32 feature tensor serialized as raw
+        bytes.  The 74 channels include hand tile counts, melds, dora
+        indicators, discard history, riichi status, wind, scores, waits,
+        and more.  The tile dimension uses the 27-tile compact encoding
+        for 3-player mahjong.
 
         Returns:
-            Raw bytes of float32 values.
+            Raw bytes of length ``74 * 27 * 4`` (float32).
 
         Example::
 
@@ -459,38 +621,107 @@ class Observation3P:
 
             obs = observations[player_id]
             buf = obs.encode()
-            features = np.frombuffer(buf, dtype=np.float32)
+            features = np.frombuffer(buf, dtype=np.float32).reshape(74, 27)
         """
         ...
     def encode_shanten_efficiency(self) -> bytes:
-        """Encode shanten and tile efficiency features."""
+        """Encode shanten and tile efficiency features.
+
+        Shape: ``(3, 4)`` / dtype: ``float32``.
+
+        For each of the 3 players: ``[shanten, effective_tiles,
+        best_ukeire, turn_count]``.  ``effective_tiles`` is normalized
+        by 27 (compact tile count).
+        """
         ...
     def encode_kawa_overview(self) -> bytes:
-        """Encode river (kawa) overview features for all players."""
+        """Encode river (kawa) overview features for all players.
+
+        Shape: ``(3, 7, 27)`` / dtype: ``float32``.
+
+        For each of the 3 players, 7 channels
+        (count1–count4, aka5m, aka5p, aka5s) × 27 compact tile types.
+        """
         ...
     def encode_fuuro_overview(self) -> bytes:
-        """Encode open-meld (fuuro) overview features for all players."""
+        """Encode open-meld (fuuro) overview features for all players.
+
+        Shape: ``(3, 4, 5, 27)`` / dtype: ``float32``.
+
+        For each of the 3 players, up to 4 melds × 5 channels
+        (tile1–tile4, aka) × 27 compact tile types.
+        """
         ...
     def encode_ankan_overview(self) -> bytes:
-        """Encode closed-kan (ankan) overview features for all players."""
+        """Encode closed-kan (ankan) overview features for all players.
+
+        Shape: ``(3, 27)`` / dtype: ``float32``.
+
+        Binary flags indicating which tile types each player has
+        declared as closed kan.
+        """
         ...
     def encode_action_availability(self) -> bytes:
-        """Encode which action types are currently available."""
+        """Encode which action types are currently available.
+
+        Shape: ``(11,)`` / dtype: ``float32``.
+
+        Flags for: ``[riichi, chi_low, chi_mid, chi_high, pon,
+        daiminkan, ankan, kakan, agari, kyuushukyuuhai, pass]``.
+        """
         ...
     def encode_riichi_sutehais(self) -> bytes:
-        """Encode the riichi declaration discard tiles for all players."""
+        """Encode the riichi declaration discard tiles for all players.
+
+        Shape: ``(2, 3)`` / dtype: ``float32``.
+
+        For each of the 2 opponents: ``[tile_type, is_aka, is_dora]``.
+        """
         ...
     def encode_last_tedashis(self) -> bytes:
-        """Encode the last hand-picked discard for all players."""
+        """Encode the last hand-picked discard for all players.
+
+        Shape: ``(2, 3)`` / dtype: ``float32``.
+
+        For each of the 2 opponents: ``[tile_type, is_aka, is_dora]``.
+        """
         ...
     def encode_pass_context(self) -> bytes:
-        """Encode contextual features relevant to the pass action."""
+        """Encode contextual features relevant to the pass action.
+
+        Shape: ``(3,)`` / dtype: ``float32``.
+
+        Context about the currently offered tile:
+        ``[tile_type, is_aka, is_dora]``.
+        """
         ...
     def encode_discard_candidates(self) -> bytes:
-        """Encode candidate tiles for discard selection."""
+        """Encode candidate tiles for discard selection.
+
+        Shape: ``(5,)`` / dtype: ``float32``.
+
+        ``[hand_size, keep_shanten_ratio, increase_shanten_ratio,
+        is_tenpai, riichi_declared]``.
+        """
         ...
     def encode_extended(self) -> bytes:
-        """Encode extended features (combination of multiple feature planes)."""
+        """Encode extended features (combination of multiple feature planes).
+
+        Shape: ``(215, 27)`` / dtype: ``float32``.
+
+        Concatenation of base (74) + discard_decay (4) + shanten (16) +
+        ankan (4) + fuuro (80) + action_avail (11) + discard_cand (5) +
+        pass_ctx (3) + last_tedashis (9) + riichi_sutehais (9) = 215
+        channels, each with 27 compact tile-type columns.  Channels that
+        correspond to the absent 4th player are zero-padded.
+
+        Example::
+
+            import numpy as np
+
+            buf = obs.encode_extended()
+            features = np.frombuffer(buf, dtype=np.float32).reshape(215, 27)
+        """
         ...
     def __init__(self, *args: Any, **kwargs: Any): ...
 

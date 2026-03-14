@@ -263,6 +263,11 @@ pub fn calculate_shanten(hand_tiles: &[u32]) -> i32 {
 /// Calculate effective tiles (tiles that reduce shanten when drawn)
 #[cfg(feature = "python")]
 pub fn calculate_effective_tiles(hand_tiles: &[u32]) -> u32 {
+    assert!(
+        hand_tiles.len() % 3 == 1,
+        "calculate_effective_tiles requires a 3n+1 hand (e.g. 13 tiles), got {}",
+        hand_tiles.len()
+    );
     let current_shanten = calculate_shanten(hand_tiles);
     let mut effective_count = 0;
 
@@ -282,6 +287,30 @@ pub fn calculate_effective_tiles(hand_tiles: &[u32]) -> u32 {
     }
 
     effective_count
+}
+
+/// Calculate effective tiles, handling both 3n+1 (13-tile) and 3n+2 (14-tile) hands.
+/// For a 14-tile hand, returns the best effective-tile count across all discard
+/// candidates that don't increase shanten.
+#[cfg(feature = "python")]
+pub fn calculate_effective_tiles_auto(hand_tiles: &[u32]) -> u32 {
+    if hand_tiles.len() % 3 == 1 {
+        return calculate_effective_tiles(hand_tiles);
+    }
+    let shanten = calculate_shanten(hand_tiles);
+    let mut max_eff = 0u32;
+    for idx in 0..hand_tiles.len() {
+        let sub: Vec<u32> = hand_tiles
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != idx)
+            .map(|(_, &t)| t)
+            .collect();
+        if calculate_shanten(&sub) <= shanten {
+            max_eff = max_eff.max(calculate_effective_tiles(&sub));
+        }
+    }
+    max_eff
 }
 
 /// Calculate best ukeire (number of tiles that improve hand)
@@ -434,6 +463,11 @@ pub fn calculate_shanten_3p(hand_tiles: &[u32]) -> i32 {
 /// Calculate effective tiles for 3-player mahjong (only valid sanma tile types).
 #[cfg(feature = "python")]
 pub fn calculate_effective_tiles_3p(hand_tiles: &[u32]) -> u32 {
+    assert!(
+        hand_tiles.len() % 3 == 1,
+        "calculate_effective_tiles_3p requires a 3n+1 hand (e.g. 13 tiles), got {}",
+        hand_tiles.len()
+    );
     let current_shanten = calculate_shanten_3p(hand_tiles);
     let mut effective_count = 0;
 
@@ -453,6 +487,28 @@ pub fn calculate_effective_tiles_3p(hand_tiles: &[u32]) -> u32 {
     }
 
     effective_count
+}
+
+/// Calculate effective tiles for 3-player mahjong, handling both 3n+1 and 3n+2 hands.
+#[cfg(feature = "python")]
+pub fn calculate_effective_tiles_3p_auto(hand_tiles: &[u32]) -> u32 {
+    if hand_tiles.len() % 3 == 1 {
+        return calculate_effective_tiles_3p(hand_tiles);
+    }
+    let shanten = calculate_shanten_3p(hand_tiles);
+    let mut max_eff = 0u32;
+    for idx in 0..hand_tiles.len() {
+        let sub: Vec<u32> = hand_tiles
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != idx)
+            .map(|(_, &t)| t)
+            .collect();
+        if calculate_shanten_3p(&sub) <= shanten {
+            max_eff = max_eff.max(calculate_effective_tiles_3p(&sub));
+        }
+    }
+    max_eff
 }
 
 /// Calculate best ukeire for 3-player mahjong (only valid sanma tile types).

@@ -933,7 +933,7 @@ impl Observation {
             if abs_idx == self.player_id as usize {
                 // Self: full calculation
                 let shanten = crate::shanten::calculate_shanten(hand);
-                let effective = crate::shanten::calculate_effective_tiles(hand);
+                let effective = crate::shanten::calculate_effective_tiles_auto(hand);
                 let best_ukeire = crate::shanten::calculate_best_ukeire(hand, &all_visible);
 
                 // Normalize features

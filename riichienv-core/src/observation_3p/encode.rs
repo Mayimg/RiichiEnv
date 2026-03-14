@@ -352,7 +352,7 @@ impl Observation3P {
             if abs_idx == self.player_id as usize {
                 let hand = &self.hands[abs_idx];
                 let shanten_val = shanten::calculate_shanten_3p(hand);
-                let effective = shanten::calculate_effective_tiles_3p(hand);
+                let effective = shanten::calculate_effective_tiles_3p_auto(hand);
                 let best_ukeire = shanten::calculate_best_ukeire_3p(hand, &all_visible);
 
                 broadcast_scalar(buf, ch_offset, base_ch, (shanten_val as f32).max(0.0) / 8.0);
