@@ -808,7 +808,7 @@ impl Observation3P {
 
             if abs_idx == self.player_id as usize {
                 let shanten = crate::shanten::calculate_shanten_3p(hand);
-                let effective = crate::shanten::calculate_effective_tiles_3p(hand);
+                let effective = crate::shanten::calculate_effective_tiles_3p_with_discard(hand);
                 let best_ukeire = crate::shanten::calculate_best_ukeire_3p(hand, &all_visible);
 
                 arr[[ch_idx, 0]] = (shanten as f32).max(0.0) / 8.0;
