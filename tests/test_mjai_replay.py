@@ -131,7 +131,7 @@ def test_mjai_replay_3p_reach_discard_observation_is_not_duplicated_state(tmp_pa
         for event in data:
             f.write(json.dumps(event) + "\n")
 
-    replay = MjaiReplay.from_jsonl(str(file_path), rule="mjsoul_sanma")
+    replay = MjaiReplay.from_jsonl(str(file_path), rule="mjsoul")
     kyoku = list(replay.take_kyokus())[0]
     steps = list(kyoku.steps(0, skip_single_action=False))
 

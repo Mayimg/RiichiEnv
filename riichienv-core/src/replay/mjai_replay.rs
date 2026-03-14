@@ -278,12 +278,9 @@ impl MjaiReplay {
             Some("tenhou") => crate::rule::GameRule::default_tenhou(),
             Some("mjsoul") => crate::rule::GameRule::default_mjsoul(),
             None => crate::rule::GameRule::default_tenhou(),
-            Some("tenhou_sanma") => crate::rule::GameRule::default_tenhou_sanma(),
-            Some("mjsoul_sanma") => crate::rule::GameRule::default_mjsoul_sanma(),
             Some(other) => {
                 return Err(PyValueError::new_err(format!(
-                    "Unknown rule: '{}'. Expected 'tenhou', 'mjsoul', \
-                     'tenhou_sanma', or 'mjsoul_sanma'",
+                    "Unknown rule: '{}'. Expected 'tenhou' or 'mjsoul'",
                     other
                 )));
             }
