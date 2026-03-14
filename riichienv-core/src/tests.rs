@@ -1790,7 +1790,7 @@ mod unit_tests {
         let mut state = create_sanma_test_state(5);
         state._initialize_round(0, 0, 0, 0, None, None);
         // Fix rinshan draw to a non-North tile so the assertion is deterministic.
-        state.wall.tiles = (0u8..20).collect();
+        state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
 
         // Hand: 1p(36) 2p(40) 3p(44) 4p(48) 5p(52) 6p(56) 7p(60) 8p(64) 9p(68)
         //       1s(72) 2s(76) 3s(80) N(120)
@@ -1853,7 +1853,7 @@ mod unit_tests {
         let mut state = create_sanma_test_state(5);
         state._initialize_round(0, 0, 0, 0, None, None);
         // Keep rinshan deterministic and leave enough wall for post-kita legal actions.
-        state.wall.tiles = (0u8..20).collect();
+        state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
 
         // Player 1 hand: 2p(40,41) 4p(48,49,50) 5p(52) 6p(56) 7p(60)
         //                 1s(72,73,74) 8s(100) 9s(104)
@@ -1949,7 +1949,7 @@ mod unit_tests {
 
         let mut state = create_sanma_test_state(5);
         state._initialize_round(0, 0, 0, 0, None, None);
-        state.wall.tiles = (0u8..20).collect();
+        state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
 
         state.players[0].hand = vec![36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 120];
         state.drawn_tile = Some(120);
@@ -1984,7 +1984,7 @@ mod unit_tests {
         let mut state = create_sanma_test_state(5);
         state._initialize_round(0, 0, 0, 0, None, None);
         // Riichi remains legal only while wall.tiles.len() > 14, so use a fixed long wall.
-        state.wall.tiles = (0u8..20).collect();
+        state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
 
         // Player 1: hand in tenpai (waiting on 7s)
         // 2p(40) 3p(44) 4p(48) 5p(52) 6p(56) 7p(60)
@@ -2042,13 +2042,14 @@ mod unit_tests {
 
         let mut state = create_sanma_test_state(5);
         state._initialize_round(0, 0, 0, 0, None, None);
-        state.wall.tiles = (0u8..20).collect();
+        state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
 
-        // Player 2: hand one tile away from win
-        // 1p(36) 1p(37) 1p(38)  2p(40) 3p(44)  4p(48) 5p(52) 6p(56)
-        // 1s(72) 2s(76) 3s(80)  E(108) E(109)
-        // Waiting on E(110/111) for tsumo
-        state.players[2].hand = vec![36, 37, 38, 40, 44, 48, 52, 56, 72, 76, 80, 108, 109];
+        // Player 2: tenpai hand (tanki wait on E)
+        // 2p(40) 3p(44) 4p(48)  5p(52) 6p(56) 7p(60)
+        // 2s(76) 3s(80) 4s(84)  5s(88) 6s(92) 7s(96)
+        // E(108)
+        // Winning tile: E(109) → 4 sequences + E pair = menzen tsumo
+        state.players[2].hand = vec![40, 44, 48, 52, 56, 60, 76, 80, 84, 88, 92, 96, 108];
         state.current_player = 2;
         state.phase = Phase::WaitAct;
         state.active_players = vec![2];
@@ -2066,11 +2067,8 @@ mod unit_tests {
         // After kita, hand should have 14 tiles (had 14, -N, +rinshan = 14)
         assert_eq!(state.players[2].hand.len(), 14);
 
-        // Now simulate player 2 getting the winning tile (E=110)
-        // by directly setting up the state
-        // First discard the rinshan tile
+        // Discard the rinshan tile, then draw the winning tile
         let rinshan_tile = state.drawn_tile.unwrap();
-        // Remove rinshan from hand and add 1 tile back
         if let Some(idx) = state.players[2]
             .hand
             .iter()
@@ -2081,9 +2079,9 @@ mod unit_tests {
         state.players[2].discards.push(rinshan_tile);
         state.drawn_tile = None;
 
-        // Draw winning tile E(110)
-        state.players[2].hand.push(110);
-        state.drawn_tile = Some(110);
+        // Draw winning tile E(109) → completes E pair
+        state.players[2].hand.push(109);
+        state.drawn_tile = Some(109);
         state.current_player = 2;
         state.phase = Phase::WaitAct;
         state.active_players = vec![2];
