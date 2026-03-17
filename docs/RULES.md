@@ -43,7 +43,6 @@ Controls whether players are forbidden from discarding a tile that completes the
 | Flag | Description |
 |------|-------------|
 | `.allows_ron_on_ankan_for_kokushi_musou` | Whether to allow Ron on a closed Kan (Ankan) for Kokushi Musou (Chankan). |
-| `.is_kokushi_musou_13machi_double` | Whether to treat Kokushi Musou 13-sided wait as a Double Yakuman. |
 
 ## Double Yakuman Pattern Rules
 
@@ -51,6 +50,7 @@ Controls whether specific Yakuman pattern variants are treated as Double Yakuman
 
 | Flag | Description |
 |------|-------------|
+| `.is_kokushi_musou_13machi_double` | Whether to treat Kokushi Musou 13-sided wait (国士無双十三面待ち) as a Double Yakuman. |
 | `.is_suuankou_tanki_double` | Whether to treat Suuankou Tanki (四暗刻単騎) as a Double Yakuman. |
 | `.is_junsei_chuurenpoutou_double` | Whether to treat Junsei Chuurenpoutou (純正九蓮宝燈) as a Double Yakuman. |
 | `.is_daisuushii_double` | Whether to treat Daisuushii (大四喜) as a Double Yakuman. |
@@ -79,9 +79,7 @@ The rinshan draw occurs first, then the kan dora indicator is revealed before th
 
 ## Platform-Specific Rule Presets
 
-Differences in standard ranked match rules across major platforms and Mortal.
-
-### 4-Player Presets
+Differences in standard ranked match rules across major platforms.
 
 | Flag | `default_tenhou()` | `default_mjsoul()` |
 |------|--------|--------------|
