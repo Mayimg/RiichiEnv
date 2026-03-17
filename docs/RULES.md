@@ -79,7 +79,7 @@ The rinshan draw occurs first, then the kan dora indicator is revealed before th
 
 ## Platform-Specific Rule Presets
 
-Differences in standard ranked match rules across major platforms and Mortal.
+Differences in standard ranked match rules across major platforms.
 
 ### 4-Player Presets
 
