@@ -213,7 +213,7 @@ impl KyokuBuilder {
         let end_scores = scores.clone();
 
         // Standard tile counts: 4p = 136, 3p = 108 (excludes 2m-8m)
-        // left_tile_count = total - dead_wall(14) - dealt(13*np)
+        // left_tile_count = total - non_drawable_reserve(14) - dealt(13*np)
         let left_tile_count = if np == 3 { 55u8 } else { 70u8 };
 
         KyokuBuilder {

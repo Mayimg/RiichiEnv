@@ -10,7 +10,6 @@ use crate::replay::Action as LogAction;
 use crate::replay::MjaiEvent;
 use crate::rule::GameRule;
 use crate::types::{Conditions, INITIAL_HAND_SIZE, Meld, MeldType, WinResult, Wind};
-
 pub mod event_handler;
 pub mod game_mode;
 pub mod legal_actions;
@@ -400,7 +399,7 @@ impl GameState3P {
                     }
                     ActionType::Riichi => {
                         if self.players[pid as usize].score >= 1000
-                            && self.wall.tiles.len() > 14
+                            && self.wall.drawable_count > 0
                             && !self.players[pid as usize].riichi_declared
                         {
                             self.players[pid as usize].riichi_stage = true;
@@ -619,7 +618,7 @@ impl GameState3P {
                             riichi: self.players[pid as usize].riichi_declared,
                             double_riichi: self.players[pid as usize].double_riichi_declared,
                             ippatsu: self.players[pid as usize].ippatsu_cycle,
-                            haitei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                            haitei: self.wall.drawable_count == 0 && !self.is_rinshan_flag,
                             rinshan: self.is_rinshan_flag,
                             tsumo_first_turn: self.is_first_turn
                                 && self.players.iter().all(|p| p.melds.is_empty()),
@@ -910,7 +909,7 @@ impl GameState3P {
                         double_riichi: self.players[w_pid as usize].double_riichi_declared,
                         ippatsu: self.players[w_pid as usize].ippatsu_cycle,
                         haitei: false,
-                        houtei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                        houtei: self.wall.drawable_count == 0 && !self.is_rinshan_flag,
                         rinshan: false,
                         chankan: is_chankan,
                         tsumo_first_turn: false,
@@ -1378,8 +1377,11 @@ impl GameState3P {
             p.ippatsu_cycle = false;
         }
 
-        if self.wall.tiles.len() > 14 {
-            let t = self.wall.tiles.remove(0);
+        if self.wall.drawable_count > 0 {
+            let t = self
+                .wall
+                .draw_rinshan_tile()
+                .expect("rinshan draw failed despite drawable_count > 0");
             self.players[p_idx].hand.push(t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;
@@ -1466,11 +1468,12 @@ impl GameState3P {
 
     pub fn _deal_next(&mut self) {
         self.is_rinshan_flag = false;
-        if self.wall.tiles.len() <= 14 {
+        if self.wall.drawable_count == 0 {
             self._trigger_ryukyoku("exhaustive_draw");
             return;
         }
         if let Some(t) = self.wall.tiles.pop() {
+            self.wall.drawable_count -= 1;
             let pid = self.current_player;
             self.players[pid as usize].hand.push(t);
             self.drawn_tile = Some(t);
@@ -1664,6 +1667,9 @@ impl GameState3P {
             p.hand.sort();
         }
 
+        // 14: matches MjSoul left_tile_count (= total - 14 - dealt).
+        self.wall.drawable_count = (self.wall.tiles.len() as u8) - 14;
+
         if !self.skip_mjai_logging {
             let wind_str = match round_wind % 4 {
                 0 => "E",
@@ -1704,6 +1710,7 @@ impl GameState3P {
         self.active_players = vec![self.oya];
 
         if let Some(t) = self.wall.tiles.pop() {
+            self.wall.drawable_count -= 1;
             self.players[self.oya as usize].hand.push(t);
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;

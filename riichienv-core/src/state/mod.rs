@@ -440,7 +440,7 @@ impl GameState {
                     ActionType::Riichi => {
                         // Declare Riichi
                         if self.players[pid as usize].score >= 1000
-                            && self.wall.tiles.len() >= 18
+                            && self.wall.drawable_count >= 4
                             && !self.players[pid as usize].riichi_declared
                         {
                             self.players[pid as usize].riichi_stage = true;
@@ -686,7 +686,7 @@ impl GameState {
                             riichi: self.players[pid as usize].riichi_declared,
                             double_riichi: self.players[pid as usize].double_riichi_declared,
                             ippatsu: self.players[pid as usize].ippatsu_cycle,
-                            haitei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                            haitei: self.wall.drawable_count == 0 && !self.is_rinshan_flag,
                             rinshan: self.is_rinshan_flag,
                             tsumo_first_turn: self.is_first_turn
                                 && self.players.iter().all(|p| p.melds.is_empty()),
@@ -975,7 +975,7 @@ impl GameState {
                         double_riichi: self.players[w_pid as usize].double_riichi_declared,
                         ippatsu: self.players[w_pid as usize].ippatsu_cycle,
                         haitei: false,
-                        houtei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                        houtei: self.wall.drawable_count == 0 && !self.is_rinshan_flag,
                         rinshan: false,
                         chankan: is_chankan,
                         tsumo_first_turn: false,
@@ -1472,9 +1472,10 @@ impl GameState {
             p.ippatsu_cycle = false;
         }
 
-        if self.wall.tiles.len() > 14 {
+        if self.wall.drawable_count > 0 {
             // Rinshan tiles are at the beginning of the wall vector (0-3)
             let t = self.wall.tiles.remove(0);
+            self.wall.drawable_count -= 1;
             self.players[p_idx].hand.push(t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;
@@ -1562,11 +1563,12 @@ impl GameState {
 
     pub fn _deal_next(&mut self) {
         self.is_rinshan_flag = false;
-        if self.wall.tiles.len() <= 14 {
+        if self.wall.drawable_count == 0 {
             self._trigger_ryukyoku("exhaustive_draw");
             return;
         }
         if let Some(t) = self.wall.tiles.pop() {
+            self.wall.drawable_count -= 1;
             let pid = self.current_player;
             self.players[pid as usize].hand.push(t);
             self.drawn_tile = Some(t);
@@ -1760,6 +1762,9 @@ impl GameState {
             p.hand.sort();
         }
 
+        // 14 = dead wall tiles (2 rinshan stacks + 5 dora stacks)
+        self.wall.drawable_count = (self.wall.tiles.len() as u8) - 14;
+
         // Record kyoku start offsets so get_observation() can return
         // the full round history (not just incremental deltas).
         for i in 0..NP {
@@ -1815,6 +1820,7 @@ impl GameState {
 
         // Draw 14th tile for Oya
         if let Some(t) = self.wall.tiles.pop() {
+            self.wall.drawable_count -= 1;
             self.players[self.oya as usize].hand.push(t);
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;
