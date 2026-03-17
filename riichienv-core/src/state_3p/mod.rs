@@ -1667,6 +1667,7 @@ impl GameState3P {
             p.hand.sort();
         }
 
+        // 14 = non-drawable reserve (rinshan slots already drawn + dora stacks protected)
         self.wall.drawable_count = (self.wall.tiles.len() as u8) - 14;
 
         if !self.skip_mjai_logging {

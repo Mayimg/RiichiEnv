@@ -1762,6 +1762,7 @@ impl GameState {
             p.hand.sort();
         }
 
+        // 14 = dead wall tiles (2 rinshan stacks + 5 dora stacks)
         self.wall.drawable_count = (self.wall.tiles.len() as u8) - 14;
 
         // Record kyoku start offsets so get_observation() can return

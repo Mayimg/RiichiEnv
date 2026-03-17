@@ -201,8 +201,8 @@ mod tests {
             }
             wall.drawable_count = (wall.tiles.len() as u8).saturating_sub(14);
 
-            // Simulate up to 12 rinshan draws (4 kans + 8 kitas, realistic max).
-            for draw_num in 0..12 {
+            // Simulate up to 8 rinshan draws (4 kans + 4 kitas max).
+            for draw_num in 0..8 {
                 if wall.drawable_count == 0 {
                     break;
                 }
