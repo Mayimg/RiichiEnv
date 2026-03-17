@@ -6,8 +6,6 @@ correctly recorded in mjai_log so that get_viewer() can display them.
 Regression tests for https://github.com/smly/RiichiEnv/issues/184
 """
 
-import pytest
-
 from riichienv import RiichiEnv
 
 
