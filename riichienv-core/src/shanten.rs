@@ -379,9 +379,10 @@ pub fn calculate_best_ukeire(hand_tiles: &[u32], visible_tiles: &[u32]) -> u32 {
             let test_shanten = calculate_shanten(&test_hand);
 
             if test_shanten < new_shanten {
-                ukeire += 4
-                    - visible_counts[tile_type as usize]
-                    - new_hand_counts[tile_type as usize] as u32;
+                let remaining = 4u32
+                    .saturating_sub(visible_counts[tile_type as usize])
+                    .saturating_sub(new_hand_counts[tile_type as usize] as u32);
+                ukeire += remaining;
             }
         }
 
@@ -599,9 +600,10 @@ pub fn calculate_best_ukeire_3p(hand_tiles: &[u32], visible_tiles: &[u32]) -> u3
             let test_shanten = calculate_shanten_3p(&test_hand);
 
             if test_shanten < new_shanten {
-                ukeire += 4
-                    - visible_counts[tile_type as usize]
-                    - new_hand_counts[tile_type as usize] as u32;
+                let remaining = 4u32
+                    .saturating_sub(visible_counts[tile_type as usize])
+                    .saturating_sub(new_hand_counts[tile_type as usize] as u32);
+                ukeire += remaining;
             }
         }
 
@@ -747,5 +749,35 @@ mod tests {
 
         let ukeire = calculate_best_ukeire(&hand, &visible);
         assert_eq!(ukeire, 3, "visible + hand copies should both reduce count");
+    }
+
+    #[test]
+    fn test_best_ukeire_saturates_when_visible_exceeds_remaining() {
+        let hand = tiles_from_types(&[
+            0, 1, 2, // 123m
+            3, 4, 5, // 456m
+            6, 7, 8, // 789m
+            11, 11, // 33p
+            29, 29, 28, // 332z
+        ]);
+        let visible = vec![11 * 4, 11 * 4 + 1, 11 * 4 + 2];
+
+        let ukeire = calculate_best_ukeire(&hand, &visible);
+        assert_eq!(ukeire, 2, "over-visible waits should clamp at zero remaining");
+    }
+
+    #[test]
+    fn test_best_ukeire_3p_saturates_when_visible_exceeds_remaining() {
+        let hand = tiles_from_types(&[
+            9, 10, 11, // 123p
+            12, 13, 14, // 456p
+            15, 16, 17, // 789p
+            20, 20, // 33s
+            29, 29, 28, // 332z
+        ]);
+        let visible = vec![20 * 4, 20 * 4 + 1, 20 * 4 + 2];
+
+        let ukeire = calculate_best_ukeire_3p(&hand, &visible);
+        assert_eq!(ukeire, 2, "over-visible waits should clamp at zero remaining");
     }
 }
