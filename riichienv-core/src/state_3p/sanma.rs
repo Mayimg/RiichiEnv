@@ -183,7 +183,7 @@ impl GameState3P {
             let t = self
                 .wall
                 .draw_rinshan_tile()
-                .expect("rinshan draw failed despite len > 14");
+                .expect("rinshan draw failed despite drawable_count > 0");
             self.players[p_idx].hand.push(t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;

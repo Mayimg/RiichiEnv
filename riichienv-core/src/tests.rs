@@ -1986,7 +1986,7 @@ mod unit_tests {
 
         let mut state = create_sanma_test_state(5);
         state._initialize_round(0, 0, 0, 0, None, None);
-        // Riichi remains legal only while wall.tiles.len() > DEAD_WALL_SIZE_3P, so use a fixed long wall.
+        // Riichi remains legal only while drawable_count > 0, so use a fixed long wall.
         state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
         state.wall.drawable_count = (state.wall.tiles.len() as u8).saturating_sub(14);
 

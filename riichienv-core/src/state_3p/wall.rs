@@ -4,8 +4,6 @@ use sha2::{Digest, Sha256};
 
 use crate::types::{TILES_4P, is_sanma_excluded_tile};
 
-/// Exhaustion threshold for 3-player mahjong.
-///
 /// # 3P dead wall layout (9 stacks = 18 tiles)
 ///
 /// In 3P mahjong the dead wall has 9 stacks (18 tiles):
@@ -30,20 +28,11 @@ use crate::types::{TILES_4P, is_sanma_excluded_tile};
 /// For comparison, 4P has 7 stacks (14 tiles): 2 rinshan + 5 dora.
 /// 3P doubles the rinshan area because kita also draws from it.
 ///
-/// # Implementation: exhaustion threshold = 14
-///
-/// In MjSoul's implementation (confirmed by `left_tile_count = 54`),
-/// dora stacks 4-5 effectively extend into the live-wall area: their
-/// values are pre-extracted at wall setup, but the physical tiles may
-/// be drawn during normal play.  The exhaustion threshold is therefore
-/// **14** (= 8 rinshan + 6 tiles from dora stacks 1-3), not 18.
-///
 /// # Vec layout after reversal
 ///
 /// ```text
-///   tiles[0..8]    = rinshan R1-R4 (remove(0) draws from here)
-///   tiles[8..14]   = dora stacks D1-D3 (protected by threshold)
-///   tiles[14..18]  = dora stacks D4-D5 (may be drawn via pop)
+///   tiles[0..8]    = rinshan R1-R4 (draw_rinshan_tile draws from here)
+///   tiles[8..18]   = dora stacks D1-D5 (pre-extracted, not drawn directly)
 ///   tiles[18..108] = live wall (pop draws from here)
 /// ```
 /// Wall state for 3-player mahjong (108 tiles, sanma hardcoded).
@@ -114,10 +103,7 @@ impl WallState3P {
         self.tiles = w;
 
         // Pre-extract dora/ura indicators from the dead wall layout.
-        // 3P dead wall after reversal:
-        //   tiles[0..8]   = 8 rinshan draw tiles
-        //   tiles[8..14]  = dora stacks 1-3 (D_i omote at 8+2i, ura at 9+2i)
-        //   tiles[14..18] = dora stacks 4-5 (in the live wall area, pre-extracted)
+        // After reversal: D_i omote at tiles[8+2i], ura at tiles[9+2i].
         for i in 0..5 {
             self.dora_indicator_tiles[i] = self.tiles[8 + 2 * i];
             self.ura_indicator_tiles[i] = self.tiles[9 + 2 * i];
@@ -195,9 +181,8 @@ fn splitmix64(x: u64) -> u64 {
 mod tests {
     use super::*;
 
-    /// Regression test for issue #183: In 3P mode, the dead wall has
-    /// 8 rinshan tiles + 6 dora/ura indicators (stacks 1-3) = 14 tiles.
-    /// `draw_rinshan_tile` must never consume dora/ura indicator tiles.
+    /// Regression test for issue #183: `draw_rinshan_tile` must never
+    /// consume dora/ura indicator tiles.
     #[test]
     fn test_rinshan_draw_does_not_consume_dora_indicators() {
         for seed in 0..1000 {
