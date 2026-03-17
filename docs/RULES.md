@@ -81,8 +81,6 @@ The rinshan draw occurs first, then the kan dora indicator is revealed before th
 
 Differences in standard ranked match rules across major platforms.
 
-### 4-Player Presets
-
 | Flag | `default_tenhou()` | `default_mjsoul()` |
 |------|--------|--------------|
 | `.allows_ron_on_ankan_for_kokushi_musou` | `False` | `True` |
