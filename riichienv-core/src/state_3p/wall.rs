@@ -32,9 +32,11 @@ use crate::types::{TILES_4P, is_sanma_excluded_tile};
 ///
 /// ```text
 ///   tiles[0..8]    = rinshan R1-R4 (draw_rinshan_tile draws from here)
-///   tiles[8..18]   = dora stacks D1-D5 (pre-extracted, not drawn directly)
+///   tiles[8..18]   = dora stacks D1-D5 (pre-extracted)
 ///   tiles[18..108] = live wall (pop draws from here)
 /// ```
+///
+/// `drawable_count` is initialized to `tiles.len() - 14` after dealing.
 /// Wall state for 3-player mahjong (108 tiles, sanma hardcoded).
 #[derive(Debug, Clone)]
 pub struct WallState3P {
@@ -205,8 +207,8 @@ mod tests {
         }
     }
 
-    /// Verify the dead wall layout: 8 rinshan slots at [0..8], dora
-    /// indicators at [8..18].
+    /// Verify the shuffle layout: 8 rinshan slots at [0..8], dora
+    /// indicator values pre-extracted from [8..18].
     #[test]
     fn test_dead_wall_layout_has_8_rinshan_slots() {
         let mut wall = WallState3P::new(Some(42));

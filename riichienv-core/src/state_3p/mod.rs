@@ -1667,7 +1667,7 @@ impl GameState3P {
             p.hand.sort();
         }
 
-        // 14 = non-drawable reserve (rinshan slots already drawn + dora stacks protected)
+        // 14: matches MjSoul left_tile_count (= total - 14 - dealt).
         self.wall.drawable_count = (self.wall.tiles.len() as u8) - 14;
 
         if !self.skip_mjai_logging {

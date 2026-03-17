@@ -178,8 +178,7 @@ impl GameState3P {
                 self._reveal_kan_dora();
             }
 
-            // Draw from rinshan (dead wall), falling back to live wall
-            // when all dedicated rinshan slots are exhausted (e.g. many kitas).
+            // Draw from rinshan (dead wall front via remove(0)).
             let t = self
                 .wall
                 .draw_rinshan_tile()
