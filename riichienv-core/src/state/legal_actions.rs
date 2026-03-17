@@ -35,7 +35,7 @@ impl GameStateLegalActions for GameState {
                     player_wind: Wind::from((pid + 4 - self.oya) % 4),
                     round_wind: Wind::from(self.round_wind),
                     chankan: false,
-                    haitei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                    haitei: self.wall.drawable_count == 0 && !self.is_rinshan_flag,
                     houtei: false,
                     rinshan: self.is_rinshan_flag,
                     tsumo_first_turn: self.is_first_turn
@@ -88,7 +88,7 @@ impl GameStateLegalActions for GameState {
                 // Riichi check (Only if not already declared)
                 if !self.players[pid_us].riichi_declared
                     && self.players[pid_us].score >= 1000
-                    && self.wall.tiles.len() >= 18
+                    && self.wall.drawable_count >= 4
                     && self.players[pid_us].melds.iter().all(|m| !m.opened)
                     && !self.players[pid_us].riichi_stage
                 {
@@ -121,7 +121,7 @@ impl GameStateLegalActions for GameState {
             }
 
             // 3. Kan (Ankan / Kakan)
-            if self.wall.tiles.len() > 14 && self.drawn_tile.is_some() {
+            if self.wall.drawable_count > 0 && self.drawn_tile.is_some() {
                 let mut counts = [0; 34];
                 for &t in &self.players[pid_us].hand {
                     let idx = t as usize / 4;
@@ -267,7 +267,7 @@ impl GameStateLegalActions for GameState {
                 round_wind: Wind::from(self.round_wind),
                 chankan: false,
                 haitei: false,
-                houtei: self.wall.tiles.len() <= 14 && !self.is_rinshan_flag,
+                houtei: self.wall.drawable_count == 0 && !self.is_rinshan_flag,
                 rinshan: false,
                 tsumo_first_turn: false,
                 riichi_sticks: self.riichi_sticks,
@@ -298,7 +298,7 @@ impl GameStateLegalActions for GameState {
         }
 
         // 2. Pon / Kan
-        if !self.players[i_us].riichi_declared && self.wall.tiles.len() > 14 {
+        if !self.players[i_us].riichi_declared && self.wall.drawable_count > 0 {
             let count = hand.iter().filter(|&&t| t / 4 == tile / 4).count();
             if count >= 2 && hand.len() >= 3 {
                 let check_pon_kuikae = |consumes: &Vec<u8>| -> bool {
@@ -372,7 +372,7 @@ impl GameStateLegalActions for GameState {
         // 3. Chi
         let is_shimocha = i == (pid + 1) % 4;
         if !self.players[i_us].riichi_declared
-            && self.wall.tiles.len() > 14
+            && self.wall.drawable_count > 0
             && is_shimocha
             && hand.len() >= 3
         {

@@ -102,6 +102,7 @@ impl GameState3PEventHandler for GameState3P {
                 self.players[actor].forbidden_discards.clear();
                 if !self.wall.tiles.is_empty() {
                     self.wall.tiles.pop();
+                    self.wall.drawable_count = self.wall.drawable_count.saturating_sub(1);
                 }
                 self.phase = Phase::WaitAct;
                 self.active_players = vec![actor as u8];
@@ -425,6 +426,7 @@ impl GameState3PEventHandler for GameState3P {
                 self.players[*seat].hand.sort();
                 if !self.wall.tiles.is_empty() {
                     self.wall.tiles.pop();
+                    self.wall.drawable_count = self.wall.drawable_count.saturating_sub(1);
                 }
             }
             LogAction::ChiPengGang {

@@ -1,6 +1,5 @@
 use crate::action::{Action, ActionType, Phase};
 use crate::state_3p::GameState3P;
-use crate::state_3p::wall::DEAD_WALL_SIZE_3P;
 use crate::types::{Conditions, Meld, MeldType, Wind, is_terminal_tile};
 
 pub trait GameState3PLegalActions {
@@ -37,7 +36,7 @@ impl GameState3PLegalActions for GameState3P {
                     player_wind: Wind::from((pid + np - self.oya) % np),
                     round_wind: Wind::from(self.round_wind),
                     chankan: false,
-                    haitei: self.wall.tiles.len() <= DEAD_WALL_SIZE_3P && !self.is_rinshan_flag,
+                    haitei: self.wall.drawable_count == 0 && !self.is_rinshan_flag,
                     houtei: false,
                     rinshan: self.is_rinshan_flag,
                     tsumo_first_turn: self.is_first_turn
@@ -92,7 +91,7 @@ impl GameState3PLegalActions for GameState3P {
                 // Riichi check
                 if !self.players[pid_us].riichi_declared
                     && self.players[pid_us].score >= 1000
-                    && self.wall.tiles.len() > DEAD_WALL_SIZE_3P
+                    && self.wall.drawable_count > 0
                     && self.players[pid_us].melds.iter().all(|m| !m.opened)
                     && !self.players[pid_us].riichi_stage
                 {
@@ -125,7 +124,7 @@ impl GameState3PLegalActions for GameState3P {
             }
 
             // 3. Kan (Ankan / Kakan)
-            if self.wall.tiles.len() > DEAD_WALL_SIZE_3P && self.drawn_tile.is_some() {
+            if self.wall.drawable_count > 0 && self.drawn_tile.is_some() {
                 let mut counts = [0; 34];
                 for &t in &self.players[pid_us].hand {
                     let idx = t as usize / 4;
@@ -268,7 +267,7 @@ impl GameState3PLegalActions for GameState3P {
                 round_wind: Wind::from(self.round_wind),
                 chankan: false,
                 haitei: false,
-                houtei: self.wall.tiles.len() <= DEAD_WALL_SIZE_3P && !self.is_rinshan_flag,
+                houtei: self.wall.drawable_count == 0 && !self.is_rinshan_flag,
                 rinshan: false,
                 tsumo_first_turn: false,
                 riichi_sticks: self.riichi_sticks,
@@ -301,7 +300,7 @@ impl GameState3PLegalActions for GameState3P {
         }
 
         // 2. Pon / Kan (no Chi in 3P)
-        if !self.players[i_us].riichi_declared && self.wall.tiles.len() > DEAD_WALL_SIZE_3P {
+        if !self.players[i_us].riichi_declared && self.wall.drawable_count > 0 {
             let count = hand.iter().filter(|&&t| t / 4 == tile / 4).count();
             if count >= 2 && hand.len() >= 3 {
                 let check_pon_kuikae = |consumes: &Vec<u8>| -> bool {

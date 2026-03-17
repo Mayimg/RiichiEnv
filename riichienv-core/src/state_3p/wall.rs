@@ -4,46 +4,48 @@ use sha2::{Digest, Sha256};
 
 use crate::types::{TILES_4P, is_sanma_excluded_tile};
 
-/// Dead wall size for 3-player mahjong.
+/// Exhaustion threshold for 3-player mahjong.
 ///
-/// # 3P dead wall layout (7 stacks = 14 tiles)
+/// # 3P dead wall layout (9 stacks = 18 tiles)
+///
+/// In 3P mahjong the dead wall has 9 stacks (18 tiles):
+/// 4 stacks for rinshan + 5 stacks for dora indicators.
 ///
 /// ```text
-///                Dead wall (14 tiles)                  Live wall
-///          |<──────────────────────────────────>|<──────────── ... ──>
+///             Dead wall (9 stacks = 18 tiles)                 Live wall
+///   |<─────────────────────────────────────────────────>|<────────── ... ──>
 ///
-///   Stack:  R1   R2   R3   R4    D1   D2   D3    D4   D5    ...
-///   Upper: [r0] [r2] [r4] [r6]  [d1] [d3] [d5]   [d7] [d9]
-///   Lower: [r1] [r3] [r5] [r7]  [u1] [u3] [u5]   [u7] [u9]
-///          ├── rinshan (8) ────┤├─ dora 1-3 (6)─┤├ dora 4-5 ┤
-///                                                 (in live wall)
+///   Stack:  R1   R2   R3   R4    D1   D2   D3   D4   D5
+///   Upper: [r0] [r2] [r4] [r6]  [d1] [d3] [d5] [d7] [d9]   ...
+///   Lower: [r1] [r3] [r5] [r7]  [u1] [u3] [u5] [u7] [u9]   ...
+///          ├── rinshan (8) ────┤├──── dora indicators (10) ────┤
 /// ```
 ///
-/// - **R1-R4** (8 tiles): rinshan draw area for kan and kita draws.
-/// - **D1-D3** (6 tiles): dora indicator stacks 1-3 (omote + ura pairs).
-///   Protected within the dead wall boundary.
-/// - **D4-D5** (4 tiles): dora indicator stacks 4-5.
-///   These reside in the live-wall area — their values are pre-extracted
-///   at wall setup, but the physical tiles may be drawn during normal play.
+/// - **R1-R4** (4 stacks = 8 tiles): rinshan draw area for kan and kita.
+///   Kita draws a rinshan tile but does NOT reveal a new dora indicator —
+///   only kan triggers dora revelation.
+/// - **D1-D5** (5 stacks = 10 tiles): dora indicator stacks.
+///   Each stack holds one omote (dora indicator) and one ura (ura-dora).
 ///
-/// In 4P the dead wall is also 14 tiles, but split as 2 stacks rinshan +
-/// 5 stacks dora.  In 3P the rinshan area is doubled (4 stacks) because
-/// kita (north extraction) also draws from it, leaving room for only
-/// 3 dora stacks inside the dead wall.
+/// For comparison, 4P has 7 stacks (14 tiles): 2 rinshan + 5 dora.
+/// 3P doubles the rinshan area because kita also draws from it.
 ///
-/// Note: kita draws a rinshan tile but does NOT reveal a new dora
-/// indicator — only kan triggers dora revelation.
+/// # Implementation: exhaustion threshold = 14
+///
+/// In MjSoul's implementation (confirmed by `left_tile_count = 54`),
+/// dora stacks 4-5 effectively extend into the live-wall area: their
+/// values are pre-extracted at wall setup, but the physical tiles may
+/// be drawn during normal play.  The exhaustion threshold is therefore
+/// **14** (= 8 rinshan + 6 tiles from dora stacks 1-3), not 18.
 ///
 /// # Vec layout after reversal
 ///
 /// ```text
-///   tiles[0..8]   = rinshan R1-R4 (remove(0) draws from here)
-///   tiles[8..14]  = dora stacks D1-D3 (protected by threshold)
-///   tiles[14..18] = dora stacks D4-D5 (in live wall, may be drawn via pop)
+///   tiles[0..8]    = rinshan R1-R4 (remove(0) draws from here)
+///   tiles[8..14]   = dora stacks D1-D3 (protected by threshold)
+///   tiles[14..18]  = dora stacks D4-D5 (may be drawn via pop)
 ///   tiles[18..108] = live wall (pop draws from here)
 /// ```
-pub const DEAD_WALL_SIZE_3P: usize = 14;
-
 /// Wall state for 3-player mahjong (108 tiles, sanma hardcoded).
 #[derive(Debug, Clone)]
 pub struct WallState3P {
@@ -55,6 +57,7 @@ pub struct WallState3P {
     pub ura_indicator_tiles: [u8; 5],
     pub rinshan_draw_count: u8,
     pub pending_kan_dora_count: u8,
+    pub drawable_count: u8,
     /// Number of dedicated rinshan tiles at the front of the wall (8 for 3P).
     num_rinshan_slots: u8,
     pub wall_digest: String,
@@ -72,6 +75,7 @@ impl WallState3P {
             ura_indicator_tiles: [0; 5],
             rinshan_draw_count: 0,
             pending_kan_dora_count: 0,
+            drawable_count: 0,
             num_rinshan_slots: 8,
             wall_digest: String::new(),
             salt: String::new(),
@@ -123,6 +127,7 @@ impl WallState3P {
         self.dora_indicators.push(self.dora_indicator_tiles[0]);
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
+        self.drawable_count = 0;
         self.num_rinshan_slots = 8;
     }
 
@@ -133,7 +138,7 @@ impl WallState3P {
     /// the live wall end (`pop`) so that dora/ura indicator tiles are never
     /// consumed.
     pub fn draw_rinshan_tile(&mut self) -> Option<u8> {
-        if (self.rinshan_draw_count as usize) < self.num_rinshan_slots as usize {
+        let tile = if (self.rinshan_draw_count as usize) < self.num_rinshan_slots as usize {
             if !self.tiles.is_empty() {
                 Some(self.tiles.remove(0))
             } else {
@@ -143,7 +148,11 @@ impl WallState3P {
             // All dedicated rinshan slots exhausted (common in 3P due to kita).
             // Fall back to the live wall end so dora/ura indicators stay intact.
             self.tiles.pop()
+        };
+        if tile.is_some() {
+            self.drawable_count = self.drawable_count.saturating_sub(1);
         }
+        tile
     }
 
     pub fn load_wall(&mut self, tiles: Vec<u8>) {
@@ -170,6 +179,7 @@ impl WallState3P {
         self.dora_indicators.push(self.dora_indicator_tiles[0]);
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
+        self.drawable_count = 0;
         self.num_rinshan_slots = 8;
     }
 }
@@ -204,10 +214,11 @@ mod tests {
             for _ in 0..40 {
                 wall.tiles.pop();
             }
+            wall.drawable_count = (wall.tiles.len() as u8).saturating_sub(14);
 
             // Simulate up to 12 rinshan draws (4 kans + 8 kitas, realistic max).
             for draw_num in 0..12 {
-                if wall.tiles.len() <= DEAD_WALL_SIZE_3P {
+                if wall.drawable_count == 0 {
                     break;
                 }
                 let t = wall

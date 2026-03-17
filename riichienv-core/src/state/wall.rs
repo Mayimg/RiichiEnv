@@ -11,6 +11,7 @@ pub struct WallState {
     pub dora_indicators: Vec<u8>,
     pub rinshan_draw_count: u8,
     pub pending_kan_dora_count: u8,
+    pub drawable_count: u8,
     pub wall_digest: String,
     pub salt: String,
     pub seed: Option<u64>,
@@ -24,6 +25,7 @@ impl WallState {
             dora_indicators: Vec::new(),
             rinshan_draw_count: 0,
             pending_kan_dora_count: 0,
+            drawable_count: 0,
             wall_digest: String::new(),
             salt: String::new(),
             seed,
@@ -61,6 +63,7 @@ impl WallState {
         }
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
+        self.drawable_count = 0;
     }
 
     pub fn load_wall(&mut self, tiles: Vec<u8>) {
@@ -73,6 +76,7 @@ impl WallState {
         }
         self.rinshan_draw_count = 0;
         self.pending_kan_dora_count = 0;
+        self.drawable_count = 0;
     }
 }
 

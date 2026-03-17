@@ -1791,6 +1791,7 @@ mod unit_tests {
         state._initialize_round(0, 0, 0, 0, None, None);
         // Fix rinshan draw to a non-North tile so the assertion is deterministic.
         state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
+        state.wall.drawable_count = (state.wall.tiles.len() as u8).saturating_sub(14);
 
         // Hand: 1p(36) 2p(40) 3p(44) 4p(48) 5p(52) 6p(56) 7p(60) 8p(64) 9p(68)
         //       1s(72) 2s(76) 3s(80) N(120)
@@ -1854,6 +1855,7 @@ mod unit_tests {
         state._initialize_round(0, 0, 0, 0, None, None);
         // Keep rinshan deterministic and leave enough wall for post-kita legal actions.
         state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
+        state.wall.drawable_count = (state.wall.tiles.len() as u8).saturating_sub(14);
 
         // Player 1 hand: 2p(40,41) 4p(48,49,50) 5p(52) 6p(56) 7p(60)
         //                 1s(72,73,74) 8s(100) 9s(104)
@@ -1950,6 +1952,7 @@ mod unit_tests {
         let mut state = create_sanma_test_state(5);
         state._initialize_round(0, 0, 0, 0, None, None);
         state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
+        state.wall.drawable_count = (state.wall.tiles.len() as u8).saturating_sub(14);
 
         state.players[0].hand = vec![36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 120];
         state.drawn_tile = Some(120);
@@ -1985,6 +1988,7 @@ mod unit_tests {
         state._initialize_round(0, 0, 0, 0, None, None);
         // Riichi remains legal only while wall.tiles.len() > DEAD_WALL_SIZE_3P, so use a fixed long wall.
         state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
+        state.wall.drawable_count = (state.wall.tiles.len() as u8).saturating_sub(14);
 
         // Player 1: hand in tenpai (waiting on 7s)
         // 2p(40) 3p(44) 4p(48) 5p(52) 6p(56) 7p(60)
@@ -2043,6 +2047,7 @@ mod unit_tests {
         let mut state = create_sanma_test_state(5);
         state._initialize_round(0, 0, 0, 0, None, None);
         state.wall.tiles = (36u8..56).collect(); // 1p-5p: all sanma-legal
+        state.wall.drawable_count = (state.wall.tiles.len() as u8).saturating_sub(14);
 
         // Player 2: tenpai hand (tanki wait on E)
         // 2p(40) 3p(44) 4p(48)  5p(52) 6p(56) 7p(60)
