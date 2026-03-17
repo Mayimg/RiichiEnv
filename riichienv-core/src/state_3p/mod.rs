@@ -620,7 +620,8 @@ impl GameState3P {
                             riichi: self.players[pid as usize].riichi_declared,
                             double_riichi: self.players[pid as usize].double_riichi_declared,
                             ippatsu: self.players[pid as usize].ippatsu_cycle,
-                            haitei: self.wall.tiles.len() <= DEAD_WALL_SIZE_3P && !self.is_rinshan_flag,
+                            haitei: self.wall.tiles.len() <= DEAD_WALL_SIZE_3P
+                                && !self.is_rinshan_flag,
                             rinshan: self.is_rinshan_flag,
                             tsumo_first_turn: self.is_first_turn
                                 && self.players.iter().all(|p| p.melds.is_empty()),
@@ -1380,7 +1381,10 @@ impl GameState3P {
         }
 
         if self.wall.tiles.len() > DEAD_WALL_SIZE_3P {
-            let t = self.wall.draw_rinshan_tile().expect("rinshan draw failed despite len > 14");
+            let t = self
+                .wall
+                .draw_rinshan_tile()
+                .expect("rinshan draw failed despite len > 14");
             self.players[p_idx].hand.push(t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;

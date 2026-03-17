@@ -9,12 +9,12 @@ use crate::types::{TILES_4P, is_sanma_excluded_tile};
 /// # 3P dead wall layout (7 stacks = 14 tiles)
 ///
 /// ```text
-///          Dead wall (14 tiles)              Live wall
-///   |<─────────────────────────────>|<──────────── ... ──>
+///                Dead wall (14 tiles)                  Live wall
+///          |<──────────────────────────────────>|<──────────── ... ──>
 ///
-///   Stack:  R1   R2   R3   R4   D1   D2   D3   D4   D5    ...
-///   Upper: [r0] [r2] [r4] [r6] [d1] [d3] [d5] [d7] [d9]
-///   Lower: [r1] [r3] [r5] [r7] [u1] [u3] [u5] [u7] [u9]
+///   Stack:  R1   R2   R3   R4    D1   D2   D3    D4   D5    ...
+///   Upper: [r0] [r2] [r4] [r6]  [d1] [d3] [d5]   [d7] [d9]
+///   Lower: [r1] [r3] [r5] [r7]  [u1] [u3] [u5]   [u7] [u9]
 ///          ├── rinshan (8) ────┤├─ dora 1-3 (6)─┤├ dora 4-5 ┤
 ///                                                 (in live wall)
 /// ```
@@ -210,7 +210,8 @@ mod tests {
                 if wall.tiles.len() <= DEAD_WALL_SIZE_3P {
                     break;
                 }
-                let t = wall.draw_rinshan_tile()
+                let t = wall
+                    .draw_rinshan_tile()
                     .expect("draw_rinshan_tile should succeed");
                 wall.rinshan_draw_count += 1;
 

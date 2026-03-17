@@ -181,7 +181,10 @@ impl GameState3P {
 
             // Draw from rinshan (dead wall), falling back to live wall
             // when all dedicated rinshan slots are exhausted (e.g. many kitas).
-            let t = self.wall.draw_rinshan_tile().expect("rinshan draw failed despite len > 14");
+            let t = self
+                .wall
+                .draw_rinshan_tile()
+                .expect("rinshan draw failed despite len > 14");
             self.players[p_idx].hand.push(t);
             self.drawn_tile = Some(t);
             self.wall.rinshan_draw_count += 1;
