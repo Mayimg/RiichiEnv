@@ -51,6 +51,26 @@ macro_rules! with_variant_mut {
     };
 }
 
+/// Shared logic for apply_event / observe_event: optionally reset logs on
+/// start_game, apply the parsed event, and push it into mjai_log.
+macro_rules! apply_and_log {
+    ($state:expr, $ev:expr, $json_val:expr, $is_start_game:expr) => {
+        if $is_start_game {
+            // Reset logs and related counters/caches so the viewer and
+            // observation helpers (e.g. new_events) stay in sync.
+            $state.reset();
+            // reset() pushes a generic start_game; clear it so we log
+            // the caller's original event (which may carry extra fields).
+            $state.mjai_log.clear();
+            for pl in $state.mjai_log_per_player.iter_mut() {
+                pl.clear();
+            }
+        }
+        $state.apply_mjai_event($ev);
+        $state._push_mjai_event($json_val);
+    };
+}
+
 #[pyclass(module = "riichienv._riichienv", from_py_object)]
 #[derive(Debug, Clone)]
 pub struct RiichiEnv {
@@ -858,28 +878,10 @@ impl RiichiEnv {
     /// For online inference, prefer `observe_event()` which combines
     /// event application with observation retrieval.
     pub fn apply_event(&mut self, py: Python, event: Py<PyAny>) -> PyResult<()> {
-        let json = py.import("json")?;
-        let json_str: String = json.call_method1("dumps", (event,))?.extract()?;
-        let ev: MjaiEvent = serde_json::from_str(&json_str).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("JSON Parse Error: {}", e))
-        })?;
-        // Parse once more as Value for the mjai_log push
-        let json_val: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("JSON Parse Error: {}", e))
-        })?;
+        let (ev, json_val) = Self::parse_mjai_event(py, event)?;
         let is_start_game = matches!(ev, MjaiEvent::StartGame { .. });
         with_variant_mut!(self, |s| {
-            // When replaying from start_game, clear stale log from constructor
-            // so the viewer sees only user-supplied events.
-            if is_start_game {
-                s.mjai_log.clear();
-                for pl in s.mjai_log_per_player.iter_mut() {
-                    pl.clear();
-                }
-            }
-            s.apply_mjai_event(ev);
-            // Log the event so that get_viewer() can display it.
-            s._push_mjai_event(json_val);
+            apply_and_log!(s, ev, json_val, is_start_game);
         });
         Ok(())
     }
@@ -896,15 +898,7 @@ impl RiichiEnv {
         event: Py<PyAny>,
         player_id: u8,
     ) -> PyResult<Option<Py<PyAny>>> {
-        // Parse and apply the event
-        let json = py.import("json")?;
-        let json_str: String = json.call_method1("dumps", (event,))?.extract()?;
-        let ev: MjaiEvent = serde_json::from_str(&json_str).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("JSON Parse Error: {}", e))
-        })?;
-        let json_val: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("JSON Parse Error: {}", e))
-        })?;
+        let (ev, json_val) = Self::parse_mjai_event(py, event)?;
 
         // Events that never require a player decision.
         // Skipping the observation check for these avoids returning
@@ -924,14 +918,7 @@ impl RiichiEnv {
 
         let is_start_game = matches!(ev, MjaiEvent::StartGame { .. });
         with_variant_mut!(self, |s| {
-            if is_start_game {
-                s.mjai_log.clear();
-                for pl in s.mjai_log_per_player.iter_mut() {
-                    pl.clear();
-                }
-            }
-            s.apply_mjai_event(ev);
-            s._push_mjai_event(json_val);
+            apply_and_log!(s, ev, json_val, is_start_game);
         });
 
         if skip_check {
@@ -958,5 +945,25 @@ impl RiichiEnv {
             }
         };
         Ok(has_actions)
+    }
+}
+
+impl RiichiEnv {
+    /// Parse a Python event dict into (MjaiEvent, serde_json::Value).
+    /// Parses the JSON string once into a Value, then converts to MjaiEvent
+    /// via `from_value` to avoid double-parsing.
+    fn parse_mjai_event(
+        py: Python,
+        event: Py<PyAny>,
+    ) -> PyResult<(MjaiEvent, serde_json::Value)> {
+        let json = py.import("json")?;
+        let json_str: String = json.call_method1("dumps", (event,))?.extract()?;
+        let json_val: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("JSON Parse Error: {}", e))
+        })?;
+        let ev: MjaiEvent = serde_json::from_value(json_val.clone()).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("JSON Parse Error: {}", e))
+        })?;
+        Ok((ev, json_val))
     }
 }

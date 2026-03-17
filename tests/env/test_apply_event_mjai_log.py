@@ -92,6 +92,7 @@ class TestApplyEventMjaiLog4P:
         env = RiichiEnv(game_mode="default")
         env.apply_event({"type": "start_game", "names": ["A", "B", "C", "D"]})
         assert env.mjai_log[0]["type"] == "start_game"
+        assert env.mjai_log[0]["names"] == ["A", "B", "C", "D"]
 
     def test_pon_event_logged(self):
         """Pon event should be recorded in mjai_log."""
