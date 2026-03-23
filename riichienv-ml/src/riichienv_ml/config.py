@@ -68,7 +68,7 @@ class GameConfig(BaseModel):
     @computed_field
     @property
     def grp_input_dim(self) -> int:
-        return self.n_players * 3 + 4
+        return self.n_players * 4 + 4
 
 
 class ModelConfig(BaseModel):

@@ -15,7 +15,9 @@ class GrpReplayDataset(IterableDataset):
 
     For each kyoku in each replay, encodes the state at the start of the kyoku:
     current start scores, score deltas from the previous kyoku boundary, and
-    round metadata. The target remains the final hanchan rank for each player.
+    round metadata. It also includes the focused player's current rank as a
+    one-hot feature using the engine's stable seat-order tie-break rule. The
+    target remains the final hanchan rank for each player.
 
     The replay's first kyoku start state is excluded because it has no preceding
     kyoku boundary and is therefore outside the intended GRP inference
@@ -55,8 +57,10 @@ class GrpReplayDataset(IterableDataset):
         ], dtype=np.float32)
         player = np.zeros(n, dtype=np.float32)
         player[player_idx] = 1.0
+        current_rank = np.zeros(n, dtype=np.float32)
+        current_rank[grp_features[f"p{player_idx}_current_rank"]] = 1.0
 
-        x = np.concatenate([scores, round_meta, player])
+        x = np.concatenate([scores, round_meta, player, current_rank])
         return torch.from_numpy(x)
 
     def _encode_label(self, final_scores: list, player_idx: int) -> torch.Tensor:
@@ -72,6 +76,7 @@ class GrpReplayDataset(IterableDataset):
 
         for feat in kyoku_features:
             start_scores = list(feat["round_initial_scores"][:self.n_players])
+            initial_ranks = list(feat["round_initial_ranks"][:self.n_players])
             if prev_start_scores is None:
                 delta_scores = [0] * self.n_players
             else:
@@ -86,6 +91,7 @@ class GrpReplayDataset(IterableDataset):
             for i in range(self.n_players):
                 row[f"p{i}_start_score"] = start_scores[i]
                 row[f"p{i}_delta_score"] = delta_scores[i]
+                row[f"p{i}_current_rank"] = initial_ranks[i]
 
             state_features.append(row)
             prev_start_scores = start_scores

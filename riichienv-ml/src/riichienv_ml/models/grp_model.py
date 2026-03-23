@@ -3,9 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+LEGACY_GRP_INPUT_FORMAT = "legacy_round_transition"
+KYOKU_START_GRP_INPUT_FORMAT = "kyoku_start_with_player_rank"
+
+
+def _compute_stable_ranks(scores: list[float] | np.ndarray) -> list[int]:
+    indexed = list(enumerate(scores))
+    indexed.sort(key=lambda item: (-item[1], item[0]))
+    ranks = [0] * len(indexed)
+    for rank, (seat, _) in enumerate(indexed):
+        ranks[seat] = rank
+    return ranks
+
 
 class RankPredictor(nn.Module):
-    def __init__(self, input_dim: int = 16, n_players: int = 4):
+    def __init__(self, input_dim: int = 20, n_players: int = 4):
         super().__init__()
         self.n_players = n_players
         self.fc1 = nn.Linear(input_dim, 128)
@@ -32,7 +44,13 @@ class RewardPredictor:
         self.pts_weight: list[float] = pts_weight
         self._score_norm = 35000.0 if n_players == 3 else 25000.0
 
-        state_dict = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device)
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            self.input_format = checkpoint.get("grp_input_format", LEGACY_GRP_INPUT_FORMAT)
+        else:
+            state_dict = checkpoint
+            self.input_format = LEGACY_GRP_INPUT_FORMAT
         if input_dim is None:
             input_dim = state_dict["fc1.weight"].shape[1]
         self.input_dim = input_dim
@@ -58,11 +76,14 @@ class RewardPredictor:
             and all(f"p{i}_end_score" in row for i in range(n))
         )
 
-        if has_start_scores:
+        if self.input_format == KYOKU_START_GRP_INPUT_FORMAT:
+            if not has_start_scores:
+                raise KeyError(
+                    "This GRP checkpoint expects kyoku-start features with p{i}_start_score / p{i}_delta_score keys"
+                )
             scores = np.array([row[f"p{i}_start_score"] for i in range(n)], dtype=np.float32) / self._score_norm
             delta_scores = np.array([row[f"p{i}_delta_score"] for i in range(n)], dtype=np.float32) / 12000.0
             base = np.concatenate([scores, delta_scores, round_meta], dtype=np.float32)
-            expected_dim = n * 3 + 4
         elif has_old_scores:
             scores = np.array(
                 [row[f"p{i}_init_score"] for i in range(n)] + [row[f"p{i}_end_score"] for i in range(n)],
@@ -70,33 +91,40 @@ class RewardPredictor:
             ) / self._score_norm
             delta_scores = np.array([row[f"p{i}_delta_score"] for i in range(n)], dtype=np.float32) / 12000.0
             base = np.concatenate([scores, delta_scores, round_meta], dtype=np.float32)
-            expected_dim = n * 4 + 4
         else:
             raise KeyError("Unsupported GRP feature keys")
-
-        if self.input_dim != expected_dim:
-            raise ValueError(
-                f"GRP model expects input_dim={self.input_dim}, but provided features encode to {expected_dim}"
-            )
         return base
+
+    def _encode_player_rank(self, row: dict, player_idx: int) -> np.ndarray:
+        n = self.n_players
+        if self.input_format != KYOKU_START_GRP_INPUT_FORMAT:
+            return np.zeros(0, dtype=np.float32)
+
+        rank_one_hot = np.zeros(n, dtype=np.float32)
+        if all(f"p{i}_current_rank" in row for i in range(n)):
+            current_rank = int(row[f"p{player_idx}_current_rank"])
+        else:
+            current_scores = [row[f"p{i}_start_score"] for i in range(n)]
+            current_rank = _compute_stable_ranks(current_scores)[player_idx]
+        rank_one_hot[current_rank] = 1.0
+        return rank_one_hot
 
     def calc_pts_reward(self, row: dict, player_idx: int) -> np.ndarray:
         n = self.n_players
         base = self._encode_base_features(row)
         player = np.zeros(n, dtype=np.float32)
         player[player_idx] = 1.0
+        current_rank = self._encode_player_rank(row, player_idx)
 
-        x = np.concatenate([base, player], dtype=np.float32)
+        x = np.concatenate([base, player, current_rank], dtype=np.float32)
+        if x.shape[0] != self.input_dim:
+            raise ValueError(f"GRP model expects input_dim={self.input_dim}, but encoded features have {x.shape[0]}")
         return x
 
     def calc_all_player_rewards(self, grp_features: dict) -> list[float]:
         """Compute final rewards for all players in one batched forward pass."""
         n = self.n_players
-        base = self._encode_base_features(grp_features)
-        xs = np.zeros((n, self.input_dim), dtype=np.float32)
-        for pid in range(n):
-            xs[pid, :len(base)] = base
-            xs[pid, len(base) + pid] = 1.0
+        xs = np.stack([self.calc_pts_reward(grp_features, pid) for pid in range(n)], dtype=np.float32)
 
         xs_t = torch.from_numpy(xs).to(self.device)
         mean_pts = float(np.mean(self.pts_weight))

@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from loguru import logger
 
 from riichienv_ml.datasets.grp_dataset import GrpReplayDataset
-from riichienv_ml.models.grp_model import RankPredictor
+from riichienv_ml.models.grp_model import KYOKU_START_GRP_INPUT_FORMAT, RankPredictor
 from riichienv_ml.utils import AverageMeter
 
 
@@ -38,7 +38,7 @@ class Trainer:
         self.batch_size = batch_size
         self.samples_per_file = samples_per_file
         self.n_players = n_players
-        self.input_dim = n_players * 3 + 4
+        self.input_dim = n_players * 4 + 4
         self.n_train_files = 0
 
         if data_glob:
@@ -97,7 +97,14 @@ class Trainer:
                 val_loss, val_acc = self._val_epoch(epoch, model, criterion)
                 metrics["val/loss"] = val_loss
                 metrics["val/acc"] = val_acc
-            torch.save(model.state_dict(), output_path)
+            torch.save(
+                {
+                    "state_dict": model.state_dict(),
+                    "grp_input_format": KYOKU_START_GRP_INPUT_FORMAT,
+                    "n_players": self.n_players,
+                },
+                output_path,
+            )
             wandb.log(metrics)
 
     def _train_epoch(self, epoch: int, model: nn.Module, optimizer: optim.Optimizer, scheduler: optim.lr_scheduler._LRScheduler, criterion: nn.Module) -> tuple[float, float]:

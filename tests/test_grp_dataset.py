@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from riichienv_ml.datasets.grp_dataset import GrpReplayDataset
-from riichienv_ml.models.grp_model import RankPredictor, RewardPredictor
+from riichienv_ml.models.grp_model import KYOKU_START_GRP_INPUT_FORMAT, RankPredictor, RewardPredictor
 
 
 def test_grp_replay_dataset_uses_kyoku_start_state_features(tmp_path):
@@ -83,6 +83,9 @@ def test_grp_replay_dataset_uses_kyoku_start_state_features(tmp_path):
                 1.0,
                 0.0,
                 0.0,
+                1.0,
+                0.0,
+                0.0,
             ],
             dtype=np.float32,
         ),
@@ -90,17 +93,25 @@ def test_grp_replay_dataset_uses_kyoku_start_state_features(tmp_path):
     np.testing.assert_allclose(first_y.numpy(), np.array([1.0, 0.0, 0.0], dtype=np.float32))
 
     third_x, third_y = samples[2]
+    np.testing.assert_allclose(third_x.numpy()[-6:-3], np.array([0.0, 0.0, 1.0], dtype=np.float32))
     np.testing.assert_allclose(third_x.numpy()[-3:], np.array([0.0, 0.0, 1.0], dtype=np.float32))
     np.testing.assert_allclose(third_y.numpy(), np.array([0.0, 0.0, 1.0], dtype=np.float32))
 
 
 def test_reward_predictor_autodetects_new_grp_input_shape(tmp_path):
     model_path = tmp_path / "grp_model_new_shape.pth"
-    model = RankPredictor(input_dim=13, n_players=3)
+    model = RankPredictor(input_dim=16, n_players=3)
     with torch.no_grad():
         for param in model.parameters():
             param.zero_()
-    torch.save(model.state_dict(), model_path)
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "grp_input_format": KYOKU_START_GRP_INPUT_FORMAT,
+            "n_players": 3,
+        },
+        model_path,
+    )
 
     predictor = RewardPredictor(
         str(model_path),
@@ -119,6 +130,85 @@ def test_reward_predictor_autodetects_new_grp_input_shape(tmp_path):
             "p2_delta_score": -2000,
             "chang": 0,
             "ju": 1,
+            "ben": 0,
+            "liqibang": 0,
+        }
+    )
+
+    assert rewards == [0.0, 0.0, 0.0]
+
+
+def test_reward_predictor_uses_engine_style_tiebreak_for_current_rank(tmp_path):
+    model_path = tmp_path / "grp_model_rank_feature.pth"
+    model = RankPredictor(input_dim=16, n_players=3)
+    with torch.no_grad():
+        for param in model.parameters():
+            param.zero_()
+        model.fc1.weight[0, 13] = 1.0
+        model.fc2.weight[0, 0] = 1.0
+        model.fc3.weight[0, 0] = 1.0
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "grp_input_format": KYOKU_START_GRP_INPUT_FORMAT,
+            "n_players": 3,
+        },
+        model_path,
+    )
+
+    predictor = RewardPredictor(
+        str(model_path),
+        pts_weight=[4.0, 2.0, 0.0],
+        n_players=3,
+        device="cpu",
+    )
+
+    rewards = predictor.calc_all_player_rewards(
+        {
+            "p0_start_score": 35000,
+            "p1_start_score": 35000,
+            "p2_start_score": 30000,
+            "p0_delta_score": 0,
+            "p1_delta_score": 0,
+            "p2_delta_score": 0,
+            "chang": 0,
+            "ju": 1,
+            "ben": 0,
+            "liqibang": 0,
+        }
+    )
+
+    assert rewards[0] > rewards[1]
+
+
+def test_reward_predictor_loads_legacy_raw_state_dict(tmp_path):
+    model_path = tmp_path / "grp_model_legacy_shape.pth"
+    model = RankPredictor(input_dim=16, n_players=3)
+    with torch.no_grad():
+        for param in model.parameters():
+            param.zero_()
+    torch.save(model.state_dict(), model_path)
+
+    predictor = RewardPredictor(
+        str(model_path),
+        pts_weight=[4.0, 2.0, 0.0],
+        n_players=3,
+        device="cpu",
+    )
+
+    rewards = predictor.calc_all_player_rewards(
+        {
+            "p0_init_score": 35000,
+            "p1_init_score": 35000,
+            "p2_init_score": 35000,
+            "p0_end_score": 39000,
+            "p1_end_score": 33000,
+            "p2_end_score": 33000,
+            "p0_delta_score": 4000,
+            "p1_delta_score": -2000,
+            "p2_delta_score": -2000,
+            "chang": 0,
+            "ju": 0,
             "ben": 0,
             "liqibang": 0,
         }
