@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 
 mod env;
 
@@ -45,6 +46,43 @@ fn calculate_shanten_3p_py(hand_tiles: Vec<u32>) -> i32 {
     riichienv_core::shanten::calculate_shanten_3p(&hand_tiles)
 }
 
+#[pyfunction]
+#[pyo3(name = "encode_grp_tenhou_4p", signature = (start_scores, delta_scores, chang, ju, ben, liqibang))]
+fn encode_grp_tenhou_4p_py<'py>(
+    py: Python<'py>,
+    start_scores: Vec<i32>,
+    delta_scores: Vec<i32>,
+    chang: u8,
+    ju: u8,
+    ben: u8,
+    liqibang: u8,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let start_scores: [i32; 4] = start_scores.try_into().map_err(|v: Vec<i32>| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "start_scores length {} does not match required 4 players",
+            v.len()
+        ))
+    })?;
+    let delta_scores: [i32; 4] = delta_scores.try_into().map_err(|v: Vec<i32>| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "delta_scores length {} does not match required 4 players",
+            v.len()
+        ))
+    })?;
+
+    let encoded = riichienv_core::grp::encode_tenhou_4p_rows(
+        start_scores,
+        delta_scores,
+        chang,
+        ju,
+        ben,
+        liqibang,
+    );
+    let byte_len = std::mem::size_of_val(encoded.as_slice());
+    let byte_slice = unsafe { std::slice::from_raw_parts(encoded.as_ptr() as *const u8, byte_len) };
+    Ok(PyBytes::new(py, byte_slice))
+}
+
 #[pymodule]
 fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<riichienv_core::types::Meld>()?;
@@ -74,6 +112,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<env::RiichiEnv>()?;
 
     m.add_function(wrap_pyfunction!(calculate_score_py, m)?)?;
+    m.add_function(wrap_pyfunction!(encode_grp_tenhou_4p_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_hand_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_tile_py, m)?)?;
     m.add_function(wrap_pyfunction!(check_riichi_candidates_py, m)?)?;

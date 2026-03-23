@@ -4,7 +4,9 @@ import importlib
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, computed_field, model_validator
+
+from riichienv_ml.features.grp_agari_features import get_grp_input_dim
 
 
 GAME_PARAMS = {
@@ -37,6 +39,13 @@ def import_class(dotted_path: str):
 
 class GameConfig(BaseModel):
     n_players: Literal[3, 4] = 4
+    replay_rule: Literal["tenhou", "mjsoul"] | None = None
+
+    @model_validator(mode="after")
+    def set_replay_rule_default(self) -> GameConfig:
+        if self.replay_rule is None:
+            self.replay_rule = GAME_PARAMS[self.n_players]["replay_rule"]
+        return self
 
     @computed_field
     @property
@@ -55,18 +64,13 @@ class GameConfig(BaseModel):
 
     @computed_field
     @property
-    def replay_rule(self) -> str:
-        return GAME_PARAMS[self.n_players]["replay_rule"]
-
-    @computed_field
-    @property
     def starting_scores(self) -> list[int]:
         return GAME_PARAMS[self.n_players]["starting_scores"]
 
     @computed_field
     @property
     def grp_input_dim(self) -> int:
-        return self.n_players * 4 + 4
+        return get_grp_input_dim(self.n_players, self.replay_rule)
 
 
 class ModelConfig(BaseModel):
