@@ -6,8 +6,11 @@ import torch
 from riichienv_ml.datasets.grp_dataset import GrpReplayDataset
 from riichienv_ml.features.grp_agari_features import (
     TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
+    TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
     encode_agari_rank_gains,
+    encode_other_player_overtake_flags,
     get_agari_rank_gain_feature_dim,
+    get_other_player_overtake_feature_dim,
 )
 from riichienv_ml.models.grp_model import KYOKU_START_GRP_INPUT_FORMAT, RankPredictor, RewardPredictor
 
@@ -240,6 +243,24 @@ def test_agari_rank_gain_features_are_target_sensitive_for_tenhou_4p():
     assert gains[72] == np.float32(2.0 / 3.0)
 
 
+def test_other_player_overtake_flags_are_target_sensitive_for_tenhou_4p():
+    overtakes = encode_other_player_overtake_flags(
+        start_scores=[25000, 24000, 24000, 24000],
+        oya=0,
+        honba=0,
+        liqibang=0,
+        player_idx=0,
+        current_rank=0,
+        n_players=4,
+        replay_rule="tenhou",
+    )
+
+    assert overtakes.shape == (288,)
+    assert overtakes[0] == 1.0
+    assert overtakes[96] == 1.0
+    assert overtakes[192] == 1.0
+
+
 def test_grp_replay_dataset_appends_tenhou_4p_agari_rank_gain_features():
     dataset = GrpReplayDataset(
         data_glob="unused",
@@ -268,12 +289,18 @@ def test_grp_replay_dataset_appends_tenhou_4p_agari_rank_gain_features():
 
     x = dataset._encode_features(grp_features, player_idx=3).numpy()
 
-    assert x.shape == (20 + get_agari_rank_gain_feature_dim(4, "tenhou"),)
+    assert x.shape == (
+        20 + get_agari_rank_gain_feature_dim(4, "tenhou") + get_other_player_overtake_feature_dim(4, "tenhou"),
+    )
     np.testing.assert_allclose(x[:12], np.array([1.0, 0.96, 0.96, 0.96, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
     np.testing.assert_allclose(x[12:16], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
     np.testing.assert_allclose(x[16:20], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
     assert x[20 + 24] == 1.0
     assert x[20 + 48] == np.float32(2.0 / 3.0)
+    np.testing.assert_allclose(
+        x[20 + get_agari_rank_gain_feature_dim(4, "tenhou"):],
+        np.zeros(get_other_player_overtake_feature_dim(4, "tenhou"), dtype=np.float32),
+    )
 
 
 def test_reward_predictor_encodes_tenhou_4p_agari_rank_gain_features(tmp_path):
@@ -320,3 +347,50 @@ def test_reward_predictor_encodes_tenhou_4p_agari_rank_gain_features(tmp_path):
     )
 
     assert rewards[3] > rewards[1]
+
+
+def test_reward_predictor_encodes_tenhou_4p_other_player_overtake_features(tmp_path):
+    agari_dim = get_agari_rank_gain_feature_dim(4, "tenhou")
+    overtake_dim = get_other_player_overtake_feature_dim(4, "tenhou")
+    model_path = tmp_path / "grp_model_tenhou_4p_agari_overtake.pth"
+    model = RankPredictor(input_dim=20 + agari_dim + overtake_dim, n_players=4)
+    with torch.no_grad():
+        for param in model.parameters():
+            param.zero_()
+        model.fc1.weight[0, 20 + agari_dim] = 1.0
+        model.fc2.weight[0, 0] = 1.0
+        model.fc3.weight[0, 0] = 1.0
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "grp_input_format": TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
+            "n_players": 4,
+        },
+        model_path,
+    )
+
+    predictor = RewardPredictor(
+        str(model_path),
+        pts_weight=[6.0, 4.0, 2.0, 0.0],
+        n_players=4,
+        device="cpu",
+    )
+
+    rewards = predictor.calc_all_player_rewards(
+        {
+            "p0_start_score": 25000,
+            "p1_start_score": 24000,
+            "p2_start_score": 24000,
+            "p3_start_score": 24000,
+            "p0_delta_score": 0,
+            "p1_delta_score": 0,
+            "p2_delta_score": 0,
+            "p3_delta_score": 0,
+            "chang": 0,
+            "ju": 0,
+            "ben": 0,
+            "liqibang": 0,
+        }
+    )
+
+    assert rewards[0] > rewards[1]

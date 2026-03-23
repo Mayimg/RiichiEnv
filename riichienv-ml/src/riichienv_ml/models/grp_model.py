@@ -5,7 +5,9 @@ import numpy as np
 
 from riichienv_ml.features.grp_agari_features import (
     TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
+    TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
     encode_agari_rank_gains,
+    encode_other_player_overtake_flags,
 )
 
 LEGACY_GRP_INPUT_FORMAT = "legacy_round_transition"
@@ -81,7 +83,11 @@ class RewardPredictor:
             and all(f"p{i}_end_score" in row for i in range(n))
         )
 
-        if self.input_format in (KYOKU_START_GRP_INPUT_FORMAT, TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT):
+        if self.input_format in (
+            KYOKU_START_GRP_INPUT_FORMAT,
+            TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
+            TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
+        ):
             if not has_start_scores:
                 raise KeyError(
                     "This GRP checkpoint expects kyoku-start features with p{i}_start_score / p{i}_delta_score keys"
@@ -102,7 +108,11 @@ class RewardPredictor:
 
     def _encode_player_rank(self, row: dict, player_idx: int) -> np.ndarray:
         n = self.n_players
-        if self.input_format not in (KYOKU_START_GRP_INPUT_FORMAT, TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT):
+        if self.input_format not in (
+            KYOKU_START_GRP_INPUT_FORMAT,
+            TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
+            TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
+        ):
             return np.zeros(0, dtype=np.float32)
 
         rank_one_hot = np.zeros(n, dtype=np.float32)
@@ -115,7 +125,10 @@ class RewardPredictor:
         return rank_one_hot
 
     def _encode_agari_rank_gains(self, row: dict, player_idx: int) -> np.ndarray:
-        if self.input_format != TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT:
+        if self.input_format not in (
+            TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
+            TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
+        ):
             return np.zeros(0, dtype=np.float32)
 
         current_rank = None
@@ -133,6 +146,25 @@ class RewardPredictor:
             replay_rule="tenhou",
         )
 
+    def _encode_other_player_overtakes(self, row: dict, player_idx: int) -> np.ndarray:
+        if self.input_format != TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT:
+            return np.zeros(0, dtype=np.float32)
+
+        current_rank = None
+        if all(f"p{i}_current_rank" in row for i in range(self.n_players)):
+            current_rank = int(row[f"p{player_idx}_current_rank"])
+
+        return encode_other_player_overtake_flags(
+            [row[f"p{i}_start_score"] for i in range(self.n_players)],
+            oya=int(row["ju"]),
+            honba=int(row["ben"]),
+            liqibang=int(row["liqibang"]),
+            player_idx=player_idx,
+            current_rank=current_rank,
+            n_players=self.n_players,
+            replay_rule="tenhou",
+        )
+
     def calc_pts_reward(self, row: dict, player_idx: int) -> np.ndarray:
         n = self.n_players
         base = self._encode_base_features(row)
@@ -140,8 +172,9 @@ class RewardPredictor:
         player[player_idx] = 1.0
         current_rank = self._encode_player_rank(row, player_idx)
         agari_rank_gains = self._encode_agari_rank_gains(row, player_idx)
+        other_player_overtakes = self._encode_other_player_overtakes(row, player_idx)
 
-        x = np.concatenate([base, player, current_rank, agari_rank_gains], dtype=np.float32)
+        x = np.concatenate([base, player, current_rank, agari_rank_gains, other_player_overtakes], dtype=np.float32)
         if x.shape[0] != self.input_dim:
             raise ValueError(f"GRP model expects input_dim={self.input_dim}, but encoded features have {x.shape[0]}")
         return x

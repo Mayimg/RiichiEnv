@@ -8,7 +8,10 @@ from torch.utils.data import IterableDataset
 from riichienv import MjaiReplay
 
 from riichienv_ml.datasets.mjai_logs import _compute_rank
-from riichienv_ml.features.grp_agari_features import encode_agari_rank_gains
+from riichienv_ml.features.grp_agari_features import (
+    encode_agari_rank_gains,
+    encode_other_player_overtake_flags,
+)
 
 
 class GrpReplayDataset(IterableDataset):
@@ -18,8 +21,11 @@ class GrpReplayDataset(IterableDataset):
     current start scores, score deltas from the previous kyoku boundary, and
     round metadata. It also includes the focused player's current rank as a
     one-hot feature using the engine's stable seat-order tie-break rule.
-    For Tenhou 4P, it additionally appends the player's rank-improvement under
-    every standard non-PAO win settlement pattern for the current kyoku state.
+    For Tenhou 4P, it additionally appends:
+    - the focused player's rank-improvement under every standard non-PAO win
+      settlement pattern for the current kyoku state
+    - binary flags for whether each other player would overtake the focused
+      player under each of their own standard non-PAO win settlement patterns
     The target remains the final hanchan rank for each player.
 
     The replay's first kyoku start state is excluded because it has no preceding
@@ -72,8 +78,18 @@ class GrpReplayDataset(IterableDataset):
             n_players=n,
             replay_rule=self.replay_rule,
         )
+        other_player_overtakes = encode_other_player_overtake_flags(
+            [grp_features[f"p{i}_start_score"] for i in range(n)],
+            oya=grp_features["ju"],
+            honba=grp_features["ben"],
+            liqibang=grp_features["liqibang"],
+            player_idx=player_idx,
+            current_rank=grp_features[f"p{player_idx}_current_rank"],
+            n_players=n,
+            replay_rule=self.replay_rule,
+        )
 
-        x = np.concatenate([scores, round_meta, player, current_rank, agari_rank_gains])
+        x = np.concatenate([scores, round_meta, player, current_rank, agari_rank_gains, other_player_overtakes])
         return torch.from_numpy(x)
 
     def _encode_label(self, final_scores: list, player_idx: int) -> torch.Tensor:

@@ -14,7 +14,7 @@ from loguru import logger
 
 from riichienv_ml.datasets.grp_dataset import GrpReplayDataset
 from riichienv_ml.features.grp_agari_features import (
-    TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
+    TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
     get_grp_input_dim,
     supports_agari_rank_gains,
 )
@@ -86,7 +86,7 @@ class Trainer:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         model = RankPredictor(input_dim=self.input_dim, n_players=self.n_players).to(self.device)
         input_format = (
-            TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT
+            TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT
             if supports_agari_rank_gains(self.n_players, self.replay_rule)
             else KYOKU_START_GRP_INPUT_FORMAT
         )
