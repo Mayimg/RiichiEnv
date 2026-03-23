@@ -38,7 +38,7 @@ class Trainer:
         self.batch_size = batch_size
         self.samples_per_file = samples_per_file
         self.n_players = n_players
-        self.input_dim = n_players * 4 + 4
+        self.input_dim = n_players * 3 + 4
         self.n_train_files = 0
 
         if data_glob:

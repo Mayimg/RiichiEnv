@@ -5,7 +5,7 @@ import numpy as np
 
 
 class RankPredictor(nn.Module):
-    def __init__(self, input_dim: int = 20, n_players: int = 4):
+    def __init__(self, input_dim: int = 16, n_players: int = 4):
         super().__init__()
         self.n_players = n_players
         self.fc1 = nn.Linear(input_dim, 128)
@@ -32,11 +32,13 @@ class RewardPredictor:
         self.pts_weight: list[float] = pts_weight
         self._score_norm = 35000.0 if n_players == 3 else 25000.0
 
+        state_dict = torch.load(model_path, map_location=device)
         if input_dim is None:
-            input_dim = n_players * 4 + 4
+            input_dim = state_dict["fc1.weight"].shape[1]
+        self.input_dim = input_dim
 
         self.model: RankPredictor = RankPredictor(input_dim, n_players)
-        self.model.load_state_dict(torch.load(model_path, map_location=device))
+        self.model.load_state_dict(state_dict)
         self.model = self.model.to(torch.device(device))
         self.model = self.model.eval()
 
@@ -44,40 +46,54 @@ class RewardPredictor:
         with torch.inference_mode():
             return torch.softmax(self.model(x), dim=1) @ torch.tensor(self.pts_weight, device=self.device).float()
 
-    def calc_pts_reward(self, row: dict, player_idx: int) -> np.ndarray:
+    def _encode_base_features(self, row: dict) -> np.ndarray:
         n = self.n_players
-        scores = np.array([row[f"p{i}_init_score"] for i in range(n)]
-                          + [row[f"p{i}_end_score"] for i in range(n)])
-        delta_scores = np.array([row[f"p{i}_delta_score"] for i in range(n)])
-        scores = scores / self._score_norm
-        delta_scores = delta_scores / 12000.0
         round_meta = np.array([
             row["chang"] / 3.0, row["ju"] / 3.0, row["ben"] / 4.0, row["liqibang"] / 4.0
-        ])
-        player = np.zeros(n)
+        ], dtype=np.float32)
+
+        has_start_scores = all(f"p{i}_start_score" in row for i in range(n))
+        has_old_scores = (
+            all(f"p{i}_init_score" in row for i in range(n))
+            and all(f"p{i}_end_score" in row for i in range(n))
+        )
+
+        if has_start_scores:
+            scores = np.array([row[f"p{i}_start_score"] for i in range(n)], dtype=np.float32) / self._score_norm
+            delta_scores = np.array([row[f"p{i}_delta_score"] for i in range(n)], dtype=np.float32) / 12000.0
+            base = np.concatenate([scores, delta_scores, round_meta], dtype=np.float32)
+            expected_dim = n * 3 + 4
+        elif has_old_scores:
+            scores = np.array(
+                [row[f"p{i}_init_score"] for i in range(n)] + [row[f"p{i}_end_score"] for i in range(n)],
+                dtype=np.float32,
+            ) / self._score_norm
+            delta_scores = np.array([row[f"p{i}_delta_score"] for i in range(n)], dtype=np.float32) / 12000.0
+            base = np.concatenate([scores, delta_scores, round_meta], dtype=np.float32)
+            expected_dim = n * 4 + 4
+        else:
+            raise KeyError("Unsupported GRP feature keys")
+
+        if self.input_dim != expected_dim:
+            raise ValueError(
+                f"GRP model expects input_dim={self.input_dim}, but provided features encode to {expected_dim}"
+            )
+        return base
+
+    def calc_pts_reward(self, row: dict, player_idx: int) -> np.ndarray:
+        n = self.n_players
+        base = self._encode_base_features(row)
+        player = np.zeros(n, dtype=np.float32)
         player[player_idx] = 1.0
 
-        x = np.concatenate([scores, delta_scores, round_meta, player])
+        x = np.concatenate([base, player], dtype=np.float32)
         return x
 
     def calc_all_player_rewards(self, grp_features: dict) -> list[float]:
         """Compute final rewards for all players in one batched forward pass."""
         n = self.n_players
-        scores = np.array(
-            [grp_features[f"p{i}_init_score"] for i in range(n)]
-            + [grp_features[f"p{i}_end_score"] for i in range(n)]
-        ) / self._score_norm
-        delta_scores = np.array(
-            [grp_features[f"p{i}_delta_score"] for i in range(n)]
-        ) / 12000.0
-        round_meta = np.array([
-            grp_features["chang"] / 3.0, grp_features["ju"] / 3.0,
-            grp_features["ben"] / 4.0, grp_features["liqibang"] / 4.0,
-        ])
-        base = np.concatenate([scores, delta_scores, round_meta])
-
-        input_dim = n * 4 + 4
-        xs = np.zeros((n, input_dim), dtype=np.float32)
+        base = self._encode_base_features(grp_features)
+        xs = np.zeros((n, self.input_dim), dtype=np.float32)
         for pid in range(n):
             xs[pid, :len(base)] = base
             xs[pid, len(base) + pid] = 1.0
