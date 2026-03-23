@@ -63,18 +63,11 @@ def test_grp_replay_dataset_uses_kyoku_start_state_features(tmp_path):
     )
     samples = list(dataset)
 
-    assert len(samples) == 6
+    assert len(samples) == 3
 
     first_x, first_y = samples[0]
     np.testing.assert_allclose(
         first_x.numpy(),
-        np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32),
-    )
-    np.testing.assert_allclose(first_y.numpy(), np.array([1.0, 0.0, 0.0], dtype=np.float32))
-
-    fourth_x, fourth_y = samples[3]
-    np.testing.assert_allclose(
-        fourth_x.numpy(),
         np.array(
             [
                 39000.0 / 35000.0,
@@ -94,7 +87,11 @@ def test_grp_replay_dataset_uses_kyoku_start_state_features(tmp_path):
             dtype=np.float32,
         ),
     )
-    np.testing.assert_allclose(fourth_y.numpy(), np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    np.testing.assert_allclose(first_y.numpy(), np.array([1.0, 0.0, 0.0], dtype=np.float32))
+
+    third_x, third_y = samples[2]
+    np.testing.assert_allclose(third_x.numpy()[-3:], np.array([0.0, 0.0, 1.0], dtype=np.float32))
+    np.testing.assert_allclose(third_y.numpy(), np.array([0.0, 0.0, 1.0], dtype=np.float32))
 
 
 def test_reward_predictor_autodetects_new_grp_input_shape(tmp_path):

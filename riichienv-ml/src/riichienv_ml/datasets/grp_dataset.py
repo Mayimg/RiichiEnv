@@ -16,7 +16,10 @@ class GrpReplayDataset(IterableDataset):
     For each kyoku in each replay, encodes the state at the start of the kyoku:
     current start scores, score deltas from the previous kyoku boundary, and
     round metadata. The target remains the final hanchan rank for each player.
-    Yields (features_tensor, rank_one_hot).
+
+    The replay's first kyoku start state is excluded because it has no preceding
+    kyoku boundary and is therefore outside the intended GRP inference
+    distribution.
     """
 
     def __init__(
@@ -111,6 +114,9 @@ class GrpReplayDataset(IterableDataset):
                     continue
 
                 kyoku_start_features = self._extract_kyoku_start_features(raw_kyoku_features)
+                if len(kyoku_start_features) <= 1:
+                    continue
+                kyoku_start_features = kyoku_start_features[1:]
 
                 # Final hanchan ranking from the last kyoku's end scores
                 final_scores = list(raw_kyoku_features[-1]["round_end_scores"][:self.n_players])
