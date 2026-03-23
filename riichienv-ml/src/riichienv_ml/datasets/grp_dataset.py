@@ -8,6 +8,7 @@ from torch.utils.data import IterableDataset
 from riichienv import MjaiReplay
 
 from riichienv_ml.datasets.mjai_logs import _compute_rank
+from riichienv_ml.features.grp_agari_features import encode_agari_rank_gains
 
 
 class GrpReplayDataset(IterableDataset):
@@ -16,8 +17,10 @@ class GrpReplayDataset(IterableDataset):
     For each kyoku in each replay, encodes the state at the start of the kyoku:
     current start scores, score deltas from the previous kyoku boundary, and
     round metadata. It also includes the focused player's current rank as a
-    one-hot feature using the engine's stable seat-order tie-break rule. The
-    target remains the final hanchan rank for each player.
+    one-hot feature using the engine's stable seat-order tie-break rule.
+    For Tenhou 4P, it additionally appends the player's rank-improvement under
+    every standard non-PAO win settlement pattern for the current kyoku state.
+    The target remains the final hanchan rank for each player.
 
     The replay's first kyoku start state is excluded because it has no preceding
     kyoku boundary and is therefore outside the intended GRP inference
@@ -59,8 +62,18 @@ class GrpReplayDataset(IterableDataset):
         player[player_idx] = 1.0
         current_rank = np.zeros(n, dtype=np.float32)
         current_rank[grp_features[f"p{player_idx}_current_rank"]] = 1.0
+        agari_rank_gains = encode_agari_rank_gains(
+            [grp_features[f"p{i}_start_score"] for i in range(n)],
+            oya=grp_features["ju"],
+            honba=grp_features["ben"],
+            liqibang=grp_features["liqibang"],
+            player_idx=player_idx,
+            current_rank=grp_features[f"p{player_idx}_current_rank"],
+            n_players=n,
+            replay_rule=self.replay_rule,
+        )
 
-        x = np.concatenate([scores, round_meta, player, current_rank])
+        x = np.concatenate([scores, round_meta, player, current_rank, agari_rank_gains])
         return torch.from_numpy(x)
 
     def _encode_label(self, final_scores: list, player_idx: int) -> torch.Tensor:

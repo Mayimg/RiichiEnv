@@ -6,6 +6,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, computed_field, model_validator
 
+from riichienv_ml.features.grp_agari_features import get_grp_input_dim
+
 
 GAME_PARAMS = {
     4: {
@@ -68,7 +70,7 @@ class GameConfig(BaseModel):
     @computed_field
     @property
     def grp_input_dim(self) -> int:
-        return self.n_players * 4 + 4
+        return get_grp_input_dim(self.n_players, self.replay_rule)
 
 
 class ModelConfig(BaseModel):

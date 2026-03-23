@@ -13,6 +13,11 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from loguru import logger
 
 from riichienv_ml.datasets.grp_dataset import GrpReplayDataset
+from riichienv_ml.features.grp_agari_features import (
+    TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
+    get_grp_input_dim,
+    supports_agari_rank_gains,
+)
 from riichienv_ml.models.grp_model import KYOKU_START_GRP_INPUT_FORMAT, RankPredictor
 from riichienv_ml.utils import AverageMeter
 
@@ -38,7 +43,8 @@ class Trainer:
         self.batch_size = batch_size
         self.samples_per_file = samples_per_file
         self.n_players = n_players
-        self.input_dim = n_players * 4 + 4
+        self.replay_rule = replay_rule
+        self.input_dim = get_grp_input_dim(n_players, replay_rule)
         self.n_train_files = 0
 
         if data_glob:
@@ -79,6 +85,11 @@ class Trainer:
             raise ValueError("data_glob is required for training (got empty string)")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         model = RankPredictor(input_dim=self.input_dim, n_players=self.n_players).to(self.device)
+        input_format = (
+            TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT
+            if supports_agari_rank_gains(self.n_players, self.replay_rule)
+            else KYOKU_START_GRP_INPUT_FORMAT
+        )
         optimizer = optim.Adam(model.parameters(), lr=self.lr)
         t_max = n_epochs * self._estimate_steps_per_epoch()
         logger.info(f"CosineAnnealingLR: T_max={t_max} (files={self.n_train_files}, "
@@ -100,7 +111,7 @@ class Trainer:
             torch.save(
                 {
                     "state_dict": model.state_dict(),
-                    "grp_input_format": KYOKU_START_GRP_INPUT_FORMAT,
+                    "grp_input_format": input_format,
                     "n_players": self.n_players,
                 },
                 output_path,
