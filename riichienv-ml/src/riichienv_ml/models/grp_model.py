@@ -6,8 +6,8 @@ import numpy as np
 from riichienv_ml.features.grp_agari_features import (
     TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
     TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
-    encode_agari_rank_gains,
-    encode_other_player_overtake_flags,
+    TENHOU_4P_OVERTAKE_OFFSET,
+    encode_tenhou_4p_all_player_grp_features,
 )
 
 LEGACY_GRP_INPUT_FORMAT = "legacy_round_transition"
@@ -124,57 +124,41 @@ class RewardPredictor:
         rank_one_hot[current_rank] = 1.0
         return rank_one_hot
 
-    def _encode_agari_rank_gains(self, row: dict, player_idx: int) -> np.ndarray:
-        if self.input_format not in (
+    def _encode_all_player_features_fast(self, row: dict) -> np.ndarray | None:
+        if self.n_players != 4 or self.input_format not in (
             TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
             TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
         ):
-            return np.zeros(0, dtype=np.float32)
+            return None
 
-        current_rank = None
-        if all(f"p{i}_current_rank" in row for i in range(self.n_players)):
-            current_rank = int(row[f"p{player_idx}_current_rank"])
-
-        return encode_agari_rank_gains(
+        return encode_tenhou_4p_all_player_grp_features(
             [row[f"p{i}_start_score"] for i in range(self.n_players)],
-            oya=int(row["ju"]),
-            honba=int(row["ben"]),
+            [row[f"p{i}_delta_score"] for i in range(self.n_players)],
+            chang=int(row["chang"]),
+            ju=int(row["ju"]),
+            ben=int(row["ben"]),
             liqibang=int(row["liqibang"]),
-            player_idx=player_idx,
-            current_rank=current_rank,
-            n_players=self.n_players,
-            replay_rule="tenhou",
-        )
-
-    def _encode_other_player_overtakes(self, row: dict, player_idx: int) -> np.ndarray:
-        if self.input_format != TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT:
-            return np.zeros(0, dtype=np.float32)
-
-        current_rank = None
-        if all(f"p{i}_current_rank" in row for i in range(self.n_players)):
-            current_rank = int(row[f"p{player_idx}_current_rank"])
-
-        return encode_other_player_overtake_flags(
-            [row[f"p{i}_start_score"] for i in range(self.n_players)],
-            oya=int(row["ju"]),
-            honba=int(row["ben"]),
-            liqibang=int(row["liqibang"]),
-            player_idx=player_idx,
-            current_rank=current_rank,
-            n_players=self.n_players,
-            replay_rule="tenhou",
         )
 
     def calc_pts_reward(self, row: dict, player_idx: int) -> np.ndarray:
+        fast_xs = self._encode_all_player_features_fast(row)
+        if fast_xs is not None:
+            if self.input_format == TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT:
+                x = fast_xs[player_idx, :TENHOU_4P_OVERTAKE_OFFSET]
+            else:
+                x = fast_xs[player_idx]
+            if x.shape[0] != self.input_dim:
+                raise ValueError(
+                    f"GRP model expects input_dim={self.input_dim}, but encoded features have {x.shape[0]}"
+                )
+            return x
+
         n = self.n_players
         base = self._encode_base_features(row)
         player = np.zeros(n, dtype=np.float32)
         player[player_idx] = 1.0
         current_rank = self._encode_player_rank(row, player_idx)
-        agari_rank_gains = self._encode_agari_rank_gains(row, player_idx)
-        other_player_overtakes = self._encode_other_player_overtakes(row, player_idx)
-
-        x = np.concatenate([base, player, current_rank, agari_rank_gains, other_player_overtakes], dtype=np.float32)
+        x = np.concatenate([base, player, current_rank], dtype=np.float32)
         if x.shape[0] != self.input_dim:
             raise ValueError(f"GRP model expects input_dim={self.input_dim}, but encoded features have {x.shape[0]}")
         return x
@@ -182,7 +166,14 @@ class RewardPredictor:
     def calc_all_player_rewards(self, grp_features: dict) -> list[float]:
         """Compute final rewards for all players in one batched forward pass."""
         n = self.n_players
-        xs = np.stack([self.calc_pts_reward(grp_features, pid) for pid in range(n)], dtype=np.float32)
+        fast_xs = self._encode_all_player_features_fast(grp_features)
+        if fast_xs is not None:
+            if self.input_format == TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT:
+                xs = fast_xs[:, :TENHOU_4P_OVERTAKE_OFFSET]
+            else:
+                xs = fast_xs
+        else:
+            xs = np.stack([self.calc_pts_reward(grp_features, pid) for pid in range(n)], dtype=np.float32)
 
         xs_t = torch.from_numpy(xs).to(self.device)
         mean_pts = float(np.mean(self.pts_weight))

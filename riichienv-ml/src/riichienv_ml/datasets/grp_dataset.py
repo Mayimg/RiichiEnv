@@ -9,8 +9,8 @@ from riichienv import MjaiReplay
 
 from riichienv_ml.datasets.mjai_logs import _compute_rank
 from riichienv_ml.features.grp_agari_features import (
-    encode_agari_rank_gains,
-    encode_other_player_overtake_flags,
+    encode_tenhou_4p_all_player_grp_features,
+    supports_agari_rank_gains,
 )
 
 
@@ -68,29 +68,22 @@ class GrpReplayDataset(IterableDataset):
         player[player_idx] = 1.0
         current_rank = np.zeros(n, dtype=np.float32)
         current_rank[grp_features[f"p{player_idx}_current_rank"]] = 1.0
-        agari_rank_gains = encode_agari_rank_gains(
-            [grp_features[f"p{i}_start_score"] for i in range(n)],
-            oya=grp_features["ju"],
-            honba=grp_features["ben"],
-            liqibang=grp_features["liqibang"],
-            player_idx=player_idx,
-            current_rank=grp_features[f"p{player_idx}_current_rank"],
-            n_players=n,
-            replay_rule=self.replay_rule,
-        )
-        other_player_overtakes = encode_other_player_overtake_flags(
-            [grp_features[f"p{i}_start_score"] for i in range(n)],
-            oya=grp_features["ju"],
-            honba=grp_features["ben"],
-            liqibang=grp_features["liqibang"],
-            player_idx=player_idx,
-            current_rank=grp_features[f"p{player_idx}_current_rank"],
-            n_players=n,
-            replay_rule=self.replay_rule,
-        )
-
-        x = np.concatenate([scores, round_meta, player, current_rank, agari_rank_gains, other_player_overtakes])
+        x = np.concatenate([scores, round_meta, player, current_rank])
         return torch.from_numpy(x)
+
+    def _encode_all_player_features(self, grp_features: dict) -> list[torch.Tensor]:
+        if supports_agari_rank_gains(self.n_players, self.replay_rule):
+            xs = encode_tenhou_4p_all_player_grp_features(
+                [grp_features[f"p{i}_start_score"] for i in range(self.n_players)],
+                [grp_features[f"p{i}_delta_score"] for i in range(self.n_players)],
+                chang=grp_features["chang"],
+                ju=grp_features["ju"],
+                ben=grp_features["ben"],
+                liqibang=grp_features["liqibang"],
+            )
+            return [torch.from_numpy(x) for x in xs]
+
+        return [self._encode_features(grp_features, player_idx) for player_idx in range(self.n_players)]
 
     def _encode_label(self, final_scores: list, player_idx: int) -> torch.Tensor:
         n = self.n_players
@@ -157,8 +150,9 @@ class GrpReplayDataset(IterableDataset):
                 final_scores = list(raw_kyoku_features[-1]["round_end_scores"][:self.n_players])
 
                 for grp_features in kyoku_start_features:
+                    xs = self._encode_all_player_features(grp_features)
                     for player_idx in range(self.n_players):
-                        x = self._encode_features(grp_features, player_idx)
+                        x = xs[player_idx]
                         y = self._encode_label(final_scores, player_idx)
                         buffer.append((x, y))
             except Exception as e:

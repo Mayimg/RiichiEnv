@@ -742,6 +742,10 @@ class KyokuStepIterator:
     def __next__(self) -> Any: ...
     def __iter__(self) -> KyokuStepIterator: ...
 
+def encode_grp_tenhou_4p(
+    start_scores: list[int], delta_scores: list[int], chang: int, ju: int, ben: int, liqibang: int
+) -> bytes: ...
+
 class MjSoulReplay:
     num_rounds: int
     @staticmethod

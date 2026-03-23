@@ -10,6 +10,7 @@ mod yaku_3p;
 
 pub mod action;
 pub mod game_variant;
+pub mod grp;
 pub mod observation;
 pub mod observation_3p;
 pub mod parser;

@@ -287,7 +287,7 @@ def test_grp_replay_dataset_appends_tenhou_4p_agari_rank_gain_features():
         "p3_current_rank": 3,
     }
 
-    x = dataset._encode_features(grp_features, player_idx=3).numpy()
+    x = dataset._encode_all_player_features(grp_features)[3].numpy()
 
     assert x.shape == (
         20 + get_agari_rank_gain_feature_dim(4, "tenhou") + get_other_player_overtake_feature_dim(4, "tenhou"),

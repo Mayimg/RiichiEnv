@@ -4,7 +4,7 @@ grp:
     replay_rule: tenhou
   data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
   val_data_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
-  output: /home/naoyuki/mahjong01/RiichiEnv/models/grp/test01/grp_model.pth
+  output: /home/naoyuki/mahjong01/RiichiEnv/models/grp/test05/grp_model.pth
   device: cuda
   batch_size: 512
   num_workers: 32
