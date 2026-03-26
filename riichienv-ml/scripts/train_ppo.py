@@ -10,7 +10,12 @@ Usage:
 """
 import argparse
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv():
+        return False
+
 load_dotenv()
 
 from riichienv_ml.config import load_config

@@ -12,27 +12,35 @@ from pathlib import Path
 
 import torch.multiprocessing
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv():
+        return False
+
 load_dotenv()
 
 from riichienv_ml.config import load_config
 from riichienv_ml.utils import setup_logging, init_wandb
-from riichienv_ml.trainers.bc_logs import Trainer
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Offline BC model")
     parser.add_argument("-c", "--config", type=str, required=True, help="Path to config YAML")
     parser.add_argument("--data_glob", type=str, default=None, help="Glob path for training data")
+    parser.add_argument("--val_data_glob", type=str, default=None, help="Glob path for validation data")
     parser.add_argument("--grp_model", type=str, default=None, help="Path to reward model")
     parser.add_argument("--output", type=str, default=None, help="Output model path")
+    parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--lr_min", type=float, default=None)
     parser.add_argument("--alpha", type=float, default=None, help="CQL Scale")
     parser.add_argument("--gamma", type=float, default=None)
     parser.add_argument("--num_epochs", type=int, default=None)
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--label_smoothing", type=float, default=None)
     parser.add_argument("--num_blocks", type=int, default=None)
     parser.add_argument("--conv_channels", type=int, default=None)
     parser.add_argument("--fc_dim", type=int, default=None)
@@ -45,8 +53,8 @@ def main():
 
     # Override config with CLI args
     overrides = {}
-    for field in ["data_glob", "grp_model", "output", "batch_size", "lr", "alpha",
-                  "gamma", "num_epochs", "num_workers", "limit"]:
+    for field in ["data_glob", "val_data_glob", "grp_model", "output", "device", "batch_size", "lr", "lr_min", "alpha",
+                  "gamma", "num_epochs", "num_workers", "limit", "label_smoothing"]:
         val = getattr(args, field, None)
         if val is not None:
             overrides[field] = val
@@ -102,29 +110,58 @@ def main():
         trainer.train(cfg.output)
         return
 
-    trainer = Trainer(
-        grp_model_path=cfg.grp_model,
-        pts_weight=cfg.pts_weight,
-        data_glob=cfg.data_glob,
-        device_str=cfg.device,
-        gamma=cfg.gamma,
-        batch_size=cfg.batch_size,
-        lr=cfg.lr,
-        alpha=cfg.alpha,
-        limit=cfg.limit,
-        num_epochs=cfg.num_epochs,
-        num_workers=cfg.num_workers,
-        weight_decay=cfg.weight_decay,
-        aux_weight=cfg.aux_weight,
-        model_config=cfg.model.model_dump(),
-        model_class=cfg.model_class,
-        dataset_class=cfg.dataset_class,
-        encoder_class=cfg.encoder_class,
-        n_players=game.n_players,
-        replay_rule=game.replay_rule,
-        tile_dim=game.tile_dim,
-        evaluator_config=cfg.evaluator,
-    )
+    if cfg.offline_algorithm == "behavior_cloning":
+        from riichienv_ml.trainers.bc_policy import BCPolicyTrainer
+
+        trainer = BCPolicyTrainer(
+            data_glob=cfg.data_glob,
+            val_data_glob=cfg.val_data_glob,
+            device_str=cfg.device,
+            batch_size=cfg.batch_size,
+            lr=cfg.lr,
+            lr_min=cfg.lr_min,
+            limit=cfg.limit,
+            num_epochs=cfg.num_epochs,
+            num_workers=cfg.num_workers,
+            weight_decay=cfg.weight_decay,
+            label_smoothing=cfg.label_smoothing,
+            max_grad_norm=cfg.max_grad_norm,
+            model_config=cfg.model.model_dump(),
+            model_class=cfg.model_class,
+            dataset_class=cfg.dataset_class,
+            encoder_class=cfg.encoder_class,
+            n_players=game.n_players,
+            replay_rule=game.replay_rule,
+            tile_dim=game.tile_dim,
+            evaluator_config=cfg.evaluator,
+        )
+    else:
+        from riichienv_ml.trainers.bc_logs import Trainer
+
+        trainer = Trainer(
+            grp_model_path=cfg.grp_model,
+            pts_weight=cfg.pts_weight,
+            data_glob=cfg.data_glob,
+            val_data_glob=cfg.val_data_glob,
+            device_str=cfg.device,
+            gamma=cfg.gamma,
+            batch_size=cfg.batch_size,
+            lr=cfg.lr,
+            alpha=cfg.alpha,
+            limit=cfg.limit,
+            num_epochs=cfg.num_epochs,
+            num_workers=cfg.num_workers,
+            weight_decay=cfg.weight_decay,
+            aux_weight=cfg.aux_weight,
+            model_config=cfg.model.model_dump(),
+            model_class=cfg.model_class,
+            dataset_class=cfg.dataset_class,
+            encoder_class=cfg.encoder_class,
+            n_players=game.n_players,
+            replay_rule=game.replay_rule,
+            tile_dim=game.tile_dim,
+            evaluator_config=cfg.evaluator,
+        )
     trainer.train(cfg.output)
 
 

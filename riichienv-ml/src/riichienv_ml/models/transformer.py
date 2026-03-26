@@ -38,6 +38,7 @@ class TransformerActorCritic(nn.Module):
         num_actions: int = 82,
         # Policy head type: "cls" (V2) or "cross_attn" (V3)
         policy_head_type: str = "cross_attn",
+        emit_value: bool = True,
         # Embedding sub-dimensions (asymmetric)
         d_sub: int | None = None,   # V1 compat: if set, d_type=d_other=d_sub
         d_type: int = 96,           # type field embedding dim
@@ -56,6 +57,7 @@ class TransformerActorCritic(nn.Module):
         self.d_model = d_model
         self.num_actions = num_actions
         self.policy_head_type = policy_head_type
+        self.emit_value = emit_value
 
         # V1 backward compat: uniform d_sub overrides asymmetric dims
         if d_sub is not None:
@@ -136,11 +138,13 @@ class TransformerActorCritic(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, num_actions),
         )
-        self.value_head = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.GELU(),
-            nn.Linear(d_model, 1),
-        )
+        self.value_head = None
+        if self.emit_value:
+            self.value_head = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                nn.GELU(),
+                nn.Linear(d_model, 1),
+            )
 
         self._init_weights()
 
@@ -180,7 +184,7 @@ class TransformerActorCritic(nn.Module):
         return sparse, numeric, prog, cand, sparse_mask, prog_mask, cand_mask
 
     # ------------------------------------------------------------------
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         B = x.shape[0]
         sparse, numeric, prog, cand, sparse_mask, prog_mask, cand_mask = \
             self._unpack(x)
@@ -232,9 +236,8 @@ class TransformerActorCritic(nn.Module):
         output = self.transformer(tokens, src_key_padding_mask=pad_mask)
         output = self.final_norm(output)
 
-        # CLS output → value (always from CLS)
+        # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
-        value = self.value_head(cls_out)
 
         # Policy head
         if self.policy_head_type == "cross_attn":
@@ -251,5 +254,15 @@ class TransformerActorCritic(nn.Module):
             policy_input = cls_out
 
         logits = self.policy_head(policy_input)
+        if not self.emit_value:
+            return logits
 
+        value = self.value_head(cls_out)
         return logits, value.squeeze(-1)
+
+
+class TransformerPolicyNetwork(TransformerActorCritic):
+    """Policy-only transformer over packed sequence features."""
+
+    def __init__(self, **kwargs):
+        super().__init__(emit_value=False, **kwargs)

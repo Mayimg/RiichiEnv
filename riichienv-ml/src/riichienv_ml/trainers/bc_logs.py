@@ -74,6 +74,7 @@ class Trainer:
         grp_model_path: str,
         pts_weight: list,
         data_glob: str,
+        val_data_glob: str = "",
         device_str: str = "cuda",
         gamma: float = 0.99,
         batch_size: int = 32,
@@ -96,6 +97,7 @@ class Trainer:
         self.grp_model_path = grp_model_path
         self.pts_weight = pts_weight
         self.data_glob = data_glob
+        self.val_data_glob = val_data_glob
         self.device_str = device_str
         self.device = torch.device(device_str)
         self.gamma = gamma

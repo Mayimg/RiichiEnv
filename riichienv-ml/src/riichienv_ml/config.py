@@ -90,6 +90,7 @@ class WandbConfig(BaseModel):
     wandb_project: str = "riichienv"
     wandb_tags: list[str] = []
     wandb_group: str | None = None
+    wandb_mode: Literal["online", "offline", "disabled"] = "online"
 
 
 class OpponentConfig(BaseModel):
@@ -124,7 +125,8 @@ class OfflineTrainConfig(WandbConfig):
     """Shared config for offline BC and CQL training."""
     game: GameConfig = GameConfig()
     data_glob: str = "/data/mjsoul/mjsoul-4p/2024/**/*.jsonl.gz"
-    grp_model: str = "./grp_model.pth"
+    val_data_glob: str = ""
+    grp_model: str | None = "./grp_model.pth"
     output: str = "bc_model.pth"
     device: str = "cuda"
     batch_size: int = 32
@@ -149,8 +151,10 @@ class OfflineTrainConfig(WandbConfig):
 class BcConfig(OfflineTrainConfig):
     # Online teacher BC (vs offline logs BC)
     online: bool = False
+    offline_algorithm: Literal["cql", "behavior_cloning"] = "cql"
     # LR scheduler
     lr_min: float = 1e-5
+    label_smoothing: float = 0.0
     warmup_steps: int = 0               # linear warmup (in collection rounds, same unit as num_steps)
     max_grad_norm: float = 10.0         # gradient clipping max norm
     # Online teacher settings (used when online=True)

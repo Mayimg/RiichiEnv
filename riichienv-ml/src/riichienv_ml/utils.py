@@ -105,6 +105,7 @@ def init_wandb(
         config=run_config,
         save_code=True,
         dir=wandb_dir,
+        mode=getattr(cfg, "wandb_mode", "online"),
     )
 
     # Upload config YAML as artifact

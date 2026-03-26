@@ -130,6 +130,58 @@ class MCDataset(BaseDataset):
             logger.warning("Skipped %d / %d replay files due to errors", skipped, total)
 
 
+class BehaviorCloningDataset(BaseDataset):
+    """Yields (features, action_id, mask) tuples for pure action cloning."""
+
+    def __iter__(self):
+        files = self._get_files()
+        if self.is_train:
+            random.shuffle(files)
+
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is not None:
+            files = files[worker_info.id::worker_info.num_workers]
+
+        skipped = 0
+        total = len(files)
+
+        for file_path in files:
+            try:
+                replay = MjaiReplay.from_jsonl(file_path, rule=self.replay_rule)
+            except (RuntimeError, ValueError) as e:
+                logger.warning("Skipping unparseable replay: %s: %s", file_path, e)
+                skipped += 1
+                continue
+
+            buffer = []
+
+            try:
+                for kyoku in replay.take_kyokus():
+                    for player_id in range(self.n_players):
+                        for obs, action in kyoku.steps(player_id):
+                            features = self.encoder.encode(obs)
+                            action_id = action.encode()
+
+                            mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
+                            assert 0 <= action_id < mask.shape[0], (
+                                f"action_id should be in [0, {mask.shape[0]})"
+                            )
+                            assert mask[action_id] == 1, f"action_id {action_id} should be legal"
+                            buffer.append((features, action_id, mask))
+            except (RuntimeError, ValueError) as e:
+                logger.warning("Skipping replay due to error: %s: %s", file_path, e)
+                skipped += 1
+                continue
+
+            if self.is_train:
+                random.shuffle(buffer)
+
+            yield from buffer
+
+        if skipped > 0:
+            logger.warning("Skipped %d / %d replay files due to errors", skipped, total)
+
+
 class DiscardHistoryDataset(MCDataset):
     """MCDataset with discard history decay features (78 channels)."""
     pass
