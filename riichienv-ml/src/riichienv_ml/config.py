@@ -262,12 +262,57 @@ class HandPredConfig(WandbConfig):
     val_step_interval: int = 20000  # run validation & save checkpoint every N steps
 
 
+class SelfMatchAgentConfig(BaseModel):
+    config_path: str
+    model_path: str
+    device: str = "cuda"
+    name: str | None = None
+
+
+class SelfMatchConfig(BaseModel):
+    game: GameConfig = GameConfig(n_players=4, replay_rule="tenhou")
+    agents: list[SelfMatchAgentConfig] = []
+    output_dir: str = "data/self_match/BC/test01"
+    summary_path: str | None = None
+    num_games: int = 1000
+    base_seed: int = 0
+    seed_stride: int = 1
+    progress_interval: int = 10
+    overwrite: bool = False
+    compress_logs: bool = False
+    skip_mjai_logging: bool = False
+    validate_saved_logs: bool = False
+
+    @model_validator(mode="after")
+    def validate_agents(self) -> SelfMatchConfig:
+        if not self.agents:
+            raise ValueError("self_match.agents must contain at least one agent config")
+        if len(self.agents) not in (1, self.game.n_players):
+            raise ValueError(
+                f"self_match.agents must contain either 1 or {self.game.n_players} entries "
+                f"(got {len(self.agents)})"
+            )
+        if self.num_games <= 0:
+            raise ValueError("self_match.num_games must be > 0")
+        if self.progress_interval <= 0:
+            raise ValueError("self_match.progress_interval must be > 0")
+        return self
+
+
 class Config(BaseModel):
     grp: GrpConfig = GrpConfig()
     bc: BcConfig = BcConfig()
     cql: CqlConfig = CqlConfig()
     ppo: PpoConfig = PpoConfig()
     hand_pred: HandPredConfig = HandPredConfig()
+    self_match: SelfMatchConfig = SelfMatchConfig(
+        agents=[
+            SelfMatchAgentConfig(
+                config_path="riichienv-ml/src/riichienv_ml/configs/4p/bc_tenhou_seq_test01.yml",
+                model_path="models/behavior_cloning/test01/model.pth",
+            )
+        ]
+    )
 
 
 def load_config(path: str) -> Config:

@@ -20,7 +20,12 @@ uv run --package riichienv-ml python riichienv-ml/scripts/train_ppo.py -c riichi
 # Offline behavior cloning with sequence_features (Tenhou 4P hanchan)
 uv run --package riichienv-ml python riichienv-ml/scripts/train_bc.py \
   -c riichienv-ml/src/riichienv_ml/configs/4p/bc_tenhou_seq_test01.yml
+
+# Self-match and save MJAI logs
+uv run --package riichienv-ml python riichienv-ml/scripts/run_self_match.py \
+  -c riichienv-ml/src/riichienv_ml/configs/4p/self_match_bc_test01.yml
 ```
 
 The Tenhou behavior cloning config writes the model, log file, and offline W&B run data under
 `models/behavior_cloning/test01/`.
+The self-match config writes MJAI logs and a summary under `data/self_match/BC/test01/`.
