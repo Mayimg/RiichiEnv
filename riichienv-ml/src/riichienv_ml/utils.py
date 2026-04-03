@@ -2,9 +2,11 @@ import os
 import subprocess
 import sys
 import tempfile
+import warnings
 from datetime import datetime
 from pathlib import Path
 
+import torch
 import wandb
 from loguru import logger
 
@@ -139,6 +141,40 @@ def init_wandb(
         f"commit={git.get('git_commit', 'N/A')[:8]} dirty={git.get('git_dirty', 'N/A')}"
     )
     return run
+
+
+def load_torch_state_dict(path: str, map_location: str | torch.device = "cpu") -> dict:
+    """Load a model state dict from a raw or wrapped checkpoint."""
+    try:
+        state = torch.load(path, map_location=map_location, weights_only=True)
+    except TypeError:
+        state = torch.load(path, map_location=map_location)
+
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+    elif isinstance(state, dict) and "model_state_dict" in state:
+        state = state["model_state_dict"]
+
+    if not isinstance(state, dict):
+        raise ValueError(f"Checkpoint at {path} does not contain a state dict")
+    return state
+
+
+def load_model_weights(
+    model: torch.nn.Module,
+    path: str,
+    map_location: str | torch.device = "cpu",
+    strict: bool = False,
+):
+    """Load weights into ``model`` and log missing/unexpected keys."""
+    state = load_torch_state_dict(path, map_location=map_location)
+    result = model.load_state_dict(state, strict=strict)
+    if result.missing_keys:
+        warnings.warn(f"Missing keys when loading weights from {path}: {result.missing_keys}")
+    if result.unexpected_keys:
+        warnings.warn(f"Unexpected keys when loading weights from {path}: {result.unexpected_keys}")
+    logger.info(f"Loaded initial weights from {path}")
+    return result
 
 
 class AverageMeter(object):

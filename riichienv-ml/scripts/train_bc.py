@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data_glob", type=str, default=None, help="Glob path for training data")
     parser.add_argument("--val_data_glob", type=str, default=None, help="Glob path for validation data")
     parser.add_argument("--grp_model", type=str, default=None, help="Path to reward model")
+    parser.add_argument("--load_model", type=str, default=None, help="Path to initial model weights")
     parser.add_argument("--output", type=str, default=None, help="Output model path")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
@@ -53,7 +54,7 @@ def main():
 
     # Override config with CLI args
     overrides = {}
-    for field in ["data_glob", "val_data_glob", "grp_model", "output", "device", "batch_size", "lr", "lr_min", "alpha",
+    for field in ["data_glob", "val_data_glob", "grp_model", "load_model", "output", "device", "batch_size", "lr", "lr_min", "alpha",
                   "gamma", "num_epochs", "num_workers", "limit", "label_smoothing"]:
         val = getattr(args, field, None)
         if val is not None:
@@ -81,6 +82,7 @@ def main():
         trainer = BCModelTrainer(
             grp_model_path=cfg.grp_model,
             pts_weight=cfg.pts_weight,
+            load_model=cfg.load_model,
             device_str=cfg.device,
             gamma=cfg.gamma,
             batch_size=cfg.batch_size,
@@ -116,6 +118,7 @@ def main():
         trainer = BCPolicyTrainer(
             data_glob=cfg.data_glob,
             val_data_glob=cfg.val_data_glob,
+            load_model=cfg.load_model,
             device_str=cfg.device,
             batch_size=cfg.batch_size,
             lr=cfg.lr,
@@ -143,6 +146,7 @@ def main():
             pts_weight=cfg.pts_weight,
             data_glob=cfg.data_glob,
             val_data_glob=cfg.val_data_glob,
+            load_model=cfg.load_model,
             device_str=cfg.device,
             gamma=cfg.gamma,
             batch_size=cfg.batch_size,

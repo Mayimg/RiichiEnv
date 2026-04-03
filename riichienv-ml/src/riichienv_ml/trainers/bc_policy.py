@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 
 from riichienv_ml.config import import_class
 from riichienv_ml.trainers.bc_logs import _create_evaluator
-from riichienv_ml.utils import AverageMeter
+from riichienv_ml.utils import AverageMeter, load_model_weights
 
 
 def _move_to_device(value: Any, device: torch.device):
@@ -45,6 +45,7 @@ class BCPolicyTrainer:
         self,
         data_glob: str,
         val_data_glob: str = "",
+        load_model: str | None = None,
         device_str: str = "cuda",
         batch_size: int = 32,
         lr: float = 1e-4,
@@ -66,6 +67,7 @@ class BCPolicyTrainer:
     ):
         self.data_glob = data_glob
         self.val_data_glob = val_data_glob
+        self.load_model = load_model
         self.device_str = device_str
         self.device = torch.device(device_str)
         self.batch_size = batch_size
@@ -184,6 +186,8 @@ class BCPolicyTrainer:
 
         ModelClass = import_class(self.model_class)
         model = ModelClass(**self.model_config).to(self.device)
+        if self.load_model:
+            load_model_weights(model, self.load_model, map_location=self.device)
         optimizer = optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scheduler = CosineAnnealingLR(optimizer, T_max=max(self.limit, 1), eta_min=self.lr_min)
         model.train()

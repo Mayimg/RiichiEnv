@@ -1,0 +1,35 @@
+bc:
+  game:
+    n_players: 4
+    replay_rule: tenhou
+  online: false
+  offline_algorithm: behavior_cloning
+  data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
+  val_data_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
+  load_model: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test03/model.pth
+  output: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test04/model.pth
+  device: cuda
+  batch_size: 64
+  lr: 1e-6
+  lr_min: 8e-7
+  num_epochs: 1
+  num_workers: 8
+  limit: 200000
+  weight_decay: 0.01
+  label_smoothing: 0.0
+  max_grad_norm: 10.0
+  wandb_entity: smly
+  wandb_project: riichienv-4p
+  wandb_tags: [offline, behavior_cloning, transformer, sequence_features, tenhou, finetune]
+  wandb_mode: offline
+  model_class: riichienv_ml.models.transformer.TransformerPolicyNetwork
+  dataset_class: riichienv_ml.datasets.mjai_logs.BehaviorCloningDataset
+  encoder_class: riichienv_ml.features.sequence_features.SequenceFeaturePackedEncoder
+  model:
+    d_model: 384
+    nhead: 8
+    num_layers: 6
+    dim_feedforward: 1536
+    dropout: 0.1
+    num_actions: 82
+    policy_head_type: cross_attn

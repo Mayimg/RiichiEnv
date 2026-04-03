@@ -23,6 +23,7 @@ import wandb
 from riichienv_ml.config import import_class
 from riichienv_ml.teacher import load_teacher_worker_class
 from riichienv_ml.trainers.bc_logs import _create_evaluator
+from riichienv_ml.utils import load_model_weights
 
 
 class BCModelTrainer:
@@ -30,6 +31,7 @@ class BCModelTrainer:
         self,
         grp_model_path: str,
         pts_weight: list,
+        load_model: str | None = None,
         device_str: str = "cuda",
         gamma: float = 1.0,
         batch_size: int = 128,
@@ -59,6 +61,7 @@ class BCModelTrainer:
     ):
         self.grp_model_path = grp_model_path
         self.pts_weight = pts_weight
+        self.load_model = load_model
         self.device_str = device_str
         self.device = torch.device(device_str)
         self.gamma = gamma
@@ -227,6 +230,8 @@ class BCModelTrainer:
         # 3. Student model + optimizer (main process, GPU)
         ModelClass = import_class(self.model_class)
         model = ModelClass(**self.model_config).to(self.device)
+        if self.load_model:
+            load_model_weights(model, self.load_model, map_location=self.device)
         optimizer = optim.AdamW(
             model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         # Scheduler will be created after first batch (need actual transition count)

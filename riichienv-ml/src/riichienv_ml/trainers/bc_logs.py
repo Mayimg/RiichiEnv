@@ -14,7 +14,7 @@ import wandb
 
 from riichienv_ml.config import import_class
 from riichienv_ml.models.grp_model import RewardPredictor
-from riichienv_ml.utils import AverageMeter
+from riichienv_ml.utils import AverageMeter, load_model_weights
 
 
 def _create_evaluator(cfg_kwargs: dict, model_config: dict):
@@ -75,6 +75,7 @@ class Trainer:
         pts_weight: list,
         data_glob: str,
         val_data_glob: str = "",
+        load_model: str | None = None,
         device_str: str = "cuda",
         gamma: float = 0.99,
         batch_size: int = 32,
@@ -98,6 +99,7 @@ class Trainer:
         self.pts_weight = pts_weight
         self.data_glob = data_glob
         self.val_data_glob = val_data_glob
+        self.load_model = load_model
         self.device_str = device_str
         self.device = torch.device(device_str)
         self.gamma = gamma
@@ -175,6 +177,8 @@ class Trainer:
 
         ModelClass = import_class(self.model_class)
         model = ModelClass(**self.model_config).to(self.device)
+        if self.load_model:
+            load_model_weights(model, self.load_model, map_location=self.device)
         has_aux = hasattr(model, 'aux_head') and model.aux_head is not None
 
         optimizer = optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)

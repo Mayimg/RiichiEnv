@@ -152,6 +152,7 @@ class BcConfig(OfflineTrainConfig):
     # Online teacher BC (vs offline logs BC)
     online: bool = False
     offline_algorithm: Literal["cql", "behavior_cloning"] = "cql"
+    load_model: str | None = None
     # LR scheduler
     lr_min: float = 1e-5
     label_smoothing: float = 0.0

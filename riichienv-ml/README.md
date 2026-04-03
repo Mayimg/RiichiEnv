@@ -21,6 +21,10 @@ uv run --package riichienv-ml python riichienv-ml/scripts/train_ppo.py -c riichi
 uv run --package riichienv-ml python riichienv-ml/scripts/train_bc.py \
   -c riichienv-ml/src/riichienv_ml/configs/4p/bc_tenhou_seq_test01.yml
 
+# Continue training from an existing BC checkpoint
+uv run --package riichienv-ml python riichienv-ml/scripts/train_bc.py \
+  -c riichienv-ml/src/riichienv_ml/configs/4p/bc_tenhou_seq_test02.yml
+
 # Self-match and save MJAI logs
 uv run --package riichienv-ml python riichienv-ml/scripts/run_self_match.py \
   -c riichienv-ml/src/riichienv_ml/configs/4p/self_match_bc_test01.yml
@@ -28,4 +32,6 @@ uv run --package riichienv-ml python riichienv-ml/scripts/run_self_match.py \
 
 The Tenhou behavior cloning config writes the model, log file, and offline W&B run data under
 `models/behavior_cloning/test01/`.
+The continued-training config shows how to load an existing BC checkpoint via `load_model` and save the
+next run to a separate output path.
 The self-match config writes MJAI logs and a summary under `data/self_match/BC/test01/`.
