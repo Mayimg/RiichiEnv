@@ -247,8 +247,11 @@ class BCPolicyTrainer:
         step: int,
         epoch: int,
     ) -> tuple[dict[str, float], int]:
+        log_interval = 100
         loss_meter = AverageMeter("loss", ":.4f")
         acc_meter = AverageMeter("acc", ":.4f")
+        window_loss_meter = AverageMeter("window_loss", ":.4f")
+        window_acc_meter = AverageMeter("window_acc", ":.4f")
 
         for batch_idx, (features, actions, masks) in enumerate(dataloader):
             features = _move_to_device(features, self.device)
@@ -271,16 +274,23 @@ class BCPolicyTrainer:
             batch_size = actions.size(0)
             loss_meter.update(loss.item(), batch_size)
             acc_meter.update(acc, batch_size)
+            window_loss_meter.update(loss.item(), batch_size)
+            window_acc_meter.update(acc, batch_size)
 
-            if step % 100 == 0:
+            if step % log_interval == 0:
                 logger.info(
-                    "Epoch {} Step {} Batch {}: train/loss={:.4f} train/acc={:.4f}",
+                    "Epoch {} Step {} Batch {}: train/loss={:.4f} train/acc={:.4f} "
+                    "train/window100_loss={:.4f} train/window100_acc={:.4f}",
                     epoch,
                     step,
                     batch_idx,
                     loss_meter.avg,
                     acc_meter.avg,
+                    window_loss_meter.avg,
+                    window_acc_meter.avg,
                 )
+                window_loss_meter.reset()
+                window_acc_meter.reset()
 
             step += 1
             if step >= self.limit:

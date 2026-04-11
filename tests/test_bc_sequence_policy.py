@@ -1,11 +1,15 @@
 import json
+import re
 
 import torch
+import torch.nn.functional as F
+import pytest
 
 from riichienv import MjaiReplay
 from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
 from riichienv_ml.features.sequence_features import SequenceFeaturePackedEncoder
 from riichienv_ml.models.transformer import TransformerActorCritic, TransformerPolicyNetwork
+import riichienv_ml.trainers.bc_policy as bc_policy_module
 
 
 class DummyEncoder:
@@ -126,3 +130,71 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
     logits = model(features)
 
     assert logits.shape == (1, 82)
+
+
+def test_bc_policy_trainer_logs_recent_100_batch_metrics(monkeypatch):
+    class DummyLogger:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, message, *args):
+            if args:
+                message = message.format(*args)
+            self.messages.append(message)
+
+    trainer = object.__new__(bc_policy_module.BCPolicyTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.label_smoothing = 0.0
+    trainer.max_grad_norm = 10.0
+    trainer.limit = 101
+
+    model = torch.nn.Linear(2, 2, bias=False)
+    with torch.no_grad():
+        model.weight.copy_(torch.eye(2))
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+
+    easy_batch = (
+        torch.tensor([[5.0, 0.0]], dtype=torch.float32),
+        torch.tensor([0]),
+        torch.ones(1, 2, dtype=torch.float32),
+    )
+    hard_batch = (
+        torch.tensor([[0.0, 5.0]], dtype=torch.float32),
+        torch.tensor([0]),
+        torch.ones(1, 2, dtype=torch.float32),
+    )
+    dataloader = [easy_batch, *([hard_batch] * 100)]
+
+    dummy_logger = DummyLogger()
+    monkeypatch.setattr(bc_policy_module, "logger", dummy_logger)
+
+    metrics, step = trainer._train_epoch(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        step=0,
+        epoch=0,
+    )
+
+    assert step == 101
+    assert metrics["train/acc"] == pytest.approx(1 / 101, abs=1e-6)
+
+    step_100_log = next(msg for msg in dummy_logger.messages if "Step 100" in msg)
+    match = re.search(
+        r"train/loss=(?P<loss>\d+\.\d+) train/acc=(?P<acc>\d+\.\d+) "
+        r"train/window100_loss=(?P<window_loss>\d+\.\d+) train/window100_acc=(?P<window_acc>\d+\.\d+)",
+        step_100_log,
+    )
+    assert match is not None
+
+    loss_first = F.cross_entropy(torch.tensor([[5.0, 0.0]]), torch.tensor([0])).item()
+    loss_recent = F.cross_entropy(torch.tensor([[0.0, 5.0]]), torch.tensor([0])).item()
+    loss_cumulative = (loss_first + 100 * loss_recent) / 101
+
+    assert float(match["loss"]) == pytest.approx(loss_cumulative, abs=1e-4)
+    assert float(match["acc"]) == pytest.approx(1 / 101, abs=1e-4)
+    assert float(match["window_loss"]) == pytest.approx(loss_recent, abs=1e-4)
+    assert float(match["window_acc"]) == pytest.approx(0.0, abs=1e-4)

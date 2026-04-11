@@ -3,12 +3,12 @@ self_match:
     n_players: 4
     replay_rule: tenhou
   agents:
-    - name: bc-sequence-transformer-test01
-      config_path: /home/naoyuki/mahjong01/RiichiEnv/riichienv-ml/src/riichienv_ml/configs/4p/bc_tenhou_seq_test01.yml
-      model_path: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test01/model.pth
+    - name: bc-sequence-transformer-test03
+      config_path: /home/naoyuki/mahjong01/RiichiEnv/riichienv-ml/src/riichienv_ml/configs/4p/bc_tenhou_seq_test02.yml
+      model_path: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test04/model.pth
       device: cuda
-  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test01
-  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test01/summary.json
+  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test03
+  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test03/summary.json
   num_games: 1000
   base_seed: 0
   seed_stride: 1
