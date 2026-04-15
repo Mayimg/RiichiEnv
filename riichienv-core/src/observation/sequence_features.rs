@@ -15,9 +15,9 @@ use super::Observation;
 // ── Constants ────────────────────────────────────────────────────────────────
 // These constants are `pub` for Python-side consumption (see riichienv-ml).
 #[allow(dead_code)]
-pub const SPARSE_VOCAB_SIZE: usize = 442;
+pub const SPARSE_VOCAB_SIZE: usize = 343;
 #[allow(dead_code)]
-pub const SPARSE_PAD: u16 = 441;
+pub const SPARSE_PAD: u16 = 342;
 pub const MAX_SPARSE_LEN: usize = 25;
 
 /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
@@ -325,9 +325,9 @@ impl Observation {
     /// - 9-12: ju / dealer round (0-3)
     /// - 13-82: tiles remaining (0-69)
     /// - 83-267: dora indicators (5 slots × 37 tiles)
-    /// - 268-403: hand tile instances (tile_id 0-135 → offset 268 + instance index)
-    /// - 404-440: drawn tile (kan37)
-    /// - 441: padding
+    /// - 268-304: hand tile types (kan37, red fives distinct)
+    /// - 305-341: drawn tile (kan37)
+    /// - 342: padding
     pub fn encode_seq_sparse(&self, game_style: u8) -> Vec<u16> {
         let mut tokens: Vec<u16> = Vec::with_capacity(MAX_SPARSE_LEN);
 
@@ -356,22 +356,21 @@ impl Observation {
             tokens.push(83 + (i as u16) * 37 + k37 as u16);
         }
 
-        // 7. Hand tiles (offset 268-403)
-        // Use tile_id as 136-space instance index, but mapped to
-        // a compact hand representation. We encode each tile in hand
-        // as offset 268 + tile_id (0-135). Max ~14 tiles.
+        // 7. Hand tiles (offset 268-304)
+        // Encode each tile in hand by kan37 so identical tile types share
+        // the same sparse token regardless of physical tile instance.
         let my_hand = &self.hands[self.player_id as usize];
         for &tid in my_hand {
-            let tid = tid as u16;
             if tid < 136 {
-                tokens.push(268 + tid);
+                let k37 = tile_id_to_kan37(tid);
+                tokens.push(268 + k37 as u16);
             }
         }
 
-        // 8. Drawn tile (offset 404-440)
+        // 8. Drawn tile (offset 305-341)
         if let Some(drawn) = self.get_drawn_tile() {
             let k37 = tile_id_to_kan37(drawn as u32);
-            tokens.push(404 + k37 as u16);
+            tokens.push(305 + k37 as u16);
         }
 
         tokens
@@ -931,16 +930,31 @@ mod tests {
     #[test]
     fn test_sparse_vocab_bounds() {
         // Verify all sparse offsets are within vocab
-        assert!(441 < SPARSE_VOCAB_SIZE as u16);
+        assert!(342 < SPARSE_VOCAB_SIZE as u16);
 
         // Dora max: 83 + 4*37 + 36 = 83 + 148 + 36 = 267
         assert!(83 + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
 
-        // Hand max: 268 + 135 = 403
-        assert!(268 + 135 < SPARSE_VOCAB_SIZE as u16);
+        // Hand max: 268 + 36 = 304
+        assert!(268 + 36 < SPARSE_VOCAB_SIZE as u16);
 
-        // Drawn tile max: 404 + 36 = 440
-        assert!(404 + 36 < SPARSE_VOCAB_SIZE as u16);
+        // Drawn tile max: 305 + 36 = 341
+        assert!(305 + 36 < SPARSE_VOCAB_SIZE as u16);
+    }
+
+    #[test]
+    fn test_hand_sparse_tokens_use_tile_type_not_instance() {
+        // 1m copies should collapse to the same hand token.
+        let t0 = 268 + tile_id_to_kan37(0) as u16;
+        let t1 = 268 + tile_id_to_kan37(1) as u16;
+        let t3 = 268 + tile_id_to_kan37(3) as u16;
+        assert_eq!(t0, t1);
+        assert_eq!(t1, t3);
+
+        // Red 5m and normal 5m should remain distinct.
+        let red_5m = 268 + tile_id_to_kan37(16) as u16;
+        let normal_5m = 268 + tile_id_to_kan37(17) as u16;
+        assert_ne!(red_5m, normal_5m);
     }
 
     #[test]

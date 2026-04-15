@@ -24,8 +24,8 @@ class SequenceFeatureEncoder:
         cand_mask:   (MAX_CAND_LEN,)     bool    True for real entries
     """
 
-    SPARSE_VOCAB_SIZE = 442
-    SPARSE_PAD = 441
+    SPARSE_VOCAB_SIZE = 343
+    SPARSE_PAD = 342
     MAX_SPARSE_LEN = 25
 
     PROG_DIMS = (5, 277, 3, 3, 5)
