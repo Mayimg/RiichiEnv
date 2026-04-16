@@ -9,15 +9,16 @@
 
 use crate::action::{Action, ActionType};
 use crate::parser::mjai_to_tid;
+use crate::types::{Meld, MeldType};
 
 use super::Observation;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 // These constants are `pub` for Python-side consumption (see riichienv-ml).
 #[allow(dead_code)]
-pub const SPARSE_VOCAB_SIZE: usize = 343;
+pub const SPARSE_VOCAB_SIZE: usize = 623;
 #[allow(dead_code)]
-pub const SPARSE_PAD: u16 = 342;
+pub const SPARSE_PAD: u16 = 622;
 pub const MAX_SPARSE_LEN: usize = 25;
 
 /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
@@ -36,6 +37,11 @@ pub const MAX_CAND_LEN: usize = 64;
 pub const CAND_PAD: [u16; 4] = [279, 2, 2, 3];
 
 pub const NUM_NUMERIC: usize = 12;
+
+const SPARSE_DORA_OFFSET: u16 = 83;
+const SPARSE_CONCEALED_HAND_OFFSET: u16 = 268;
+const SPARSE_DRAWN_HAND_OFFSET: u16 = SPARSE_CONCEALED_HAND_OFFSET + 37;
+const SPARSE_MELD_OFFSET: u16 = SPARSE_DRAWN_HAND_OFFSET + 37;
 
 // ── Tile conversions ─────────────────────────────────────────────────────────
 
@@ -189,6 +195,51 @@ fn relative_from(actor: u8, target: u8) -> u8 {
     ((target as i8 - actor as i8 + 3) % 4) as u8
 }
 
+fn split_meld_tiles(meld: &Meld) -> Option<(u8, Vec<u8>)> {
+    let called_tile = meld.called_tile?;
+    let called_k37 = tile_id_to_kan37(called_tile as u32);
+    let remove_idx = meld
+        .tiles
+        .iter()
+        .position(|&tile| tile_id_to_kan37(tile as u32) == called_k37)?;
+    let mut consumed = meld.tiles.clone();
+    consumed.remove(remove_idx);
+    Some((called_tile, consumed))
+}
+
+fn encode_meld_candidate_type(meld: &Meld) -> Option<u16> {
+    match meld.meld_type {
+        MeldType::Chi => {
+            let (called_tile, mut consumed) = split_meld_tiles(meld)?;
+            if consumed.len() < 2 {
+                return None;
+            }
+            consumed.sort();
+            Some(111 + encode_chi(&consumed, called_tile))
+        }
+        MeldType::Pon => {
+            let (called_tile, mut consumed) = split_meld_tiles(meld)?;
+            if consumed.len() < 2 {
+                return None;
+            }
+            consumed.sort();
+            Some(201 + encode_pon(&consumed, called_tile))
+        }
+        MeldType::Daiminkan => {
+            let called_tile = meld.called_tile?;
+            Some(241 + tile_id_to_kan37(called_tile as u32) as u16)
+        }
+        MeldType::Ankan => {
+            let first = *meld.tiles.first()?;
+            Some(37 + (first / 4) as u16)
+        }
+        MeldType::Kakan => {
+            let first = *meld.tiles.first()?;
+            Some(71 + tile_id_to_kan37(first as u32) as u16)
+        }
+    }
+}
+
 /// Parse "consumed" array from MJAI event JSON → Vec<u8> of tile IDs.
 fn parse_consumed_tids_from_value(v: &serde_json::Value) -> Vec<u8> {
     let mut tids = Vec::new();
@@ -325,9 +376,10 @@ impl Observation {
     /// - 9-12: ju / dealer round (0-3)
     /// - 13-82: tiles remaining (0-69)
     /// - 83-267: dora indicators (5 slots × 37 tiles)
-    /// - 268-304: hand tile types (kan37, red fives distinct)
-    /// - 305-341: drawn tile (kan37)
-    /// - 342: padding
+    /// - 268-304: concealed hand tiles (kan37, red fives distinct)
+    /// - 305-341: drawn hand tile (kan37)
+    /// - 342-621: meld tokens (candidate-style meld type indices)
+    /// - 622: padding
     pub fn encode_seq_sparse(&self, game_style: u8) -> Vec<u16> {
         let mut tokens: Vec<u16> = Vec::with_capacity(MAX_SPARSE_LEN);
 
@@ -353,24 +405,44 @@ impl Observation {
                 break;
             }
             let k37 = tile_id_to_kan37(dora_tid);
-            tokens.push(83 + (i as u16) * 37 + k37 as u16);
+            tokens.push(SPARSE_DORA_OFFSET + (i as u16) * 37 + k37 as u16);
         }
 
-        // 7. Hand tiles (offset 268-304)
-        // Encode each tile in hand by kan37 so identical tile types share
-        // the same sparse token regardless of physical tile instance.
+        // 7. Hand tiles (offset 268-341)
+        // Encode the visible hand as concealed tiles plus at most one drawn
+        // tile. The drawn tile stays in the same hand group, but uses a
+        // distinct draw-state range so we avoid duplicating it.
         let my_hand = &self.hands[self.player_id as usize];
+        let drawn_k37 = self
+            .get_drawn_tile()
+            .map(|drawn| tile_id_to_kan37(drawn as u32));
+        let mut drawn_consumed = false;
         for &tid in my_hand {
             if tid < 136 {
                 let k37 = tile_id_to_kan37(tid);
-                tokens.push(268 + k37 as u16);
+                if !drawn_consumed && drawn_k37 == Some(k37) {
+                    drawn_consumed = true;
+                    continue;
+                }
+                tokens.push(SPARSE_CONCEALED_HAND_OFFSET + k37 as u16);
             }
         }
 
-        // 8. Drawn tile (offset 305-341)
-        if let Some(drawn) = self.get_drawn_tile() {
-            let k37 = tile_id_to_kan37(drawn as u32);
-            tokens.push(305 + k37 as u16);
+        if let Some(k37) = drawn_k37 {
+            tokens.push(SPARSE_DRAWN_HAND_OFFSET + k37 as u16);
+        }
+
+        // 8. Melds (offset 342-621)
+        let mut meld_tokens: Vec<u16> = self.melds[self.player_id as usize]
+            .iter()
+            .filter_map(encode_meld_candidate_type)
+            .map(|type_idx| SPARSE_MELD_OFFSET + type_idx)
+            .collect();
+        meld_tokens.sort_unstable();
+        tokens.extend(meld_tokens);
+
+        if tokens.len() > MAX_SPARSE_LEN {
+            tokens.truncate(MAX_SPARSE_LEN);
         }
 
         tokens
@@ -839,6 +911,7 @@ impl Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Meld, MeldType};
 
     #[test]
     fn test_tile_id_to_kan37() {
@@ -930,31 +1003,139 @@ mod tests {
     #[test]
     fn test_sparse_vocab_bounds() {
         // Verify all sparse offsets are within vocab
-        assert!(342 < SPARSE_VOCAB_SIZE as u16);
+        assert!(SPARSE_PAD < SPARSE_VOCAB_SIZE as u16);
 
         // Dora max: 83 + 4*37 + 36 = 83 + 148 + 36 = 267
-        assert!(83 + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
+        assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
 
-        // Hand max: 268 + 36 = 304
-        assert!(268 + 36 < SPARSE_VOCAB_SIZE as u16);
+        // Concealed hand max: 268 + 36 = 304
+        assert!(SPARSE_CONCEALED_HAND_OFFSET + 36 < SPARSE_VOCAB_SIZE as u16);
 
-        // Drawn tile max: 305 + 36 = 341
-        assert!(305 + 36 < SPARSE_VOCAB_SIZE as u16);
+        // Drawn hand max: 305 + 36 = 341
+        assert!(SPARSE_DRAWN_HAND_OFFSET + 36 < SPARSE_VOCAB_SIZE as u16);
+
+        // Meld max: 342 + 279 = 621
+        assert!(SPARSE_MELD_OFFSET + 279 < SPARSE_VOCAB_SIZE as u16);
     }
 
     #[test]
     fn test_hand_sparse_tokens_use_tile_type_not_instance() {
         // 1m copies should collapse to the same hand token.
-        let t0 = 268 + tile_id_to_kan37(0) as u16;
-        let t1 = 268 + tile_id_to_kan37(1) as u16;
-        let t3 = 268 + tile_id_to_kan37(3) as u16;
+        let t0 = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(0) as u16;
+        let t1 = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(1) as u16;
+        let t3 = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(3) as u16;
         assert_eq!(t0, t1);
         assert_eq!(t1, t3);
 
         // Red 5m and normal 5m should remain distinct.
-        let red_5m = 268 + tile_id_to_kan37(16) as u16;
-        let normal_5m = 268 + tile_id_to_kan37(17) as u16;
+        let red_5m = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(16) as u16;
+        let normal_5m = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(17) as u16;
         assert_ne!(red_5m, normal_5m);
+    }
+
+    #[test]
+    fn test_encode_meld_candidate_type_matches_candidate_layout() {
+        let chi = Meld::new(MeldType::Chi, vec![0, 4, 8], true, 1, Some(0));
+        assert_eq!(encode_meld_candidate_type(&chi), Some(111));
+
+        let pon = Meld::new(MeldType::Pon, vec![108, 109, 110], true, 1, Some(108));
+        assert_eq!(encode_meld_candidate_type(&pon), Some(201 + 33));
+
+        let daiminkan = Meld::new(MeldType::Daiminkan, vec![0, 1, 2, 3], true, 1, Some(0));
+        assert_eq!(
+            encode_meld_candidate_type(&daiminkan),
+            Some(241 + tile_id_to_kan37(0) as u16)
+        );
+
+        let ankan = Meld::new(MeldType::Ankan, vec![72, 73, 74, 75], false, -1, None);
+        assert_eq!(
+            encode_meld_candidate_type(&ankan),
+            Some(37 + (72 / 4) as u16)
+        );
+
+        let kakan = Meld::new(MeldType::Kakan, vec![17, 18, 19, 16], true, -1, None);
+        assert_eq!(
+            encode_meld_candidate_type(&kakan),
+            Some(71 + tile_id_to_kan37(17) as u16)
+        );
+    }
+
+    #[test]
+    fn test_sparse_hand_moves_drawn_tile_into_hand_group() {
+        let obs = Observation::new(
+            0,
+            [vec![0, 1, 4], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![],
+            vec![r#"{"type":"tsumo","actor":0,"pai":"1m"}"#.to_string()],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+        );
+
+        let sparse = obs.encode_seq_sparse(1);
+        let concealed_1m = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(0) as u16;
+        let concealed_2m = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(4) as u16;
+        let drawn_1m = SPARSE_DRAWN_HAND_OFFSET + tile_id_to_kan37(0) as u16;
+
+        assert_eq!(sparse.iter().filter(|&&t| t == concealed_1m).count(), 1);
+        assert_eq!(sparse.iter().filter(|&&t| t == concealed_2m).count(), 1);
+        assert_eq!(sparse.iter().filter(|&&t| t == drawn_1m).count(), 1);
+    }
+
+    #[test]
+    fn test_sparse_includes_sorted_meld_tokens() {
+        let obs = Observation::new(
+            0,
+            [vec![36, 40, 44, 48], vec![], vec![], vec![]],
+            [
+                vec![
+                    Meld::new(MeldType::Pon, vec![108, 109, 110], true, 1, Some(108)),
+                    Meld::new(MeldType::Chi, vec![36, 40, 44], true, 1, Some(36)),
+                ],
+                vec![],
+                vec![],
+                vec![],
+            ],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![],
+            vec![],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+        );
+
+        let sparse = obs.encode_seq_sparse(1);
+        let meld_tokens: Vec<u16> = sparse
+            .into_iter()
+            .filter(|&t| (SPARSE_MELD_OFFSET..SPARSE_PAD).contains(&t))
+            .collect();
+
+        assert_eq!(
+            meld_tokens,
+            vec![SPARSE_MELD_OFFSET + 111, SPARSE_MELD_OFFSET + 234]
+        );
     }
 
     #[test]

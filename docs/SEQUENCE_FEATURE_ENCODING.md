@@ -52,7 +52,7 @@ Used for ankan encoding. Identity map: `tile_type (0-33)`.
 
 ## 1. Sparse Features
 
-**Vocabulary size: 343, max tokens: 25, padding index: 342**
+**Vocabulary size: 623, max tokens: 25, padding index: 622**
 
 Each observation produces 5-25 sparse tokens. Each token is an index into an embedding table.
 
@@ -64,16 +64,17 @@ Each observation produces 5-25 sparse tokens. Each token is an index into an emb
 | 9-12 | 4 | Ju / dealer round (0-3) | `obs.oya` |
 | 13-82 | 70 | Tiles remaining (0-69) | derived from visible tiles |
 | 83-267 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
-| 268-304 | 37 | Hand tile types (kan37 encoding) | `obs.hands[player_id]` |
-| 305-341 | 37 | Drawn tile (kan37 encoding) | last tsumo event |
-| 342 | 1 | Padding | - |
+| 268-304 | 37 | Concealed hand tiles (kan37 encoding) | `obs.hands[player_id]` minus drawn tile |
+| 305-341 | 37 | Drawn hand tile (kan37 encoding) | last tsumo event, folded into the hand group |
+| 342-621 | 280 | Meld tokens (candidate-style chi/pon/kan type ids) | `obs.melds[player_id]` |
+| 622 | 1 | Padding | - |
 
 **Token composition per observation:**
 - 4 fixed tokens (game style + seat + round wind + dealer)
 - 1 tiles-remaining token
 - 1-5 dora indicator tokens
-- ~13 hand tile tokens (varies with melds)
-- 0-1 drawn tile token
+- ~13 hand-or-drawn tile tokens (varies with melds)
+- 0-4 meld tokens
 - Total: typically 19-24 tokens
 
 ### Rust API
@@ -291,7 +292,7 @@ for pid, obs in obs_dict.items():
 ### Constants
 
 ```python
-SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 343
+SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 623
 SequenceFeatureEncoder.MAX_SPARSE_LEN     # 25
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)

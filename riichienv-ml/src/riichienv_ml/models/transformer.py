@@ -47,8 +47,8 @@ class TransformerActorCritic(nn.Module):
         max_prog_len: int = 256,
         max_cand_len: int = 32,
         # Vocab sizes (from SequenceFeatureEncoder)
-        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,   # 343
-        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 342
+        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,   # 623
+        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 622
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,            # (5,277,3,3,5)
         cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (280,3,3,4)
         **kwargs,

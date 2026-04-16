@@ -430,6 +430,8 @@ class Observation:
         """Encode sequence features as sparse token ids.
 
         Shape: variable-length 1-D array (up to 25 elements) / dtype: ``uint16``.
+        The token stream includes table metadata, dora indicators, concealed
+        hand tiles, the optional drawn tile, and meld tokens.
         """
         ...
     def encode_seq_numeric(self) -> bytes:
