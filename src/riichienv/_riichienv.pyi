@@ -429,9 +429,18 @@ class Observation:
     def encode_seq_sparse(self, game_style: int = 1) -> bytes:
         """Encode sequence features as sparse token ids.
 
-        Shape: variable-length 1-D array (up to 25 elements) / dtype: ``uint16``.
-        The token stream includes table metadata, dora indicators, concealed
-        hand tiles, the optional drawn tile, and meld tokens.
+        Shape: variable-length 1-D array (up to 14 elements) / dtype: ``uint16``.
+        The token stream includes table metadata, dora indicators, and meld
+        tokens.
+        """
+        ...
+    def encode_seq_hand(self) -> bytes:
+        """Encode hand tuples for sequence features.
+
+        Shape: ``(K, 2)`` / dtype: ``uint16``.
+
+        Each row is ``(tile37, draw_state)`` with concealed tiles first and the
+        optional drawn tile last.
         """
         ...
     def encode_seq_numeric(self) -> bytes:

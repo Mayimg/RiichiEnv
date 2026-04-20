@@ -7,7 +7,7 @@ import pytest
 
 from riichienv import MjaiReplay
 from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
-from riichienv_ml.features.sequence_features import SequenceFeaturePackedEncoder
+from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, SequenceFeaturePackedEncoder
 from riichienv_ml.models.transformer import TransformerActorCritic, TransformerPolicyNetwork
 import riichienv_ml.trainers.bc_policy as bc_policy_module
 
@@ -79,7 +79,7 @@ def test_transformer_policy_network_returns_logits_only():
         max_prog_len=8,
         max_cand_len=4,
     )
-    packed_size = 25 + 12 + 8 * 5 + 4 * 4 + 25 + 8 + 4
+    packed_size = SequenceFeaturePackedEncoder(max_prog_len=8, max_cand_len=4).PACKED_SIZE
     x = torch.zeros(2, packed_size)
 
     logits = model(x)
@@ -98,7 +98,7 @@ def test_transformer_actor_critic_keeps_value_head_output():
         max_prog_len=8,
         max_cand_len=4,
     )
-    packed_size = 25 + 12 + 8 * 5 + 4 * 4 + 25 + 8 + 4
+    packed_size = SequenceFeaturePackedEncoder(max_prog_len=8, max_cand_len=4).PACKED_SIZE
     x = torch.zeros(2, packed_size)
 
     logits, value = model(x)
@@ -130,6 +130,24 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
     logits = model(features)
 
     assert logits.shape == (1, 82)
+
+
+def test_sequence_feature_encoder_factorizes_hand_draw_state(tmp_path):
+    file_path = tmp_path / "bc_sequence_hand_sample.jsonl"
+    _write_simple_4p_log(file_path)
+
+    replay = MjaiReplay.from_jsonl(str(file_path), rule="tenhou")
+    kyoku = list(replay.take_kyokus())[0]
+    obs, _ = next(iter(kyoku.steps(0)))
+
+    features = SequenceFeatureEncoder().encode(obs)
+    hand = features["hand"]
+    hand_mask = features["hand_mask"]
+    valid_hand = hand[hand_mask]
+
+    assert valid_hand.shape[1] == 2
+    assert torch.count_nonzero(valid_hand[:, 1] == 1) == 1
+    assert torch.count_nonzero(valid_hand[:, 1] == 0) == len(valid_hand) - 1
 
 
 def test_bc_policy_trainer_logs_recent_100_batch_metrics(monkeypatch):

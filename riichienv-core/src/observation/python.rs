@@ -1386,7 +1386,7 @@ impl Observation {
 
     /// Encode sparse features as variable-length u16 indices.
     ///
-    /// Returns raw bytes of a `&[u16]` slice (variable length, max 25 elements).
+    /// Returns raw bytes of a `&[u16]` slice (variable length, max 14 elements).
     /// Python side: `np.frombuffer(bytes, dtype=np.uint16)`.
     #[pyo3(name = "encode_seq_sparse", signature = (game_style=1))]
     pub fn encode_seq_sparse_py<'py>(
@@ -1398,6 +1398,22 @@ impl Observation {
         let byte_len = tokens.len() * std::mem::size_of::<u16>();
         let byte_slice =
             unsafe { std::slice::from_raw_parts(tokens.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
+    /// Encode hand features as N × 2 u16 tuples.
+    ///
+    /// Returns raw bytes of flattened row-major `&[[u16; 2]]`.
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 2)`.
+    #[pyo3(name = "encode_seq_hand")]
+    pub fn encode_seq_hand_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let hand = self.encode_seq_hand();
+        let byte_len = hand.len() * std::mem::size_of::<[u16; 2]>();
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(hand.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 

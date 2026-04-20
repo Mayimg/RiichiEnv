@@ -52,9 +52,9 @@ Used for ankan encoding. Identity map: `tile_type (0-33)`.
 
 ## 1. Sparse Features
 
-**Vocabulary size: 623, max tokens: 25, padding index: 622**
+**Vocabulary size: 549, max tokens: 14, padding index: 548**
 
-Each observation produces 5-25 sparse tokens. Each token is an index into an embedding table.
+Each observation produces 5-14 sparse tokens. Each token is an index into an embedding table.
 
 | Offset | Count | Feature | Source |
 |--------|-------|---------|--------|
@@ -64,18 +64,15 @@ Each observation produces 5-25 sparse tokens. Each token is an index into an emb
 | 9-12 | 4 | Ju / dealer round (0-3) | `obs.oya` |
 | 13-82 | 70 | Tiles remaining (0-69) | derived from visible tiles |
 | 83-267 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
-| 268-304 | 37 | Concealed hand tiles (kan37 encoding) | `obs.hands[player_id]` minus drawn tile |
-| 305-341 | 37 | Drawn hand tile (kan37 encoding) | last tsumo event, folded into the hand group |
-| 342-621 | 280 | Meld tokens (candidate-style chi/pon/kan type ids) | `obs.melds[player_id]` |
-| 622 | 1 | Padding | - |
+| 268-547 | 280 | Meld tokens (candidate-style chi/pon/kan type ids) | `obs.melds[player_id]` |
+| 548 | 1 | Padding | - |
 
 **Token composition per observation:**
 - 4 fixed tokens (game style + seat + round wind + dealer)
 - 1 tiles-remaining token
 - 1-5 dora indicator tokens
-- ~13 hand-or-drawn tile tokens (varies with melds)
 - 0-4 meld tokens
-- Total: typically 19-24 tokens
+- Total: typically 11-14 tokens
 
 ### Rust API
 
@@ -90,7 +87,37 @@ sparse_bytes = obs.encode_seq_sparse(game_style=1)
 sparse = np.frombuffer(sparse_bytes, dtype=np.uint16)  # variable length
 ```
 
-## 2. Numeric Features
+## 2. Hand Features
+
+**Tuple sequence, max 14 entries**
+
+Each hand tile is encoded as a 2-tuple `(tile37, draw_state)`.
+
+| Field | Vocab | Values |
+|-------|-------|--------|
+| tile37 | 38 | 0-36 = kan37 tile, 37 = padding |
+| draw_state | 3 | 0=concealed, 1=drawn, 2=padding |
+
+**Padding tuple:** `(37, 2)`
+
+The sequence is ordered as:
+- concealed tiles in hand order
+- the optional drawn tile last
+
+### Rust API
+
+```rust
+obs.encode_seq_hand() -> Vec<[u16; 2]>
+```
+
+### Python API (raw)
+
+```python
+hand_bytes = obs.encode_seq_hand()
+hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable length
+```
+
+## 3. Numeric Features
 
 **Fixed: 12 floats**
 
@@ -121,7 +148,7 @@ numeric_bytes = obs.encode_seq_numeric()
 numeric = np.frombuffer(numeric_bytes, dtype=np.float32)  # shape (12,)
 ```
 
-## 3. Progression Features (Action History)
+## 4. Progression Features (Action History)
 
 **5-tuple sequence, max 256 entries (default)**
 
@@ -180,7 +207,7 @@ prog_bytes = obs.encode_seq_progression()
 prog = np.frombuffer(prog_bytes, dtype=np.uint16).reshape(-1, 5)  # variable length
 ```
 
-## 4. Candidate Features (Legal Actions)
+## 5. Candidate Features (Legal Actions)
 
 **4-tuple set, max 32 entries (default)**
 
@@ -281,10 +308,12 @@ enc = SequenceFeatureEncoder(n_players=4, game_style=1)
 for pid, obs in obs_dict.items():
     features = enc.encode(obs)
     # features["sparse"]      -- (25,) int64, padded with 342
+    # features["hand"]        -- (14, 2) int64, padded with (37, 2)
     # features["numeric"]     -- (12,) float32
     # features["progression"] -- (256, 5) int64, padded with (4, 276, 2, 2, 4)
     # features["candidates"]  -- (32, 4) int64, padded with (279, 2, 2, 3)
-    # features["sparse_mask"] -- (25,) bool, True for real tokens
+    # features["sparse_mask"] -- (14,) bool, True for real tokens
+    # features["hand_mask"]   -- (14,) bool, True for real entries
     # features["prog_mask"]   -- (256,) bool, True for real entries
     # features["cand_mask"]   -- (32,) bool, True for real entries
 ```
@@ -292,8 +321,10 @@ for pid, obs in obs_dict.items():
 ### Constants
 
 ```python
-SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 623
-SequenceFeatureEncoder.MAX_SPARSE_LEN     # 25
+SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 549
+SequenceFeatureEncoder.MAX_SPARSE_LEN     # 14
+SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
+SequenceFeatureEncoder.MAX_HAND_LEN       # 14
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 12
@@ -306,5 +337,5 @@ SequenceFeatureEncoder.CAND_DIMS           # (280, 3, 3, 4)
 | File | Package | Description |
 |------|---------|-------------|
 | `riichienv-core/src/observation/sequence_features.rs` | riichienv-core | Rust encoding logic (~470 lines) |
-| `riichienv-core/src/observation/python.rs` | riichienv-core | PyO3 bindings (4 methods) |
+| `riichienv-core/src/observation/python.rs` | riichienv-core | PyO3 bindings (5 methods) |
 | `riichienv-ml/src/riichienv_ml/features/sequence_features.py` | riichienv-ml | Python wrapper (~115 lines) |

@@ -16,17 +16,23 @@ class SequenceFeatureEncoder:
 
     Produces:
         sparse:      (MAX_SPARSE_LEN,)   int64   padded sparse embedding indices
-        numeric:     (NUM_NUMERIC,)       float32
+        hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
+        numeric:     (NUM_NUMERIC,)      float32
         progression: (MAX_PROG_LEN, 5)   int64   padded action-history 5-tuples
         candidates:  (MAX_CAND_LEN, 4)   int64   padded legal-action 4-tuples
         sparse_mask: (MAX_SPARSE_LEN,)   bool    True for real tokens
+        hand_mask:   (MAX_HAND_LEN,)     bool    True for real hand entries
         prog_mask:   (MAX_PROG_LEN,)     bool    True for real entries
         cand_mask:   (MAX_CAND_LEN,)     bool    True for real entries
     """
 
-    SPARSE_VOCAB_SIZE = 623
-    SPARSE_PAD = 622
-    MAX_SPARSE_LEN = 25
+    SPARSE_VOCAB_SIZE = 549
+    SPARSE_PAD = 548
+    MAX_SPARSE_LEN = 14
+
+    HAND_DIMS = (38, 3)
+    HAND_PAD = (37, 2)
+    MAX_HAND_LEN = 14
 
     PROG_DIMS = (5, 277, 3, 3, 5)
     PROG_PAD = (4, 276, 2, 2, 4)
@@ -52,8 +58,8 @@ class SequenceFeatureEncoder:
             obs: riichienv Observation object with encode_seq_* methods.
 
         Returns:
-            Dict with keys: sparse, numeric, progression, candidates,
-                           sparse_mask, prog_mask, cand_mask
+            Dict with keys: sparse, hand, numeric, progression, candidates,
+                           sparse_mask, hand_mask, prog_mask, cand_mask
         """
         # Sparse
         raw = np.frombuffer(
@@ -64,6 +70,22 @@ class SequenceFeatureEncoder:
         sparse[:n_sparse] = raw[:n_sparse]
         sparse_mask = np.zeros(self.MAX_SPARSE_LEN, dtype=np.bool_)
         sparse_mask[:n_sparse] = True
+
+        # Hand
+        hand_bytes = obs.encode_seq_hand()
+        if len(hand_bytes) > 0:
+            raw_hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)
+            n_hand = min(len(raw_hand), self.MAX_HAND_LEN)
+        else:
+            raw_hand = np.empty((0, 2), dtype=np.uint16)
+            n_hand = 0
+        hand = np.tile(
+            np.array(self.HAND_PAD, dtype=np.int64), (self.MAX_HAND_LEN, 1)
+        )
+        if n_hand > 0:
+            hand[:n_hand] = raw_hand[:n_hand]
+        hand_mask = np.zeros(self.MAX_HAND_LEN, dtype=np.bool_)
+        hand_mask[:n_hand] = True
 
         # Numeric
         numeric = np.frombuffer(
@@ -104,10 +126,12 @@ class SequenceFeatureEncoder:
 
         return {
             "sparse": torch.from_numpy(sparse),
+            "hand": torch.from_numpy(hand),
             "numeric": torch.from_numpy(numeric),
             "progression": torch.from_numpy(prog),
             "candidates": torch.from_numpy(cand),
             "sparse_mask": torch.from_numpy(sparse_mask),
+            "hand_mask": torch.from_numpy(hand_mask),
             "prog_mask": torch.from_numpy(prog_mask),
             "cand_mask": torch.from_numpy(cand_mask),
         }
@@ -122,19 +146,22 @@ class SequenceFeaturePackedEncoder:
     internally.
 
     Layout (all float32, P=max_prog_len, C=max_cand_len):
-        sparse      (25)       int indices stored as float
+        sparse      (14)       int indices stored as float
+        hand        (14 * 2)   int tuples stored as float
         numeric     (12)       continuous values
         progression (P * 5)    int tuples stored as float
         candidates  (C * 4)    int tuples stored as float
-        sparse_mask (25)       bool stored as float
+        sparse_mask (14)       bool stored as float
+        hand_mask   (14)       bool stored as float
         prog_mask   (P)        bool stored as float
         cand_mask   (C)        bool stored as float
         ─────────────────────
-        V2 default (P=256, C=32):  1758 float32
-        V1 compat  (P=512, C=64):  3454 float32
+        V2 default (P=256, C=32):  1778 float32
+        V1 compat  (P=512, C=64):  3474 float32
     """
 
-    _S = SequenceFeatureEncoder.MAX_SPARSE_LEN   # 25
+    _S = SequenceFeatureEncoder.MAX_SPARSE_LEN   # 14
+    _H = SequenceFeatureEncoder.MAX_HAND_LEN     # 14
     _N = SequenceFeatureEncoder.NUM_NUMERIC       # 12
 
     def __init__(self, tile_dim: int = 34, n_players: int = 4,
@@ -149,8 +176,8 @@ class SequenceFeaturePackedEncoder:
         self._P = max_prog_len
         self._C = max_cand_len
         self.PACKED_SIZE = (
-            self._S + self._N + self._P * 5 + self._C * 4
-            + self._S + self._P + self._C
+            self._S + self._H * 2 + self._N + self._P * 5 + self._C * 4
+            + self._S + self._H + self._P + self._C
         )
 
     def encode(self, obs) -> torch.Tensor:
@@ -160,12 +187,15 @@ class SequenceFeaturePackedEncoder:
         o = 0
 
         packed[o:o + self._S] = d["sparse"].float();           o += self._S
+        packed[o:o + self._H * 2] = d["hand"].reshape(-1).float()
+        o += self._H * 2
         packed[o:o + self._N] = d["numeric"];                   o += self._N
         packed[o:o + self._P * 5] = d["progression"].reshape(-1).float()
         o += self._P * 5
         packed[o:o + self._C * 4] = d["candidates"].reshape(-1).float()
         o += self._C * 4
         packed[o:o + self._S] = d["sparse_mask"].float();      o += self._S
+        packed[o:o + self._H] = d["hand_mask"].float();        o += self._H
         packed[o:o + self._P] = d["prog_mask"].float();        o += self._P
         packed[o:o + self._C] = d["cand_mask"].float()
 

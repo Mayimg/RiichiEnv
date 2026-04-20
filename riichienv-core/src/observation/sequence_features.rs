@@ -16,10 +16,17 @@ use super::Observation;
 // ── Constants ────────────────────────────────────────────────────────────────
 // These constants are `pub` for Python-side consumption (see riichienv-ml).
 #[allow(dead_code)]
-pub const SPARSE_VOCAB_SIZE: usize = 623;
+pub const SPARSE_VOCAB_SIZE: usize = 549;
 #[allow(dead_code)]
-pub const SPARSE_PAD: u16 = 622;
-pub const MAX_SPARSE_LEN: usize = 25;
+pub const SPARSE_PAD: u16 = 548;
+pub const MAX_SPARSE_LEN: usize = 14;
+
+/// Hand tuple dimensions: (tile37, draw_state)
+#[allow(dead_code)]
+pub const HAND_DIMS: [u16; 2] = [38, 3];
+pub const MAX_HAND_LEN: usize = 14;
+#[allow(dead_code)]
+pub const HAND_PAD: [u16; 2] = [37, 2];
 
 /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
 #[allow(dead_code)]
@@ -39,9 +46,7 @@ pub const CAND_PAD: [u16; 4] = [279, 2, 2, 3];
 pub const NUM_NUMERIC: usize = 12;
 
 const SPARSE_DORA_OFFSET: u16 = 83;
-const SPARSE_CONCEALED_HAND_OFFSET: u16 = 268;
-const SPARSE_DRAWN_HAND_OFFSET: u16 = SPARSE_CONCEALED_HAND_OFFSET + 37;
-const SPARSE_MELD_OFFSET: u16 = SPARSE_DRAWN_HAND_OFFSET + 37;
+const SPARSE_MELD_OFFSET: u16 = 268;
 
 // ── Tile conversions ─────────────────────────────────────────────────────────
 
@@ -367,7 +372,7 @@ pub fn process_single_event_progression(
 // ── Sparse features ──────────────────────────────────────────────────────────
 
 impl Observation {
-    /// Encode sparse features: variable-length u16 indices (max 25).
+    /// Encode sparse features: variable-length u16 indices (max 14).
     ///
     /// Offsets:
     /// - 0-1: game style (0=tonpuusen, 1=hanchan)
@@ -376,10 +381,8 @@ impl Observation {
     /// - 9-12: ju / dealer round (0-3)
     /// - 13-82: tiles remaining (0-69)
     /// - 83-267: dora indicators (5 slots × 37 tiles)
-    /// - 268-304: concealed hand tiles (kan37, red fives distinct)
-    /// - 305-341: drawn hand tile (kan37)
-    /// - 342-621: meld tokens (candidate-style meld type indices)
-    /// - 622: padding
+    /// - 268-547: meld tokens (candidate-style meld type indices)
+    /// - 548: padding
     pub fn encode_seq_sparse(&self, game_style: u8) -> Vec<u16> {
         let mut tokens: Vec<u16> = Vec::with_capacity(MAX_SPARSE_LEN);
 
@@ -408,31 +411,7 @@ impl Observation {
             tokens.push(SPARSE_DORA_OFFSET + (i as u16) * 37 + k37 as u16);
         }
 
-        // 7. Hand tiles (offset 268-341)
-        // Encode the visible hand as concealed tiles plus at most one drawn
-        // tile. The drawn tile stays in the same hand group, but uses a
-        // distinct draw-state range so we avoid duplicating it.
-        let my_hand = &self.hands[self.player_id as usize];
-        let drawn_k37 = self
-            .get_drawn_tile()
-            .map(|drawn| tile_id_to_kan37(drawn as u32));
-        let mut drawn_consumed = false;
-        for &tid in my_hand {
-            if tid < 136 {
-                let k37 = tile_id_to_kan37(tid);
-                if !drawn_consumed && drawn_k37 == Some(k37) {
-                    drawn_consumed = true;
-                    continue;
-                }
-                tokens.push(SPARSE_CONCEALED_HAND_OFFSET + k37 as u16);
-            }
-        }
-
-        if let Some(k37) = drawn_k37 {
-            tokens.push(SPARSE_DRAWN_HAND_OFFSET + k37 as u16);
-        }
-
-        // 8. Melds (offset 342-621)
+        // 7. Melds (offset 268-547)
         let mut meld_tokens: Vec<u16> = self.melds[self.player_id as usize]
             .iter()
             .filter_map(encode_meld_candidate_type)
@@ -446,6 +425,40 @@ impl Observation {
         }
 
         tokens
+    }
+
+    /// Encode the hand as variable-length (tile37, draw_state) tuples.
+    ///
+    /// The hand is ordered as concealed tiles followed by the drawn tile, if
+    /// present. `draw_state`: 0=concealed, 1=drawn.
+    pub fn encode_seq_hand(&self) -> Vec<[u16; 2]> {
+        let mut hand: Vec<[u16; 2]> = Vec::with_capacity(MAX_HAND_LEN);
+        let my_hand = &self.hands[self.player_id as usize];
+        let drawn_k37 = self
+            .get_drawn_tile()
+            .map(|drawn| tile_id_to_kan37(drawn as u32));
+        let mut drawn_consumed = false;
+
+        for &tid in my_hand {
+            if tid < 136 {
+                let k37 = tile_id_to_kan37(tid);
+                if !drawn_consumed && drawn_k37 == Some(k37) {
+                    drawn_consumed = true;
+                    continue;
+                }
+                hand.push([k37 as u16, 0]);
+            }
+        }
+
+        if let Some(k37) = drawn_k37 {
+            hand.push([k37 as u16, 1]);
+        }
+
+        if hand.len() > MAX_HAND_LEN {
+            hand.truncate(MAX_HAND_LEN);
+        }
+
+        hand
     }
 
     /// Count approximate tiles remaining in the wall.
@@ -1008,28 +1021,22 @@ mod tests {
         // Dora max: 83 + 4*37 + 36 = 83 + 148 + 36 = 267
         assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
 
-        // Concealed hand max: 268 + 36 = 304
-        assert!(SPARSE_CONCEALED_HAND_OFFSET + 36 < SPARSE_VOCAB_SIZE as u16);
-
-        // Drawn hand max: 305 + 36 = 341
-        assert!(SPARSE_DRAWN_HAND_OFFSET + 36 < SPARSE_VOCAB_SIZE as u16);
-
-        // Meld max: 342 + 279 = 621
+        // Meld max: 268 + 279 = 547
         assert!(SPARSE_MELD_OFFSET + 279 < SPARSE_VOCAB_SIZE as u16);
     }
 
     #[test]
-    fn test_hand_sparse_tokens_use_tile_type_not_instance() {
-        // 1m copies should collapse to the same hand token.
-        let t0 = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(0) as u16;
-        let t1 = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(1) as u16;
-        let t3 = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(3) as u16;
+    fn test_hand_tuple_tile_values_use_tile_type_not_instance() {
+        // 1m copies should collapse to the same tile37 field.
+        let t0 = tile_id_to_kan37(0) as u16;
+        let t1 = tile_id_to_kan37(1) as u16;
+        let t3 = tile_id_to_kan37(3) as u16;
         assert_eq!(t0, t1);
         assert_eq!(t1, t3);
 
         // Red 5m and normal 5m should remain distinct.
-        let red_5m = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(16) as u16;
-        let normal_5m = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(17) as u16;
+        let red_5m = tile_id_to_kan37(16) as u16;
+        let normal_5m = tile_id_to_kan37(17) as u16;
         assert_ne!(red_5m, normal_5m);
     }
 
@@ -1061,7 +1068,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sparse_hand_moves_drawn_tile_into_hand_group() {
+    fn test_encode_seq_hand_moves_drawn_tile_to_tail() {
         let obs = Observation::new(
             0,
             [vec![0, 1, 4], vec![], vec![], vec![]],
@@ -1084,14 +1091,36 @@ mod tests {
             None,
         );
 
-        let sparse = obs.encode_seq_sparse(1);
-        let concealed_1m = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(0) as u16;
-        let concealed_2m = SPARSE_CONCEALED_HAND_OFFSET + tile_id_to_kan37(4) as u16;
-        let drawn_1m = SPARSE_DRAWN_HAND_OFFSET + tile_id_to_kan37(0) as u16;
+        let hand = obs.encode_seq_hand();
+        assert_eq!(hand, vec![[1, 0], [2, 0], [1, 1]]);
+    }
 
-        assert_eq!(sparse.iter().filter(|&&t| t == concealed_1m).count(), 1);
-        assert_eq!(sparse.iter().filter(|&&t| t == concealed_2m).count(), 1);
-        assert_eq!(sparse.iter().filter(|&&t| t == drawn_1m).count(), 1);
+    #[test]
+    fn test_encode_seq_hand_without_drawn_is_all_concealed() {
+        let obs = Observation::new(
+            0,
+            [vec![0, 4, 8], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![],
+            vec![],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+        );
+
+        let hand = obs.encode_seq_hand();
+        assert_eq!(hand, vec![[1, 0], [2, 0], [3, 0]]);
     }
 
     #[test]

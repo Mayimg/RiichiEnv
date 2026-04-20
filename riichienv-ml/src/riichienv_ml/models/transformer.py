@@ -1,7 +1,7 @@
 """Transformer Actor-Critic for sequence feature encoding.
 
 Accepts the packed flat tensor produced by SequenceFeaturePackedEncoder,
-unpacks it into sparse / numeric / progression / candidate groups,
+unpacks it into sparse / hand / numeric / progression / candidate groups,
 embeds each group, and processes them through a TransformerEncoder.
 
 Output: (logits, value) — same interface as ActorCriticNetwork.
@@ -47,8 +47,9 @@ class TransformerActorCritic(nn.Module):
         max_prog_len: int = 256,
         max_cand_len: int = 32,
         # Vocab sizes (from SequenceFeatureEncoder)
-        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,   # 623
-        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 622
+        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,   # 549
+        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 548
+        hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,            # (38,3)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,            # (5,277,3,3,5)
         cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (280,3,3,4)
         **kwargs,
@@ -65,7 +66,8 @@ class TransformerActorCritic(nn.Module):
             d_other = d_sub
 
         # Packed layout constants (must match SequenceFeaturePackedEncoder)
-        self._S = SequenceFeatureEncoder.MAX_SPARSE_LEN   # 25
+        self._S = SequenceFeatureEncoder.MAX_SPARSE_LEN   # 14
+        self._H = SequenceFeatureEncoder.MAX_HAND_LEN     # 14
         self._N = SequenceFeatureEncoder.NUM_NUMERIC       # 12
         self._P = max_prog_len
         self._C = max_cand_len
@@ -73,6 +75,16 @@ class TransformerActorCritic(nn.Module):
         # --- Embedding layers ---
         self.sparse_embed = nn.Embedding(
             sparse_vocab, d_model, padding_idx=sparse_pad)
+
+        # Hand: embed (tile37, draw_state) → concat → project
+        hand_sub_dims = [d_type, d_other]
+        self.hand_embeds = nn.ModuleList([
+            nn.Embedding(dim, d_s) for dim, d_s in zip(hand_dims, hand_sub_dims)
+        ])
+        self.hand_proj = nn.Sequential(
+            nn.Linear(sum(hand_sub_dims), d_model),
+            nn.LayerNorm(d_model),
+        )
 
         self.numeric_proj = nn.Sequential(
             nn.Linear(self._N, d_model),
@@ -107,11 +119,11 @@ class TransformerActorCritic(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.normal_(self.cls_token, std=0.02)
 
-        # --- Segment embeddings (4 groups: sparse / numeric / prog / cand) ---
-        self.segment_embed = nn.Embedding(4, d_model)
+        # --- Segment embeddings (5 groups: sparse / hand / numeric / prog / cand) ---
+        self.segment_embed = nn.Embedding(5, d_model)
 
         # --- Positional encoding (sinusoidal) ---
-        max_seq = 1 + self._S + 1 + self._P + self._C
+        max_seq = 1 + self._S + self._H + 1 + self._P + self._C
         self.register_buffer("pos_enc", self._sinusoidal_pe(max_seq, d_model))
 
         # --- Transformer encoder (pre-LN for stability) ---
@@ -173,24 +185,31 @@ class TransformerActorCritic(nn.Module):
         """Unpack flat (B, PACKED_SIZE) tensor into components."""
         o = 0
         sparse = x[:, o:o + self._S].long();                        o += self._S
+        hand = x[:, o:o + self._H * 2].reshape(-1, self._H, 2).long()
+        o += self._H * 2
         numeric = x[:, o:o + self._N];                               o += self._N
         prog = x[:, o:o + self._P * 5].reshape(-1, self._P, 5).long()
         o += self._P * 5
         cand = x[:, o:o + self._C * 4].reshape(-1, self._C, 4).long()
         o += self._C * 4
         sparse_mask = x[:, o:o + self._S].bool();                   o += self._S
+        hand_mask = x[:, o:o + self._H].bool();                     o += self._H
         prog_mask = x[:, o:o + self._P].bool();                     o += self._P
         cand_mask = x[:, o:o + self._C].bool()
-        return sparse, numeric, prog, cand, sparse_mask, prog_mask, cand_mask
+        return sparse, hand, numeric, prog, cand, sparse_mask, hand_mask, prog_mask, cand_mask
 
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         B = x.shape[0]
-        sparse, numeric, prog, cand, sparse_mask, prog_mask, cand_mask = \
+        sparse, hand, numeric, prog, cand, sparse_mask, hand_mask, prog_mask, cand_mask = \
             self._unpack(x)
 
-        # Embed sparse tokens: (B, 25, d)
+        # Embed sparse tokens: (B, S, d)
         sparse_emb = self.sparse_embed(sparse)
+
+        # Embed hand tuples: (B, H, d)
+        hand_parts = [emb(hand[:, :, i]) for i, emb in enumerate(self.hand_embeds)]
+        hand_emb = self.hand_proj(torch.cat(hand_parts, dim=-1))
 
         # Project numeric: (B, 1, d)
         numeric_emb = self.numeric_proj(numeric).unsqueeze(1)
@@ -206,15 +225,16 @@ class TransformerActorCritic(nn.Module):
         # CLS token: (B, 1, d)
         cls = self.cls_token.expand(B, -1, -1)
 
-        # Concatenate: [CLS, sparse(S), numeric(1), prog(P), cand(C)]
-        tokens = torch.cat([cls, sparse_emb, numeric_emb, prog_emb, cand_emb], dim=1)
+        # Concatenate: [CLS, sparse(S), hand(H), numeric(1), prog(P), cand(C)]
+        tokens = torch.cat([cls, sparse_emb, hand_emb, numeric_emb, prog_emb, cand_emb], dim=1)
 
         # Add segment embeddings
         seg_ids = torch.cat([
             torch.zeros(B, 1 + self._S, dtype=torch.long, device=x.device),     # CLS + sparse → 0
-            torch.ones(B, 1, dtype=torch.long, device=x.device),                # numeric → 1
-            torch.full((B, self._P), 2, dtype=torch.long, device=x.device),     # prog → 2
-            torch.full((B, self._C), 3, dtype=torch.long, device=x.device),     # cand → 3
+            torch.ones(B, self._H, dtype=torch.long, device=x.device),          # hand → 1
+            torch.full((B, 1), 2, dtype=torch.long, device=x.device),           # numeric → 2
+            torch.full((B, self._P), 3, dtype=torch.long, device=x.device),     # prog → 3
+            torch.full((B, self._C), 4, dtype=torch.long, device=x.device),     # cand → 4
         ], dim=1)
         tokens = tokens + self.segment_embed(seg_ids)
 
@@ -227,6 +247,7 @@ class TransformerActorCritic(nn.Module):
         pad_mask = torch.cat([
             cls_valid,         # CLS is always valid
             ~sparse_mask,      # True where sparse is padding
+            ~hand_mask,        # True where hand is padding
             numeric_valid,     # numeric is always valid
             ~prog_mask,        # True where prog is padding
             ~cand_mask,        # True where cand is padding
@@ -242,7 +263,7 @@ class TransformerActorCritic(nn.Module):
         # Policy head
         if self.policy_head_type == "cross_attn":
             # Cross-attention: CLS queries candidate token outputs
-            cand_offset = 1 + self._S + 1 + self._P  # CLS + sparse + numeric + prog
+            cand_offset = 1 + self._S + self._H + 1 + self._P
             cand_out = output[:, cand_offset:cand_offset + self._C]  # (B, C, d_model)
             cls_q = cls_out.unsqueeze(1)  # (B, 1, d_model)
             cand_attn_mask = ~cand_mask   # True = padding (PyTorch convention)
