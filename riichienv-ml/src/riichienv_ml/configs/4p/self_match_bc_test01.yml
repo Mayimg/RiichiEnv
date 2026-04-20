@@ -5,9 +5,9 @@ self_match:
   agents:
     - name: bc-sequence-transformer-test03
       config_path: /home/naoyuki/mahjong01/RiichiEnv/riichienv-ml/src/riichienv_ml/configs/4p/bc_tenhou_seq_test02.yml
-      model_path: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test04/model.pth
+      model_path: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test08/model.pth
       device: cuda
-  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test03
+  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test04
   summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test03/summary.json
   num_games: 1000
   base_seed: 0

@@ -6,14 +6,14 @@ bc:
   offline_algorithm: behavior_cloning
   data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
   val_data_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
-  output: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test05/model.pth
+  output: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test08/model.pth
   device: cuda
   batch_size: 64
   lr: 1e-4
   lr_min: 1e-6
   num_epochs: 1
   num_workers: 8
-  limit: 1000000
+  limit: 500000
   weight_decay: 0.01
   label_smoothing: 0.0
   max_grad_norm: 10.0
