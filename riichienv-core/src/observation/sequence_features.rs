@@ -16,10 +16,10 @@ use super::Observation;
 // ── Constants ────────────────────────────────────────────────────────────────
 // These constants are `pub` for Python-side consumption (see riichienv-ml).
 #[allow(dead_code)]
-pub const SPARSE_VOCAB_SIZE: usize = 549;
+pub const SPARSE_VOCAB_SIZE: usize = 269;
 #[allow(dead_code)]
-pub const SPARSE_PAD: u16 = 548;
-pub const MAX_SPARSE_LEN: usize = 14;
+pub const SPARSE_PAD: u16 = 268;
+pub const MAX_SPARSE_LEN: usize = 10;
 
 /// Hand tuple dimensions: (tile37, draw_state)
 #[allow(dead_code)]
@@ -30,23 +30,43 @@ pub const HAND_PAD: [u16; 2] = [37, 2];
 
 /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
 #[allow(dead_code)]
-pub const PROG_DIMS: [u16; 5] = [5, 277, 3, 3, 5];
+pub const PROG_DIMS: [u16; 5] = [5, 44, 3, 3, 5];
 pub const MAX_PROG_LEN: usize = 512;
 #[allow(dead_code)]
-pub const PROG_PAD: [u16; 5] = [4, 276, 2, 2, 4];
+pub const PROG_PAD: [u16; 5] = [4, 43, 2, 2, 4];
 
 /// Candidate tuple dimensions: (type, moqie, liqi, from)
 #[allow(dead_code)]
-pub const CAND_DIMS: [u16; 4] = [280, 3, 3, 4];
+pub const CAND_DIMS: [u16; 4] = [47, 3, 3, 4];
 #[allow(dead_code)]
 pub const MAX_CAND_LEN: usize = 64;
 #[allow(dead_code)]
-pub const CAND_PAD: [u16; 4] = [279, 2, 2, 3];
+pub const CAND_PAD: [u16; 4] = [46, 2, 2, 3];
+
+/// Meld feature row: (kind, slot0_tile37, slot0_role, ..., slot3_tile37, slot3_role)
+#[allow(dead_code)]
+pub const MELD_FEATURE_WIDTH: usize = 9;
+#[allow(dead_code)]
+pub const MELD_KIND_DIMS: u16 = 6;
+#[allow(dead_code)]
+pub const MELD_ROLE_DIMS: u16 = 4;
+#[allow(dead_code)]
+pub const MAX_SPARSE_MELDS: usize = 4;
+#[allow(dead_code)]
+pub const MELD_PAD: [u16; MELD_FEATURE_WIDTH] = [5, 37, 3, 37, 3, 37, 3, 37, 3];
 
 pub const NUM_NUMERIC: usize = 12;
 
 const SPARSE_DORA_OFFSET: u16 = 83;
-const SPARSE_MELD_OFFSET: u16 = 268;
+const MELD_KIND_CHI: u16 = 0;
+const MELD_KIND_PON: u16 = 1;
+const MELD_KIND_DAIMINKAN: u16 = 2;
+const MELD_KIND_ANKAN: u16 = 3;
+const MELD_KIND_KAKAN: u16 = 4;
+
+const MELD_ROLE_CALLED: u16 = 0;
+const MELD_ROLE_CONSUMED: u16 = 1;
+const MELD_ROLE_ADDED: u16 = 2;
 
 // ── Tile conversions ─────────────────────────────────────────────────────────
 
@@ -88,161 +108,126 @@ fn mjai_tile_to_kan37(mjai: &str) -> Option<u8> {
     Some(tile_id_to_kan37(tid as u32))
 }
 
-// ── Meld pattern encoding ────────────────────────────────────────────────────
+// ── Factorized meld encoding ─────────────────────────────────────────────────
 
-/// Encode a chi (sequence) call into 0-89.
-///
-/// 90 patterns = 3 suits × 30 per suit.
-/// Per suit: 7 base sequences × positions + red-five variants.
-///
-/// For each suit the 30 slots are indexed by the lowest tile type in the
-/// sequence (relative to suit start, 0-6) and a sub-index that encodes
-/// which tile was called and whether a red five is involved.
-///
-/// `consumed` = sorted tile IDs of the 2 tiles from hand.
-/// `called_tile` = tile ID claimed from discard.
-pub fn encode_chi(consumed: &[u8], called_tile: u8) -> u16 {
-    let mut all_tiles = vec![called_tile];
-    all_tiles.extend_from_slice(consumed);
-    all_tiles.sort();
-
-    // Determine suit from the first tile
-    let first_type = all_tiles[0] / 4;
-    let suit = first_type / 9; // 0=m, 1=p, 2=s
-    let suit_base = suit * 9;
-    let seq_start = first_type - suit_base; // 0-6
-
-    // Which position was the called tile?
-    let called_type = called_tile / 4;
-    let call_pos = called_type - suit_base - seq_start; // 0, 1, or 2
-
-    // Check if any tile is a red five
-    let has_red = all_tiles.iter().any(|&t| t == 16 || t == 52 || t == 88);
-    let five_in_seq = (suit_base + 4) >= (suit_base + seq_start)
-        && (suit_base + 4) <= (suit_base + seq_start + 2);
-    let involves_five = five_in_seq && (seq_start..=seq_start + 2).contains(&4);
-
-    // Base index per sequence start (0-6), 3 call positions + red variants
-    // Sequences not containing 5: 3 patterns each
-    // Sequences containing 5: 3 normal + red variants for each call position = up to 6
-    let suit_offset = (suit as u16) * 30;
-
-    // Compute per-suit offset
-    let mut offset: u16 = 0;
-    for s in 0..seq_start {
-        let seq_has_five = (s..=s + 2).contains(&4);
-        offset += if seq_has_five { 6 } else { 3 };
-    }
-
-    let sub_idx = if involves_five && has_red {
-        3 + call_pos // red variant
-    } else {
-        call_pos
-    };
-
-    suit_offset + offset + sub_idx as u16
+fn meld_pad() -> [u16; MELD_FEATURE_WIDTH] {
+    MELD_PAD
 }
 
-/// Encode a pon (triplet) call into 0-39.
-///
-/// 40 patterns = 3 suits × 11 per suit + 7 honors.
-/// Per suit: 8 non-five tiles (3 each = too many; actually 1 pattern each)
-///   + 3 five-variants (normal, red-in-hand, red-called) = 11.
-///     Honors: 7 × 1 = 7.
-///
-/// `consumed` = sorted tile IDs of the 2 tiles from hand.
-/// `called_tile` = tile ID claimed from discard.
-pub fn encode_pon(consumed: &[u8], called_tile: u8) -> u16 {
-    let called_type = called_tile / 4;
-    let suit = called_type / 9;
+fn set_meld_slot(row: &mut [u16; MELD_FEATURE_WIDTH], slot: usize, tile: u8, role: u16) {
+    if slot >= 4 {
+        return;
+    }
+    row[1 + slot * 2] = tile_id_to_kan37(tile as u32) as u16;
+    row[2 + slot * 2] = role;
+}
 
-    if suit == 3 {
-        // Honor: simple index 0-6
-        let honor_idx = called_type - 27;
-        return 33 + honor_idx as u16; // 33..39
+fn sorted_tiles(mut tiles: Vec<u8>) -> Vec<u8> {
+    tiles.sort_by_key(|&t| (t / 4, tile_id_to_kan37(t as u32), t));
+    tiles
+}
+
+fn remove_exact_or_kan37(tiles: &mut Vec<u8>, target: u8) -> Option<u8> {
+    if let Some(idx) = tiles.iter().position(|&t| t == target) {
+        return Some(tiles.remove(idx));
+    }
+    let target_k37 = tile_id_to_kan37(target as u32);
+    tiles
+        .iter()
+        .position(|&t| tile_id_to_kan37(t as u32) == target_k37)
+        .map(|idx| tiles.remove(idx))
+}
+
+fn encode_called_consumed_meld(
+    kind: u16,
+    called: u8,
+    consumed: Vec<u8>,
+) -> [u16; MELD_FEATURE_WIDTH] {
+    let mut row = meld_pad();
+    row[0] = kind;
+    set_meld_slot(&mut row, 0, called, MELD_ROLE_CALLED);
+    for (idx, tile) in sorted_tiles(consumed).into_iter().take(3).enumerate() {
+        set_meld_slot(&mut row, idx + 1, tile, MELD_ROLE_CONSUMED);
+    }
+    row
+}
+
+fn encode_consumed_meld(kind: u16, consumed: Vec<u8>) -> [u16; MELD_FEATURE_WIDTH] {
+    let mut row = meld_pad();
+    row[0] = kind;
+    for (idx, tile) in sorted_tiles(consumed).into_iter().take(4).enumerate() {
+        set_meld_slot(&mut row, idx, tile, MELD_ROLE_CONSUMED);
+    }
+    row
+}
+
+fn encode_kakan_meld(
+    added: u8,
+    called: Option<u8>,
+    existing_tiles: Vec<u8>,
+) -> [u16; MELD_FEATURE_WIDTH] {
+    let mut row = meld_pad();
+    row[0] = MELD_KIND_KAKAN;
+    set_meld_slot(&mut row, 0, added, MELD_ROLE_ADDED);
+
+    let mut remaining = existing_tiles;
+    if let Some(called_tile) = called {
+        let removed = remove_exact_or_kan37(&mut remaining, called_tile).unwrap_or(called_tile);
+        set_meld_slot(&mut row, 1, removed, MELD_ROLE_CALLED);
+    } else if let Some(fallback_called) = remaining.first().copied() {
+        let removed =
+            remove_exact_or_kan37(&mut remaining, fallback_called).unwrap_or(fallback_called);
+        set_meld_slot(&mut row, 1, removed, MELD_ROLE_CALLED);
     }
 
-    let suit_base = suit * 9;
-    let rank = called_type - suit_base; // 0-8
-
-    let suit_offset = (suit as u16) * 11;
-
-    if rank == 4 {
-        // Five tile: 3 variants
-        let called_is_red = called_tile == 16 || called_tile == 52 || called_tile == 88;
-        let consumed_has_red = consumed.iter().any(|&t| t == 16 || t == 52 || t == 88);
-
-        let sub_idx = if called_is_red {
-            2 // red five was called
-        } else if consumed_has_red {
-            1 // red five in hand
-        } else {
-            0 // no red five
-        };
-        // ranks 0-3 take 4 slots, then five variants at offset 4
-        suit_offset + 4 + sub_idx
-    } else {
-        // Non-five tile: rank maps directly, but skip the 3 five-slots
-        // ranks 0-3 → 0-3, rank 5 → 7, rank 6 → 8, rank 7 → 9, rank 8 → 10
-        let idx = if rank < 4 {
-            rank as u16
-        } else {
-            // ranks 5-8 map to indices 7-10 (after 0-3 + 3 five-variants)
-            (rank as u16) + 2
-        };
-        suit_offset + idx
+    for (idx, tile) in sorted_tiles(remaining).into_iter().take(2).enumerate() {
+        set_meld_slot(&mut row, idx + 2, tile, MELD_ROLE_CONSUMED);
     }
+    row
+}
+
+fn split_called_consumed_tiles(meld: &Meld) -> Option<(u8, Vec<u8>)> {
+    let called_tile = meld.called_tile?;
+    let mut consumed = meld.tiles.clone();
+    remove_exact_or_kan37(&mut consumed, called_tile)?;
+    Some((called_tile, consumed))
+}
+
+fn encode_meld_feature(meld: &Meld) -> [u16; MELD_FEATURE_WIDTH] {
+    match meld.meld_type {
+        MeldType::Chi => split_called_consumed_tiles(meld)
+            .map(|(called, consumed)| encode_called_consumed_meld(MELD_KIND_CHI, called, consumed))
+            .unwrap_or_else(meld_pad),
+        MeldType::Pon => split_called_consumed_tiles(meld)
+            .map(|(called, consumed)| encode_called_consumed_meld(MELD_KIND_PON, called, consumed))
+            .unwrap_or_else(meld_pad),
+        MeldType::Daiminkan => split_called_consumed_tiles(meld)
+            .map(|(called, consumed)| {
+                encode_called_consumed_meld(MELD_KIND_DAIMINKAN, called, consumed)
+            })
+            .unwrap_or_else(meld_pad),
+        MeldType::Ankan => encode_consumed_meld(MELD_KIND_ANKAN, meld.tiles.clone()),
+        MeldType::Kakan => {
+            let added = meld.added_tile.or_else(|| meld.tiles.first().copied());
+            if let Some(added_tile) = added {
+                let mut existing = meld.tiles.clone();
+                remove_exact_or_kan37(&mut existing, added_tile);
+                encode_kakan_meld(added_tile, meld.called_tile, existing)
+            } else {
+                meld_pad()
+            }
+        }
+    }
+}
+
+fn parse_optional_mjai_tid(v: &serde_json::Value, key: &str) -> Option<u8> {
+    v[key].as_str().and_then(mjai_to_tid)
 }
 
 /// Relative seat: (target - actor + n_players - 1) % n_players
 /// For 4P: 0=shimocha(right), 1=toimen(across), 2=kamicha(left)
 fn relative_from(actor: u8, target: u8) -> u8 {
     ((target as i8 - actor as i8 + 3) % 4) as u8
-}
-
-fn split_meld_tiles(meld: &Meld) -> Option<(u8, Vec<u8>)> {
-    let called_tile = meld.called_tile?;
-    let called_k37 = tile_id_to_kan37(called_tile as u32);
-    let remove_idx = meld
-        .tiles
-        .iter()
-        .position(|&tile| tile_id_to_kan37(tile as u32) == called_k37)?;
-    let mut consumed = meld.tiles.clone();
-    consumed.remove(remove_idx);
-    Some((called_tile, consumed))
-}
-
-fn encode_meld_candidate_type(meld: &Meld) -> Option<u16> {
-    match meld.meld_type {
-        MeldType::Chi => {
-            let (called_tile, mut consumed) = split_meld_tiles(meld)?;
-            if consumed.len() < 2 {
-                return None;
-            }
-            consumed.sort();
-            Some(111 + encode_chi(&consumed, called_tile))
-        }
-        MeldType::Pon => {
-            let (called_tile, mut consumed) = split_meld_tiles(meld)?;
-            if consumed.len() < 2 {
-                return None;
-            }
-            consumed.sort();
-            Some(201 + encode_pon(&consumed, called_tile))
-        }
-        MeldType::Daiminkan => {
-            let called_tile = meld.called_tile?;
-            Some(241 + tile_id_to_kan37(called_tile as u32) as u16)
-        }
-        MeldType::Ankan => {
-            let first = *meld.tiles.first()?;
-            Some(37 + (first / 4) as u16)
-        }
-        MeldType::Kakan => {
-            let first = *meld.tiles.first()?;
-            Some(71 + tile_id_to_kan37(first as u32) as u16)
-        }
-    }
 }
 
 /// Parse "consumed" array from MJAI event JSON → Vec<u8> of tile IDs.
@@ -260,20 +245,15 @@ fn parse_consumed_tids_from_value(v: &serde_json::Value) -> Vec<u8> {
     tids
 }
 
-/// Process a single MJAI event for the progression cache.
-///
-/// Called incrementally from GameState::_push_mjai_event to avoid
-/// O(N²) JSON re-parsing in encode_seq_progression.
-///
-/// `pending_reach_actor` is mutable state tracking who declared reach.
-pub fn process_single_event_progression(
+/// Process a single MJAI event for progression and aligned meld sidecar caches.
+pub fn process_single_event_progression_with_meld(
     event: &serde_json::Value,
     pending_reach_actor: &mut Option<u8>,
-) -> Option<[u16; 5]> {
+) -> Option<([u16; 5], [u16; MELD_FEATURE_WIDTH])> {
     let event_type = event["type"].as_str()?;
 
     match event_type {
-        "start_kyoku" => Some([4, 0, 2, 2, 4]),
+        "start_kyoku" => Some(([4, 0, 2, 2, 4], meld_pad())),
         "reach" => {
             if let Some(actor) = event["actor"].as_u64() {
                 *pending_reach_actor = Some(actor as u8);
@@ -299,7 +279,7 @@ pub fn process_single_event_progression(
             } else {
                 0
             };
-            Some([actor as u16, type_idx, moqie, liqi, 4])
+            Some(([actor as u16, type_idx, moqie, liqi, 4], meld_pad()))
         }
         "chi" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -313,9 +293,9 @@ pub fn process_single_event_progression(
             if consumed.len() < 2 {
                 return None;
             }
-            let type_idx = 38 + encode_chi(&consumed, called_tid);
             let rel = relative_from(actor, target);
-            Some([actor as u16, type_idx, 2, 2, rel as u16])
+            let meld = encode_called_consumed_meld(MELD_KIND_CHI, called_tid, consumed);
+            Some(([actor as u16, 38, 2, 2, rel as u16], meld))
         }
         "pon" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -329,9 +309,9 @@ pub fn process_single_event_progression(
             if consumed.len() < 2 {
                 return None;
             }
-            let type_idx = 128 + encode_pon(&consumed, called_tid);
             let rel = relative_from(actor, target);
-            Some([actor as u16, type_idx, 2, 2, rel as u16])
+            let meld = encode_called_consumed_meld(MELD_KIND_PON, called_tid, consumed);
+            Some(([actor as u16, 39, 2, 2, rel as u16], meld))
         }
         "daiminkan" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -340,10 +320,14 @@ pub fn process_single_event_progression(
             if pai == "?" {
                 return None;
             }
-            let k37 = mjai_tile_to_kan37(pai)?;
-            let type_idx = 168 + k37 as u16;
+            let called_tid = mjai_to_tid(pai)?;
+            let consumed = parse_consumed_tids_from_value(event);
+            if consumed.len() < 3 {
+                return None;
+            }
             let rel = relative_from(actor, target);
-            Some([actor as u16, type_idx, 2, 2, rel as u16])
+            let meld = encode_called_consumed_meld(MELD_KIND_DAIMINKAN, called_tid, consumed);
+            Some(([actor as u16, 40, 2, 2, rel as u16], meld))
         }
         "ankan" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -351,9 +335,8 @@ pub fn process_single_event_progression(
             if consumed.is_empty() {
                 return None;
             }
-            let tile34 = consumed[0] / 4;
-            let type_idx = 205 + tile34 as u16;
-            Some([actor as u16, type_idx, 2, 2, 4])
+            let meld = encode_consumed_meld(MELD_KIND_ANKAN, consumed);
+            Some(([actor as u16, 41, 2, 2, 4], meld))
         }
         "kakan" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -361,9 +344,11 @@ pub fn process_single_event_progression(
             if pai == "?" {
                 return None;
             }
-            let k37 = mjai_tile_to_kan37(pai)?;
-            let type_idx = 239 + k37 as u16;
-            Some([actor as u16, type_idx, 2, 2, 4])
+            let added = mjai_to_tid(pai)?;
+            let called = parse_optional_mjai_tid(event, "called");
+            let existing_tiles = parse_consumed_tids_from_value(event);
+            let meld = encode_kakan_meld(added, called, existing_tiles);
+            Some(([actor as u16, 42, 2, 2, 4], meld))
         }
         _ => None,
     }
@@ -372,7 +357,7 @@ pub fn process_single_event_progression(
 // ── Sparse features ──────────────────────────────────────────────────────────
 
 impl Observation {
-    /// Encode sparse features: variable-length u16 indices (max 14).
+    /// Encode sparse features: variable-length u16 indices (max 10).
     ///
     /// Offsets:
     /// - 0-1: game style (0=tonpuusen, 1=hanchan)
@@ -381,8 +366,7 @@ impl Observation {
     /// - 9-12: ju / dealer round (0-3)
     /// - 13-82: tiles remaining (0-69)
     /// - 83-267: dora indicators (5 slots × 37 tiles)
-    /// - 268-547: meld tokens (candidate-style meld type indices)
-    /// - 548: padding
+    /// - 268: padding
     pub fn encode_seq_sparse(&self, game_style: u8) -> Vec<u16> {
         let mut tokens: Vec<u16> = Vec::with_capacity(MAX_SPARSE_LEN);
 
@@ -411,20 +395,20 @@ impl Observation {
             tokens.push(SPARSE_DORA_OFFSET + (i as u16) * 37 + k37 as u16);
         }
 
-        // 7. Melds (offset 268-547)
-        let mut meld_tokens: Vec<u16> = self.melds[self.player_id as usize]
-            .iter()
-            .filter_map(encode_meld_candidate_type)
-            .map(|type_idx| SPARSE_MELD_OFFSET + type_idx)
-            .collect();
-        meld_tokens.sort_unstable();
-        tokens.extend(meld_tokens);
-
         if tokens.len() > MAX_SPARSE_LEN {
             tokens.truncate(MAX_SPARSE_LEN);
         }
 
         tokens
+    }
+
+    /// Encode the current player's melds with the shared factorized layout.
+    pub fn encode_seq_sparse_melds(&self) -> Vec<[u16; MELD_FEATURE_WIDTH]> {
+        self.melds[self.player_id as usize]
+            .iter()
+            .take(MAX_SPARSE_MELDS)
+            .map(encode_meld_feature)
+            .collect()
     }
 
     /// Encode the hand as variable-length (tile37, draw_state) tuples.
@@ -580,7 +564,8 @@ impl Observation {
     ///
     /// Each tuple: (actor, type, moqie, liqi, from)
     /// - actor: 0-3 (seats), 4 (marker/padding)
-    /// - type: 0-276 (see plan for encoding)
+    /// - type: 0=start, 1-37=discard, 38=chi, 39=pon, 40=daiminkan,
+    ///   41=ankan, 42=kakan, 43=padding
     /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
     /// - liqi: 0=no riichi, 1=with riichi, 2=N/A
     /// - from: 0-2 (relative seat), 4=N/A
@@ -595,155 +580,13 @@ impl Observation {
         let mut pending_reach_actor: Option<u8> = None;
 
         for event_str in &self.events {
-            let v = match serde_json::from_str::<serde_json::Value>(event_str) {
-                Ok(v) => v,
-                Err(_) => continue,
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(event_str) else {
+                continue;
             };
-
-            let event_type = match v["type"].as_str() {
-                Some(t) => t,
-                None => continue,
-            };
-
-            match event_type {
-                "start_kyoku" => {
-                    // Beginning-of-round marker
-                    prog.push([4, 0, 2, 2, 4]);
-                }
-                "reach" => {
-                    // Track reach for the next dahai
-                    if let Some(actor) = v["actor"].as_u64() {
-                        pending_reach_actor = Some(actor as u8);
-                    }
-                }
-                "dahai" => {
-                    let actor = v["actor"].as_u64().unwrap_or(0) as u8;
-                    let pai = v["pai"].as_str().unwrap_or("?");
-                    let tsumogiri = v["tsumogiri"].as_bool().unwrap_or(false);
-
-                    if pai == "?" {
-                        continue; // masked tile, skip
-                    }
-
-                    let k37 = match mjai_tile_to_kan37(pai) {
-                        Some(k) => k,
-                        None => continue,
-                    };
-
-                    let type_idx = 1 + k37 as u16; // 1-37
-                    let moqie = if tsumogiri { 1 } else { 0 };
-                    let liqi = if pending_reach_actor == Some(actor) {
-                        pending_reach_actor = None;
-                        1
-                    } else {
-                        0
-                    };
-
-                    prog.push([actor as u16, type_idx, moqie, liqi, 4]);
-                }
-                "chi" => {
-                    let actor = v["actor"].as_u64().unwrap_or(0) as u8;
-                    let target = v["target"].as_u64().unwrap_or(0) as u8;
-                    let pai = v["pai"].as_str().unwrap_or("?");
-
-                    if pai == "?" {
-                        continue;
-                    }
-
-                    let called_tid = match mjai_to_tid(pai) {
-                        Some(t) => t,
-                        None => continue,
-                    };
-
-                    let consumed = self.parse_consumed_tids(&v);
-                    if consumed.len() < 2 {
-                        continue;
-                    }
-
-                    let chi_enc = encode_chi(&consumed, called_tid);
-                    let type_idx = 38 + chi_enc; // 38-127
-                    let rel = relative_from(actor, target);
-
-                    prog.push([actor as u16, type_idx, 2, 2, rel as u16]);
-                }
-                "pon" => {
-                    let actor = v["actor"].as_u64().unwrap_or(0) as u8;
-                    let target = v["target"].as_u64().unwrap_or(0) as u8;
-                    let pai = v["pai"].as_str().unwrap_or("?");
-
-                    if pai == "?" {
-                        continue;
-                    }
-
-                    let called_tid = match mjai_to_tid(pai) {
-                        Some(t) => t,
-                        None => continue,
-                    };
-
-                    let consumed = self.parse_consumed_tids(&v);
-                    if consumed.len() < 2 {
-                        continue;
-                    }
-
-                    let pon_enc = encode_pon(&consumed, called_tid);
-                    let type_idx = 128 + pon_enc; // 128-167
-                    let rel = relative_from(actor, target);
-
-                    prog.push([actor as u16, type_idx, 2, 2, rel as u16]);
-                }
-                "daiminkan" => {
-                    let actor = v["actor"].as_u64().unwrap_or(0) as u8;
-                    let target = v["target"].as_u64().unwrap_or(0) as u8;
-                    let pai = v["pai"].as_str().unwrap_or("?");
-
-                    if pai == "?" {
-                        continue;
-                    }
-
-                    let k37 = match mjai_tile_to_kan37(pai) {
-                        Some(k) => k,
-                        None => continue,
-                    };
-
-                    let type_idx = 168 + k37 as u16; // 168-204
-                    let rel = relative_from(actor, target);
-
-                    prog.push([actor as u16, type_idx, 2, 2, rel as u16]);
-                }
-                "ankan" => {
-                    let actor = v["actor"].as_u64().unwrap_or(0) as u8;
-
-                    // For ankan, get tile type from consumed tiles
-                    let consumed = self.parse_consumed_tids(&v);
-                    if consumed.is_empty() {
-                        continue;
-                    }
-
-                    let tile34 = consumed[0] / 4;
-                    let type_idx = 205 + tile34 as u16; // 205-238
-
-                    prog.push([actor as u16, type_idx, 2, 2, 4]);
-                }
-                "kakan" => {
-                    let actor = v["actor"].as_u64().unwrap_or(0) as u8;
-                    let pai = v["pai"].as_str().unwrap_or("?");
-
-                    if pai == "?" {
-                        continue;
-                    }
-
-                    let k37 = match mjai_tile_to_kan37(pai) {
-                        Some(k) => k,
-                        None => continue,
-                    };
-
-                    let type_idx = 239 + k37 as u16; // 239-275
-
-                    prog.push([actor as u16, type_idx, 2, 2, 4]);
-                }
-                _ => {
-                    // tsumo, dora, reach_accepted, etc. — not progression events
-                }
+            if let Some((entry, _meld)) =
+                process_single_event_progression_with_meld(&v, &mut pending_reach_actor)
+            {
+                prog.push(entry);
             }
 
             if prog.len() >= MAX_PROG_LEN {
@@ -754,19 +597,31 @@ impl Observation {
         prog
     }
 
-    /// Parse "consumed" array from MJAI event JSON → Vec<u8> of tile IDs.
-    fn parse_consumed_tids(&self, v: &serde_json::Value) -> Vec<u8> {
-        let mut tids = Vec::new();
-        if let Some(arr) = v["consumed"].as_array() {
-            for item in arr {
-                if let Some(s) = item.as_str()
-                    && let Some(tid) = mjai_to_tid(s)
-                {
-                    tids.push(tid);
-                }
+    /// Encode factorized meld sidecar rows aligned with encode_seq_progression().
+    pub fn encode_seq_progression_melds(&self) -> Vec<[u16; MELD_FEATURE_WIDTH]> {
+        if let Some(ref cached) = self.cached_progression_melds {
+            return cached.clone();
+        }
+
+        let mut melds: Vec<[u16; MELD_FEATURE_WIDTH]> = Vec::with_capacity(128);
+        let mut pending_reach_actor: Option<u8> = None;
+
+        for event_str in &self.events {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(event_str) else {
+                continue;
+            };
+            if let Some((_entry, meld)) =
+                process_single_event_progression_with_meld(&v, &mut pending_reach_actor)
+            {
+                melds.push(meld);
+            }
+
+            if melds.len() >= MAX_PROG_LEN {
+                break;
             }
         }
-        tids
+
+        melds
     }
 
     // ── Candidate features ───────────────────────────────────────────────
@@ -774,7 +629,7 @@ impl Observation {
     /// Encode candidate (legal action) features as variable-length 4-tuples.
     ///
     /// Each tuple: (type, moqie, liqi, from)
-    /// - type: 0-279
+    /// - type: 0-46
     /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
     /// - liqi: 0=no, 1=yes, 2=N/A
     /// - from: 0-2 (relative seat), 3=self
@@ -796,6 +651,27 @@ impl Observation {
         }
 
         cands
+    }
+
+    /// Encode factorized meld sidecar rows aligned with encode_seq_candidates().
+    pub fn encode_seq_candidate_melds(&self) -> Vec<[u16; MELD_FEATURE_WIDTH]> {
+        let mut melds: Vec<[u16; MELD_FEATURE_WIDTH]> = Vec::with_capacity(64);
+        let pid = self.player_id;
+        let has_riichi = self
+            ._legal_actions
+            .iter()
+            .any(|a| a.action_type == ActionType::Riichi);
+
+        for action in &self._legal_actions {
+            if self
+                .encode_candidate_action(action, pid, has_riichi)
+                .is_some()
+            {
+                melds.push(self.encode_candidate_action_meld(action, pid));
+            }
+        }
+
+        melds
     }
 
     /// Encode a single legal action as a candidate 4-tuple.
@@ -828,71 +704,102 @@ impl Observation {
                 None
             }
             ActionType::Ankan => {
-                let first = *action.consume_tiles.first()?;
-                let tile34 = first / 4;
-                let type_idx = 37 + tile34 as u16; // 37-70
-
-                Some([type_idx, 2, 2, 3])
+                action.consume_tiles.first()?;
+                Some([37, 2, 2, 3])
             }
             ActionType::Kakan => {
-                let tile = action
+                action
                     .tile
                     .or_else(|| action.consume_tiles.first().copied())?;
-                let k37 = tile_id_to_kan37(tile as u32);
-                let type_idx = 71 + k37 as u16; // 71-107
-
-                Some([type_idx, 2, 2, 3])
+                Some([38, 2, 2, 3])
             }
-            ActionType::Tsumo => Some([108, 2, 2, 3]),
-            ActionType::KyushuKyuhai => Some([109, 2, 2, 3]),
-            ActionType::Pass => Some([110, 2, 2, 3]),
+            ActionType::Tsumo => Some([39, 2, 2, 3]),
+            ActionType::KyushuKyuhai => Some([40, 2, 2, 3]),
+            ActionType::Pass => Some([41, 2, 2, 3]),
             ActionType::Chi => {
-                let called_tile = action.tile?;
-                let consumed = &action.consume_tiles;
-                if consumed.len() < 2 {
+                action.tile?;
+                if action.consume_tiles.len() < 2 {
                     return None;
                 }
-
-                let chi_enc = encode_chi(consumed, called_tile);
-                let type_idx = 111 + chi_enc; // 111-200
 
                 // from = relative seat of the discard source
                 let target = self.find_last_discard_actor()?;
                 let rel = relative_from(pid, target);
 
-                Some([type_idx, 2, 2, rel as u16])
+                Some([42, 2, 2, rel as u16])
             }
             ActionType::Pon => {
-                let called_tile = action.tile?;
-                let consumed = &action.consume_tiles;
-                if consumed.len() < 2 {
+                action.tile?;
+                if action.consume_tiles.len() < 2 {
                     return None;
                 }
 
-                let pon_enc = encode_pon(consumed, called_tile);
-                let type_idx = 201 + pon_enc; // 201-240
-
                 let target = self.find_last_discard_actor()?;
                 let rel = relative_from(pid, target);
 
-                Some([type_idx, 2, 2, rel as u16])
+                Some([43, 2, 2, rel as u16])
             }
             ActionType::Daiminkan => {
-                let tile = action.tile?;
-                let k37 = tile_id_to_kan37(tile as u32);
-                let type_idx = 241 + k37 as u16; // 241-277
+                action.tile?;
 
                 let target = self.find_last_discard_actor()?;
                 let rel = relative_from(pid, target);
 
-                Some([type_idx, 2, 2, rel as u16])
+                Some([44, 2, 2, rel as u16])
             }
             ActionType::Ron => {
                 let target = self.find_last_discard_actor()?;
                 let rel = relative_from(pid, target);
-                Some([278, 2, 2, rel as u16])
+                Some([45, 2, 2, rel as u16])
             }
             ActionType::Kita => None, // 3P only, not supported
+        }
+    }
+
+    fn encode_candidate_action_meld(&self, action: &Action, pid: u8) -> [u16; MELD_FEATURE_WIDTH] {
+        match action.action_type {
+            ActionType::Chi => action
+                .tile
+                .map(|called| {
+                    encode_called_consumed_meld(MELD_KIND_CHI, called, action.consume_tiles.clone())
+                })
+                .unwrap_or_else(meld_pad),
+            ActionType::Pon => action
+                .tile
+                .map(|called| {
+                    encode_called_consumed_meld(MELD_KIND_PON, called, action.consume_tiles.clone())
+                })
+                .unwrap_or_else(meld_pad),
+            ActionType::Daiminkan => action
+                .tile
+                .map(|called| {
+                    encode_called_consumed_meld(
+                        MELD_KIND_DAIMINKAN,
+                        called,
+                        action.consume_tiles.clone(),
+                    )
+                })
+                .unwrap_or_else(meld_pad),
+            ActionType::Ankan => {
+                encode_consumed_meld(MELD_KIND_ANKAN, action.consume_tiles.clone())
+            }
+            ActionType::Kakan => {
+                let Some(added) = action
+                    .tile
+                    .or_else(|| action.consume_tiles.first().copied())
+                else {
+                    return meld_pad();
+                };
+                let pon = self.melds[pid as usize]
+                    .iter()
+                    .find(|m| m.meld_type == MeldType::Pon && m.tiles[0] / 4 == added / 4);
+                let called = pon.and_then(|m| m.called_tile);
+                let existing = pon
+                    .map(|m| m.tiles.clone())
+                    .unwrap_or_else(|| action.consume_tiles.clone());
+                encode_kakan_meld(added, called, existing)
+            }
+            _ => meld_pad(),
         }
     }
 
@@ -969,51 +876,6 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_chi_basic() {
-        // Chi: 1m-2m-3m, called 1m from discard
-        // tile IDs: 1m=0, 2m=4, 3m=8 (first copies)
-        // suit=0, seq_start=0, call_pos=0
-        let consumed = [4u8, 8]; // 2m, 3m from hand
-        let called = 0u8; // 1m called
-        let enc = encode_chi(&consumed, called);
-        assert_eq!(enc, 0); // suit_offset=0, base=0, sub=0
-
-        // Chi: 1m-2m-3m, called 2m
-        let consumed = [0u8, 8]; // 1m, 3m from hand
-        let called = 4u8; // 2m called
-        let enc = encode_chi(&consumed, called);
-        assert_eq!(enc, 1); // sub=1 (middle)
-    }
-
-    #[test]
-    fn test_encode_pon_honor() {
-        // Pon: East wind
-        // tile IDs: E=108, 109, 110
-        let consumed = [109u8, 110];
-        let called = 108u8;
-        let enc = encode_pon(&consumed, called);
-        assert_eq!(enc, 33); // first honor
-    }
-
-    #[test]
-    fn test_encode_pon_five_red() {
-        // Pon: 5m with red five in consumed
-        // tile IDs: 5m = 16(red), 17, 18, 19
-        let consumed = [16u8, 17]; // red 5m + normal 5m
-        let called = 18u8; // normal 5m called
-        let enc = encode_pon(&consumed, called);
-        // suit_offset=0, rank=4 → five variants at offset 4
-        // consumed has red → sub_idx=1
-        assert_eq!(enc, 5); // 0 + 4 + 1
-
-        // Pon: 5m with red five called
-        let consumed = [17u8, 18];
-        let called = 16u8; // red 5m called
-        let enc = encode_pon(&consumed, called);
-        assert_eq!(enc, 6); // 0 + 4 + 2
-    }
-
-    #[test]
     fn test_sparse_vocab_bounds() {
         // Verify all sparse offsets are within vocab
         assert!(SPARSE_PAD < SPARSE_VOCAB_SIZE as u16);
@@ -1021,8 +883,7 @@ mod tests {
         // Dora max: 83 + 4*37 + 36 = 83 + 148 + 36 = 267
         assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
 
-        // Meld max: 268 + 279 = 547
-        assert!(SPARSE_MELD_OFFSET + 279 < SPARSE_VOCAB_SIZE as u16);
+        assert_eq!(SPARSE_PAD as usize + 1, SPARSE_VOCAB_SIZE);
     }
 
     #[test]
@@ -1041,29 +902,86 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_meld_candidate_type_matches_candidate_layout() {
+    fn test_encode_meld_feature_roles() {
         let chi = Meld::new(MeldType::Chi, vec![0, 4, 8], true, 1, Some(0));
-        assert_eq!(encode_meld_candidate_type(&chi), Some(111));
+        assert_eq!(
+            encode_meld_feature(&chi),
+            [
+                MELD_KIND_CHI,
+                1,
+                MELD_ROLE_CALLED,
+                2,
+                MELD_ROLE_CONSUMED,
+                3,
+                MELD_ROLE_CONSUMED,
+                37,
+                3
+            ]
+        );
 
         let pon = Meld::new(MeldType::Pon, vec![108, 109, 110], true, 1, Some(108));
-        assert_eq!(encode_meld_candidate_type(&pon), Some(201 + 33));
+        assert_eq!(
+            encode_meld_feature(&pon),
+            [
+                MELD_KIND_PON,
+                30,
+                MELD_ROLE_CALLED,
+                30,
+                MELD_ROLE_CONSUMED,
+                30,
+                MELD_ROLE_CONSUMED,
+                37,
+                3
+            ]
+        );
 
         let daiminkan = Meld::new(MeldType::Daiminkan, vec![0, 1, 2, 3], true, 1, Some(0));
         assert_eq!(
-            encode_meld_candidate_type(&daiminkan),
-            Some(241 + tile_id_to_kan37(0) as u16)
+            encode_meld_feature(&daiminkan),
+            [
+                MELD_KIND_DAIMINKAN,
+                1,
+                MELD_ROLE_CALLED,
+                1,
+                MELD_ROLE_CONSUMED,
+                1,
+                MELD_ROLE_CONSUMED,
+                1,
+                MELD_ROLE_CONSUMED,
+            ]
         );
 
         let ankan = Meld::new(MeldType::Ankan, vec![72, 73, 74, 75], false, -1, None);
         assert_eq!(
-            encode_meld_candidate_type(&ankan),
-            Some(37 + (72 / 4) as u16)
+            encode_meld_feature(&ankan),
+            [
+                MELD_KIND_ANKAN,
+                21,
+                MELD_ROLE_CONSUMED,
+                21,
+                MELD_ROLE_CONSUMED,
+                21,
+                MELD_ROLE_CONSUMED,
+                21,
+                MELD_ROLE_CONSUMED,
+            ]
         );
 
-        let kakan = Meld::new(MeldType::Kakan, vec![17, 18, 19, 16], true, -1, None);
+        let kakan = Meld::new(MeldType::Kakan, vec![16, 17, 18, 19], true, -1, Some(17))
+            .with_added_tile(16);
         assert_eq!(
-            encode_meld_candidate_type(&kakan),
-            Some(71 + tile_id_to_kan37(17) as u16)
+            encode_meld_feature(&kakan),
+            [
+                MELD_KIND_KAKAN,
+                0,
+                MELD_ROLE_ADDED,
+                5,
+                MELD_ROLE_CALLED,
+                5,
+                MELD_ROLE_CONSUMED,
+                5,
+                MELD_ROLE_CONSUMED,
+            ]
         );
     }
 
@@ -1124,7 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sparse_includes_sorted_meld_tokens() {
+    fn test_sparse_melds_use_factorized_rows() {
         let obs = Observation::new(
             0,
             [vec![36, 40, 44, 48], vec![], vec![], vec![]],
@@ -1156,42 +1074,26 @@ mod tests {
         );
 
         let sparse = obs.encode_seq_sparse(1);
-        let meld_tokens: Vec<u16> = sparse
-            .into_iter()
-            .filter(|&t| (SPARSE_MELD_OFFSET..SPARSE_PAD).contains(&t))
-            .collect();
+        assert!(sparse.iter().all(|&t| t < SPARSE_PAD));
 
-        assert_eq!(
-            meld_tokens,
-            vec![SPARSE_MELD_OFFSET + 111, SPARSE_MELD_OFFSET + 234]
-        );
+        let melds = obs.encode_seq_sparse_melds();
+        assert_eq!(melds.len(), 2);
+        assert_eq!(melds[0][0], MELD_KIND_PON);
+        assert_eq!(melds[1][0], MELD_KIND_CHI);
     }
 
     #[test]
     fn test_progression_type_bounds() {
-        // Verify type indices stay within PROG_DIMS[1] = 277
-        let prog_type_max: u16 = 277;
-        assert!(37 <= prog_type_max); // dahai max: 1 + 36 = 37
-        assert!(38 + 89 <= prog_type_max); // chi max: 38 + 89 = 127
-        assert!(128 + 39 <= prog_type_max); // pon max: 128 + 39 = 167
-        assert!(168 + 36 <= prog_type_max); // daiminkan max: 168 + 36 = 204
-        assert!(205 + 33 <= prog_type_max); // ankan max: 205 + 33 = 238
-        assert!(239 + 36 <= prog_type_max); // kakan max: 239 + 36 = 275
+        let prog_type_max = PROG_DIMS[1];
+        assert!(43 < prog_type_max); // padding
+        assert!(42 < prog_type_max); // kakan
     }
 
     #[test]
     fn test_candidate_type_bounds() {
-        // Verify type indices stay within CAND_DIMS[0] = 280
-        let cand_type_max: u16 = 280;
+        let cand_type_max = CAND_DIMS[0];
         assert!(36 < cand_type_max); // discard max: 36
-        assert!(37 + 33 < cand_type_max); // ankan max: 70
-        assert!(71 + 36 < cand_type_max); // kakan max: 107
-        assert!(108 < cand_type_max); // tsumo
-        assert!(109 < cand_type_max); // kyushu
-        assert!(110 < cand_type_max); // pass
-        assert!(111 + 89 < cand_type_max); // chi max: 200
-        assert!(201 + 39 < cand_type_max); // pon max: 240
-        assert!(241 + 36 < cand_type_max); // daiminkan max: 277
-        assert!(278 < cand_type_max); // ron
+        assert!(46 < cand_type_max); // padding
+        assert!(45 < cand_type_max); // ron
     }
 }

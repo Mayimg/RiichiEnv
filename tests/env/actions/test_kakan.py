@@ -81,4 +81,5 @@ class TestKakan:
         # Hand check
         current_hand = env.hands[player_id]
         assert 3 not in current_hand, "Tile 3 should be removed from hand"
-        assert any([ev["type"] == "kakan" for ev in env.mjai_log])
+        kakan_event = next(ev for ev in env.mjai_log if ev["type"] == "kakan")
+        assert "called" not in kakan_event

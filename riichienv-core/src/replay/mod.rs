@@ -1846,6 +1846,7 @@ impl WinResultContextIterator {
                         opened: true,
                         from_who,
                         called_tile: ct,
+                        added_tile: None,
                     });
                     if *meld_type == MeldType::Daiminkan {
                         self.rinshan[*seat] = true;
@@ -1932,6 +1933,7 @@ impl WinResultContextIterator {
                             opened: false,
                             from_who: -1,
                             called_tile: None,
+                            added_tile: None,
                         });
                         self.rinshan[*seat] = true;
 
@@ -1948,6 +1950,7 @@ impl WinResultContextIterator {
                             if m.meld_type == MeldType::Pon && (m.tiles[0] / 4 == tiles[0] / 4) {
                                 m.meld_type = MeldType::Kakan;
                                 m.tiles.push(tiles[0]);
+                                m.added_tile = Some(tiles[0]);
                                 upgraded = true;
                                 break;
                             }
@@ -1959,6 +1962,7 @@ impl WinResultContextIterator {
                                 opened: true,
                                 from_who: -1,
                                 called_tile: None,
+                                added_tile: Some(tiles[0]),
                             });
                         }
                         TileConverter::match_and_remove_u8(

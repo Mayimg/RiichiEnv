@@ -174,6 +174,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    added_tile: None,
                 });
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
@@ -211,6 +212,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    added_tile: None,
                 });
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
@@ -243,6 +245,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    added_tile: None,
                 });
                 self.current_player = actor as u8;
                 self.phase = Phase::WaitAct;
@@ -264,6 +267,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: false,
                     from_who: -1,
                     called_tile: None,
+                    added_tile: None,
                 });
                 self.current_player = actor as u8;
                 self.phase = Phase::WaitAct;
@@ -279,6 +283,7 @@ impl GameState3PEventHandler for GameState3P {
                     if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
                         m.meld_type = MeldType::Kakan;
                         m.tiles.push(tile);
+                        m.added_tile = Some(tile);
                         break;
                     }
                 }
@@ -471,6 +476,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: true,
                     from_who,
                     called_tile: ct,
+                    added_tile: None,
                 });
 
                 // PAO detection: daisangen (3 dragon melds) or daisuushii (4 wind melds)
@@ -545,6 +551,7 @@ impl GameState3PEventHandler for GameState3P {
                         opened: false,
                         from_who: -1,
                         called_tile: None,
+                        added_tile: None,
                     });
                 } else {
                     let tile = tiles[0];
@@ -556,6 +563,7 @@ impl GameState3PEventHandler for GameState3P {
                             m.meld_type = MeldType::Kakan;
                             m.tiles.push(tile);
                             m.tiles.sort();
+                            m.added_tile = Some(tile);
                             break;
                         }
                     }

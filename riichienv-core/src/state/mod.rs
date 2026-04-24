@@ -72,6 +72,9 @@ pub struct GameState {
     #[cfg(feature = "python")]
     pub round_seq_progression: Arc<Vec<[u16; 5]>>,
     #[cfg(feature = "python")]
+    pub round_seq_progression_melds:
+        Arc<Vec<[u16; crate::observation::sequence_features::MELD_FEATURE_WIDTH]>>,
+    #[cfg(feature = "python")]
     pub round_seq_prog_pending_reach: Option<u8>,
     /// When true, incrementally track progression tuples for sequence feature encoding.
     /// Disable when sequence features are not needed to avoid overhead.
@@ -141,6 +144,8 @@ impl GameState {
             #[cfg(feature = "python")]
             round_seq_progression: Arc::new(Vec::new()),
             #[cfg(feature = "python")]
+            round_seq_progression_melds: Arc::new(Vec::new()),
+            #[cfg(feature = "python")]
             round_seq_prog_pending_reach: None,
             #[cfg(feature = "python")]
             enable_seq_caching: false,
@@ -176,6 +181,7 @@ impl GameState {
         #[cfg(feature = "python")]
         {
             Arc::make_mut(&mut self.round_seq_progression).clear();
+            Arc::make_mut(&mut self.round_seq_progression_melds).clear();
             self.round_seq_prog_pending_reach = None;
         }
 
@@ -256,6 +262,7 @@ impl GameState {
         #[cfg(feature = "python")]
         if self.enable_seq_caching {
             obs.cached_progression = Some((*self.round_seq_progression).clone());
+            obs.cached_progression_melds = Some((*self.round_seq_progression_melds).clone());
         }
 
         obs
@@ -549,13 +556,16 @@ impl GameState {
                         {
                             self.players[p_idx].hand.remove(idx);
                         }
+                        let mut kakan_called_tile = None;
                         for m in self.players[p_idx].melds.iter_mut() {
                             if m.meld_type == crate::types::MeldType::Pon
                                 && m.tiles[0] / 4 == tile / 4
                             {
+                                kakan_called_tile = m.called_tile;
                                 m.meld_type = crate::types::MeldType::Kakan;
                                 m.tiles.push(tile);
                                 m.tiles.sort();
+                                m.added_tile = Some(tile);
                                 break;
                             }
                         }
@@ -566,13 +576,22 @@ impl GameState {
                             ev.insert("type".to_string(), Value::String("kakan".to_string()));
                             ev.insert("actor".to_string(), Value::Number(pid.into()));
                             ev.insert("pai".to_string(), Value::String(tid_to_mjai(tile)));
+                            let mut seq_ev = ev.clone();
+                            if let Some(called) = kakan_called_tile {
+                                seq_ev.insert(
+                                    "called".to_string(),
+                                    Value::String(tid_to_mjai(called)),
+                                );
+                            }
                             let cons: Vec<String> =
                                 act.consume_tiles.iter().map(|&t| tid_to_mjai(t)).collect();
-                            ev.insert(
-                                "consumed".to_string(),
-                                serde_json::to_value(cons).expect("valid JSON"),
+                            let consumed = serde_json::to_value(cons).expect("valid JSON");
+                            ev.insert("consumed".to_string(), consumed.clone());
+                            seq_ev.insert("consumed".to_string(), consumed);
+                            self._push_mjai_event_with_seq_event(
+                                Value::Object(ev),
+                                Some(Value::Object(seq_ev)),
                             );
-                            self._push_mjai_event(Value::Object(ev));
                         }
 
                         // Reveal any pending kan doras from previous kans
@@ -1183,6 +1202,7 @@ impl GameState {
                     opened: true,
                     from_who: discarder as i8,
                     called_tile: Some(tile),
+                    added_tile: None,
                 });
 
                 if !self.skip_mjai_logging {
@@ -1433,6 +1453,7 @@ impl GameState {
                 opened: m_type == MeldType::Daiminkan,
                 from_who,
                 called_tile: ct,
+                added_tile: None,
             });
 
             // PAO check for Daiminkan
@@ -1774,6 +1795,7 @@ impl GameState {
         #[cfg(feature = "python")]
         {
             Arc::make_mut(&mut self.round_seq_progression).clear();
+            Arc::make_mut(&mut self.round_seq_progression_melds).clear();
             self.round_seq_prog_pending_reach = None;
         }
 
@@ -2087,6 +2109,10 @@ impl GameState {
 
 impl GameState {
     pub fn _push_mjai_event(&mut self, event: Value) {
+        self._push_mjai_event_with_seq_event(event, None);
+    }
+
+    fn _push_mjai_event_with_seq_event(&mut self, event: Value, _seq_event: Option<Value>) {
         if self.skip_mjai_logging {
             return;
         }
@@ -2143,16 +2169,18 @@ impl GameState {
         }
 
         // Incrementally update pre-computed progression cache.
-        // Uses the original (unmasked) event Value directly — no JSON parsing.
+        // Uses the original (unmasked) event Value directly; callers may pass an
+        // internal sequence-feature event that is not exposed in public MJAI logs.
         #[cfg(feature = "python")]
         if self.enable_seq_caching
-            && let Some(entry) =
-                crate::observation::sequence_features::process_single_event_progression(
-                    &event,
+            && let Some((entry, meld)) =
+                crate::observation::sequence_features::process_single_event_progression_with_meld(
+                    _seq_event.as_ref().unwrap_or(&event),
                     &mut self.round_seq_prog_pending_reach,
                 )
         {
             Arc::make_mut(&mut self.round_seq_progression).push(entry);
+            Arc::make_mut(&mut self.round_seq_progression_melds).push(meld);
         }
     }
 }

@@ -109,7 +109,16 @@ class Meld:
     tiles: list[int]
     opened: bool
     from_who: int
-    def __init__(self, meld_type: MeldType, tiles: list[int], opened: bool, from_who: int = -1): ...
+    called_tile: int | None
+    added_tile: int | None
+    def __init__(
+        self,
+        meld_type: MeldType,
+        tiles: list[int],
+        opened: bool,
+        from_who: int = -1,
+        called_tile: int | None = None,
+    ): ...
 
 class Conditions:
     tsumo: bool
@@ -429,9 +438,14 @@ class Observation:
     def encode_seq_sparse(self, game_style: int = 1) -> bytes:
         """Encode sequence features as sparse token ids.
 
-        Shape: variable-length 1-D array (up to 14 elements) / dtype: ``uint16``.
-        The token stream includes table metadata, dora indicators, and meld
-        tokens.
+        Shape: variable-length 1-D array (up to 10 elements) / dtype: ``uint16``.
+        The token stream includes table metadata and dora indicators.
+        """
+        ...
+    def encode_seq_sparse_melds(self) -> bytes:
+        """Encode current meld features.
+
+        Shape: ``(M, 9)`` / dtype: ``uint16``.
         """
         ...
     def encode_seq_hand(self) -> bytes:
@@ -457,12 +471,24 @@ class Observation:
         Each row represents one action-history step with 5 token values.
         """
         ...
+    def encode_seq_progression_melds(self) -> bytes:
+        """Encode factorized meld features aligned with progression rows.
+
+        Shape: ``(N, 9)`` / dtype: ``uint16``.
+        """
+        ...
     def encode_seq_candidates(self) -> bytes:
         """Encode sequence candidate features.
 
         Shape: ``(M, 4)`` / dtype: ``uint16``.
 
         Each row represents one legal action candidate with 4 token values.
+        """
+        ...
+    def encode_seq_candidate_melds(self) -> bytes:
+        """Encode factorized meld features aligned with candidate rows.
+
+        Shape: ``(M, 9)`` / dtype: ``uint16``.
         """
         ...
     def __init__(self, *args: Any, **kwargs: Any): ...

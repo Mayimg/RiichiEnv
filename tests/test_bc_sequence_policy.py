@@ -8,11 +8,12 @@ import torch.nn.functional as F
 from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
 from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, SequenceFeaturePackedEncoder
 from riichienv_ml.models.transformer import (
-    _ACTION_KIND_ANKAN,
-    _ACTION_KIND_DAIMINKAN,
     _ACTION_KIND_DISCARD,
-    _ACTION_KIND_KAKAN,
     _ACTION_KIND_PAD,
+    _MELD_KIND_CHI,
+    _MELD_KIND_PAD,
+    _MELD_ROLE_CALLED,
+    _MELD_ROLE_CONSUMED,
     _RED_FLAG_PAD,
     _RED_FLAG_RED,
     _SPARSE_DORA_OFFSET,
@@ -207,16 +208,44 @@ def test_transformer_tile_only_action_type_lookups_ignore_meld_patterns():
     )
 
     assert model.prog_type_action_kind[1 + 5].item() == _ACTION_KIND_DISCARD
-    assert model.prog_type_action_kind[168 + 6].item() == _ACTION_KIND_DAIMINKAN
-    assert model.prog_type_action_kind[205 + 4].item() == _ACTION_KIND_ANKAN
-    assert model.prog_type_action_kind[239 + 7].item() == _ACTION_KIND_KAKAN
     assert model.prog_type_action_kind[38].item() == _ACTION_KIND_PAD
+    assert model.prog_type_action_kind[39].item() == _ACTION_KIND_PAD
+    assert model.prog_type_action_kind[40].item() == _ACTION_KIND_PAD
+    assert model.prog_type_action_kind[41].item() == _ACTION_KIND_PAD
+    assert model.prog_type_action_kind[42].item() == _ACTION_KIND_PAD
 
     assert model.cand_type_action_kind[5].item() == _ACTION_KIND_DISCARD
-    assert model.cand_type_action_kind[37 + 4].item() == _ACTION_KIND_ANKAN
-    assert model.cand_type_action_kind[71 + 7].item() == _ACTION_KIND_KAKAN
-    assert model.cand_type_action_kind[241 + 6].item() == _ACTION_KIND_DAIMINKAN
-    assert model.cand_type_action_kind[111].item() == _ACTION_KIND_PAD
+    assert model.cand_type_action_kind[37].item() == _ACTION_KIND_PAD
+    assert model.cand_type_action_kind[38].item() == _ACTION_KIND_PAD
+    assert model.cand_type_action_kind[42].item() == _ACTION_KIND_PAD
+    assert model.cand_type_action_kind[43].item() == _ACTION_KIND_PAD
+    assert model.cand_type_action_kind[44].item() == _ACTION_KIND_PAD
+
+
+def test_transformer_factorized_meld_embedding_uses_slot_padding():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    sparse = torch.tensor([[SequenceFeatureEncoder.SPARSE_PAD]], dtype=torch.long)
+    dora_tile34 = model._decode_current_dora_tiles(sparse)
+    melds = torch.tensor(
+        [[
+            [_MELD_KIND_CHI, 1, _MELD_ROLE_CALLED, 2, _MELD_ROLE_CONSUMED, 3, _MELD_ROLE_CONSUMED, 37, 3],
+            [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
+        ]],
+        dtype=torch.long,
+    )
+
+    emb = model._embed_sparse_melds(melds, dora_tile34)
+
+    assert emb.shape == (1, 2, 64)
+    assert torch.count_nonzero(emb[:, 0]) > 0
+    assert torch.allclose(emb[:, 1], torch.zeros_like(emb[:, 1]))
 
 
 def test_transformer_shared_tile_embedding_marks_red_and_tile34_unknown_red():

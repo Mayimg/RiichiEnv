@@ -6,21 +6,24 @@ The encoding design is based on [Kanachan v3](https://github.com/Cryolite/kanach
 
 ## Overview
 
-Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors, the sequence feature encoding produces **five heterogeneous feature groups** designed for embedding-based transformer architectures:
+Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors, the sequence feature encoding produces padded heterogeneous feature groups designed for embedding-based transformer architectures:
 
 | Feature Group | Shape | Type | Description |
 |---------------|-------|------|-------------|
-| **Sparse** | `(14,)` | int64 | Categorical tokens for embedding lookup |
+| **Sparse** | `(10,)` | int64 | Table metadata, tiles remaining, and dora indicators |
+| **Sparse Melds** | `(4, 9)` | int64 | Current player's melds in factorized meld layout |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
 | **Numeric** | `(12,)` | float32 | Continuous scalar features |
 | **Progression** | `(256, 5)` | int64 | Action history as 5-tuple sequences |
+| **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
 | **Candidates** | `(32, 4)` | int64 | Legal actions as 4-tuple sets |
+| **Candidate Melds** | `(32, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
 
 Each variable-length group is padded to its maximum length, with accompanying boolean masks indicating real vs. padding entries.
 
 ## Current Transformer Embedding Strategy
 
-The **encoding format above is unchanged**. The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) now factorizes tile-only tokens with a **shared tile embedding module** instead of learning separate tile embeddings independently inside each feature group.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module** and factorizes all melds with a **shared meld embedding module**.
 
 ### Shared tile attributes
 
@@ -46,20 +49,20 @@ Notes:
 - `tile34` collapses red fives onto their non-red 5 tile type.
 - `dora_flag` is computed from the **current observation state**, not from the historical state at each progression event.
 - Red fives are treated as `dora` for `dora_flag`.
-- `ankan` tokens only carry `tile34` in the encoded features, so their `red_flag` is treated as padding / unknown in the model.
+- Meld slots use `tile37`, so red fives can be represented inside chi/pon/kan structures.
 
 ### Where the shared tile embedding is used
 
-The shared tile embedding is currently applied only to feature fields that represent a **single tile kind**:
+The shared tile embedding is applied to single-tile fields and to the tile slots inside the shared meld embedding:
 
 | Feature group | Field / token range | Uses shared tile embedding |
 |---------------|---------------------|----------------------------|
 | Hand | `tile37` | Yes |
 | Sparse | dora-indicator tokens (`83-267`) | Yes, with an extra dora-slot embedding |
-| Progression | discard / daiminkan / ankan / kakan type ranges | Yes |
-| Candidates | discard / ankan / kakan / daiminkan type ranges | Yes |
-| Sparse meld tokens | chi / pon / kan pattern ids | No |
-| Progression / candidates | chi / pon / pass / ron / tsumo / markers | No |
+| Progression | discard type range | Yes |
+| Candidates | discard type range | Yes |
+| Sparse / progression / candidate meld sidecars | 4 tile slots per meld | Yes, via shared meld embedding |
+| Progression / candidates | pass / ron / tsumo / markers | No |
 
 For sparse dora-indicator tokens, the model keeps the existing dora-slot distinction (`1st` indicator, `2nd` indicator, etc.) as a separate embedding and combines it with the shared tile embedding for the indicator tile itself.
 
@@ -67,7 +70,7 @@ For sparse dora-indicator tokens, the model keeps the existing dora-slot distinc
 
 ### kan37 (37 tiles, red fives distinct)
 
-Used for discard, dora, drawn tile, daiminkan, and kakan encoding.
+Used for discard, dora, drawn tile, and all meld tile slots.
 
 | Range | Tiles |
 |-------|-------|
@@ -85,10 +88,6 @@ Conversion from 136-tile ID:
 - `tile_id == 88` -> 20 (red 5s)
 - Otherwise: `tile_type = tile_id / 4`, then `tile_type + 1` (man), `+2` (pin), `+3` (sou/honor)
 
-### kan34 (34 tile types, no red five distinction)
-
-Used for ankan encoding. Identity map: `tile_type (0-33)`.
-
 ### Relative Seat
 
 `(target - actor + 3) % 4`:
@@ -98,9 +97,9 @@ Used for ankan encoding. Identity map: `tile_type (0-33)`.
 
 ## 1. Sparse Features
 
-**Vocabulary size: 549, max tokens: 14, padding index: 548**
+**Vocabulary size: 269, max tokens: 10, padding index: 268**
 
-Each observation produces 5-14 sparse tokens. Each token is an index into an embedding table.
+Each observation produces 5-10 sparse tokens. Each token is an index into an embedding table.
 
 | Offset | Count | Feature | Source |
 |--------|-------|---------|--------|
@@ -110,15 +109,15 @@ Each observation produces 5-14 sparse tokens. Each token is an index into an emb
 | 9-12 | 4 | Ju / dealer round (0-3) | `obs.oya` |
 | 13-82 | 70 | Tiles remaining (0-69) | derived from visible tiles |
 | 83-267 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
-| 268-547 | 280 | Meld tokens (candidate-style chi/pon/kan type ids) | `obs.melds[player_id]` |
-| 548 | 1 | Padding | - |
+| 268 | 1 | Padding | - |
 
 **Token composition per observation:**
 - 4 fixed tokens (game style + seat + round wind + dealer)
 - 1 tiles-remaining token
 - 1-5 dora indicator tokens
-- 0-4 meld tokens
-- Total: typically 11-14 tokens
+- Total: typically 6-10 tokens
+
+Current melds are encoded separately by `encode_seq_sparse_melds()` with the shared factorized meld layout.
 
 ### Rust API
 
@@ -132,6 +131,37 @@ obs.encode_seq_sparse(game_style: u8) -> Vec<u16>
 sparse_bytes = obs.encode_seq_sparse(game_style=1)
 sparse = np.frombuffer(sparse_bytes, dtype=np.uint16)  # variable length
 ```
+
+## 1a. Meld Sidecar Features
+
+**Tuple sequence, max 4 current meld entries; aligned sidecars for progression and candidates**
+
+Each meld row has 9 fields:
+
+```text
+(kind, slot0_tile37, slot0_role, slot1_tile37, slot1_role,
+       slot2_tile37, slot2_role, slot3_tile37, slot3_role)
+```
+
+| Field | Values |
+|-------|--------|
+| kind | 0=chi, 1=pon, 2=daiminkan, 3=ankan, 4=kakan, 5=padding |
+| slot tile | 0-36=tile37, 37=padding |
+| slot role | 0=called, 1=consumed, 2=added_tile, 3=padding |
+
+**Padding row:** `(5, 37, 3, 37, 3, 37, 3, 37, 3)`
+
+Slot order:
+
+| Meld Kind | slot_0 | slot_1 | slot_2 | slot_3 |
+|-----------|--------|--------|--------|--------|
+| chi | called | consumed | consumed | padding |
+| pon | called | consumed | consumed | padding |
+| daiminkan | called | consumed | consumed | consumed |
+| ankan | consumed | consumed | consumed | consumed |
+| kakan | added_tile | original pon called | original pon consumed | original pon consumed |
+
+For kakan, `Meld.added_tile` preserves the added tile so current sparse melds can distinguish it from the original pon.
 
 ## 2. Hand Features
 
@@ -205,25 +235,25 @@ Each action from the kyoku start to the current decision point is encoded as a 5
 | Field | Vocab | Values |
 |-------|-------|--------|
 | actor | 5 | 0-3 (seats), 4 (padding/marker) |
-| type | 277 | see table below |
+| type | 44 | see table below |
 | moqie | 3 | 0=tedashi (hand tile), 1=tsumogiri (drawn tile), 2=N/A |
 | liqi | 3 | 0=no riichi, 1=with riichi declaration, 2=N/A |
 | from | 5 | 0=shimocha, 1=toimen, 2=kamicha, 4=N/A |
 
-**Padding tuple:** `(4, 276, 2, 2, 4)`
+**Padding tuple:** `(4, 43, 2, 2, 4)`
 
-### Type Encoding (277 values)
+### Type Encoding (44 values)
 
 | Range | Count | Action | Encoding |
 |-------|-------|--------|----------|
 | 0 | 1 | Beginning-of-round marker | Fixed value |
 | 1-37 | 37 | Discard | `1 + kan37(tile)` |
-| 38-127 | 90 | Chi | `38 + chi_encoding` |
-| 128-167 | 40 | Pon | `128 + pon_encoding` |
-| 168-204 | 37 | Daiminkan | `168 + kan37(tile)` |
-| 205-238 | 34 | Ankan | `205 + kan34(tile)` |
-| 239-275 | 37 | Kakan | `239 + kan37(tile)` |
-| 276 | 1 | Padding | - |
+| 38 | 1 | Chi | Details in aligned progression meld row |
+| 39 | 1 | Pon | Details in aligned progression meld row |
+| 40 | 1 | Daiminkan | Details in aligned progression meld row |
+| 41 | 1 | Ankan | Details in aligned progression meld row |
+| 42 | 1 | Kakan | Details in aligned progression meld row |
+| 43 | 1 | Padding | - |
 
 ### MJAI Event to Tuple Mapping
 
@@ -231,11 +261,11 @@ Each action from the kyoku start to the current decision point is encoded as a 5
 |-------|-------|
 | `start_kyoku` | `(4, 0, 2, 2, 4)` |
 | `dahai` | `(actor, 1+kan37, moqie, liqi, 4)` |
-| `chi` | `(actor, 38+chi_enc, 2, 2, relative_from)` |
-| `pon` | `(actor, 128+pon_enc, 2, 2, relative_from)` |
-| `daiminkan` | `(actor, 168+kan37, 2, 2, relative_from)` |
-| `ankan` | `(actor, 205+kan34, 2, 2, 4)` |
-| `kakan` | `(actor, 239+kan37, 2, 2, 4)` |
+| `chi` | `(actor, 38, 2, 2, relative_from)` |
+| `pon` | `(actor, 39, 2, 2, relative_from)` |
+| `daiminkan` | `(actor, 40, 2, 2, relative_from)` |
+| `ankan` | `(actor, 41, 2, 2, 4)` |
+| `kakan` | `(actor, 42, 2, 2, 4)` |
 
 - For `dahai`: `liqi=1` if preceded by a `reach` event from the same actor
 - `tsumo`, `dora`, `reach_accepted` events are **not** included in progression
@@ -251,6 +281,7 @@ obs.encode_seq_progression() -> Vec<[u16; 5]>
 ```python
 prog_bytes = obs.encode_seq_progression()
 prog = np.frombuffer(prog_bytes, dtype=np.uint16).reshape(-1, 5)  # variable length
+prog_melds = np.frombuffer(obs.encode_seq_progression_melds(), dtype=np.uint16).reshape(-1, 9)
 ```
 
 ## 5. Candidate Features (Legal Actions)
@@ -263,28 +294,28 @@ Each legal action is encoded as a 4-tuple `(type, moqie, liqi, from)`.
 
 | Field | Vocab | Values |
 |-------|-------|--------|
-| type | 280 | see table below |
+| type | 47 | see table below |
 | moqie | 3 | 0=tedashi, 1=tsumogiri, 2=N/A |
 | liqi | 3 | 0=no riichi, 1=with riichi, 2=N/A |
 | from | 4 | 0=shimocha, 1=toimen, 2=kamicha, 3=self |
 
-**Padding tuple:** `(279, 2, 2, 3)`
+**Padding tuple:** `(46, 2, 2, 3)`
 
-### Type Encoding (280 values)
+### Type Encoding (47 values)
 
 | Range | Count | Action | Encoding |
 |-------|-------|--------|----------|
 | 0-36 | 37 | Discard | `kan37(tile)` |
-| 37-70 | 34 | Ankan | `37 + kan34(tile)` |
-| 71-107 | 37 | Kakan | `71 + kan37(tile)` |
-| 108 | 1 | Tsumo (win) | Fixed |
-| 109 | 1 | Kyushu kyuhai (9 terminals draw) | Fixed |
-| 110 | 1 | Pass | Fixed |
-| 111-200 | 90 | Chi | `111 + chi_encoding` |
-| 201-240 | 40 | Pon | `201 + pon_encoding` |
-| 241-277 | 37 | Daiminkan | `241 + kan37(tile)` |
-| 278 | 1 | Ron (win) | Fixed |
-| 279 | 1 | Padding | - |
+| 37 | 1 | Ankan | Details in aligned candidate meld row |
+| 38 | 1 | Kakan | Details in aligned candidate meld row |
+| 39 | 1 | Tsumo (win) | Fixed |
+| 40 | 1 | Kyushu kyuhai (9 terminals draw) | Fixed |
+| 41 | 1 | Pass | Fixed |
+| 42 | 1 | Chi | Details in aligned candidate meld row |
+| 43 | 1 | Pon | Details in aligned candidate meld row |
+| 44 | 1 | Daiminkan | Details in aligned candidate meld row |
+| 45 | 1 | Ron (win) | Fixed |
+| 46 | 1 | Padding | - |
 
 **Note:** `Riichi` is not a separate candidate type. When riichi is available, the corresponding discard candidates should be interpreted with `liqi=1`.
 
@@ -299,43 +330,8 @@ obs.encode_seq_candidates() -> Vec<[u16; 4]>
 ```python
 cand_bytes = obs.encode_seq_candidates()
 cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 4)  # variable length
+cand_melds = np.frombuffer(obs.encode_seq_candidate_melds(), dtype=np.uint16).reshape(-1, 9)
 ```
-
-## Chi Encoding (90 patterns)
-
-90 = 3 suits x 30 per suit.
-
-Each suit has 7 possible sequence starts (rank 1-7, i.e. 1-2-3 through 7-8-9). For each sequence:
-- 3 call positions (which tile in the sequence was called from discard)
-- If the sequence contains a 5 tile: +3 red-five variants (one per call position)
-
-Per suit: sequences not containing 5 have 3 patterns, sequences containing 5 have 6 patterns.
-
-```
-Rank 1-2-3 (no 5): 3 patterns  ->  3
-Rank 2-3-4 (no 5): 3 patterns  ->  3
-Rank 3-4-5 (has 5): 6 patterns ->  6
-Rank 4-5-6 (has 5): 6 patterns ->  6
-Rank 5-6-7 (has 5): 6 patterns ->  6
-Rank 6-7-8 (no 5): 3 patterns  ->  3
-Rank 7-8-9 (no 5): 3 patterns  ->  3
-Total per suit:                    30
-```
-
-Suit offsets: manzu=0, pinzu=30, souzu=60.
-
-## Pon Encoding (40 patterns)
-
-40 = 3 suits x 11 + 7 honors.
-
-Per suit (11 patterns):
-- Ranks 1-4 (non-five): 4 patterns (one each)
-- Rank 5 (five): 3 variants (no red, red-in-hand, red-called)
-- Ranks 6-9 (non-five): 4 patterns (one each)
-
-Honors: 7 patterns (E, S, W, N, P, F, C), one each.
-
-Suit offsets: manzu=0, pinzu=11, souzu=22, honors=33.
 
 ## Python Wrapper: SequenceFeatureEncoder
 
@@ -353,12 +349,15 @@ enc = SequenceFeatureEncoder(n_players=4, game_style=1)
 
 for pid, obs in obs_dict.items():
     features = enc.encode(obs)
-    # features["sparse"]      -- (25,) int64, padded with 342
+    # features["sparse"]      -- (10,) int64, padded with 268
+    # features["sparse_melds"]-- (4, 9) int64, padded with (5, 37, 3, ...)
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
     # features["numeric"]     -- (12,) float32
-    # features["progression"] -- (256, 5) int64, padded with (4, 276, 2, 2, 4)
-    # features["candidates"]  -- (32, 4) int64, padded with (279, 2, 2, 3)
-    # features["sparse_mask"] -- (14,) bool, True for real tokens
+    # features["progression"] -- (256, 5) int64, padded with (4, 43, 2, 2, 4)
+    # features["prog_melds"]  -- (256, 9) int64, aligned with progression
+    # features["candidates"]  -- (32, 4) int64, padded with (46, 2, 2, 3)
+    # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
+    # features["sparse_mask"] -- (10,) bool, True for real tokens
     # features["hand_mask"]   -- (14,) bool, True for real entries
     # features["prog_mask"]   -- (256,) bool, True for real entries
     # features["cand_mask"]   -- (32,) bool, True for real entries
@@ -367,15 +366,17 @@ for pid, obs in obs_dict.items():
 ### Constants
 
 ```python
-SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 549
-SequenceFeatureEncoder.MAX_SPARSE_LEN     # 14
+SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 269
+SequenceFeatureEncoder.MAX_SPARSE_LEN     # 10
+SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 4
+SequenceFeatureEncoder.MELD_DIMS           # (6, 38, 4, 38, 4, 38, 4, 38, 4)
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 12
-SequenceFeatureEncoder.PROG_DIMS           # (5, 277, 3, 3, 5)
-SequenceFeatureEncoder.CAND_DIMS           # (280, 3, 3, 4)
+SequenceFeatureEncoder.PROG_DIMS           # (5, 44, 3, 3, 5)
+SequenceFeatureEncoder.CAND_DIMS           # (47, 3, 3, 4)
 ```
 
 ## Implementation
@@ -383,5 +384,5 @@ SequenceFeatureEncoder.CAND_DIMS           # (280, 3, 3, 4)
 | File | Package | Description |
 |------|---------|-------------|
 | `riichienv-core/src/observation/sequence_features.rs` | riichienv-core | Rust encoding logic (~470 lines) |
-| `riichienv-core/src/observation/python.rs` | riichienv-core | PyO3 bindings (5 methods) |
-| `riichienv-ml/src/riichienv_ml/features/sequence_features.py` | riichienv-ml | Python wrapper (~115 lines) |
+| `riichienv-core/src/observation/python.rs` | riichienv-core | PyO3 bindings |
+| `riichienv-ml/src/riichienv_ml/features/sequence_features.py` | riichienv-ml | Python wrapper |

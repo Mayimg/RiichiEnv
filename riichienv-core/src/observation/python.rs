@@ -1386,7 +1386,7 @@ impl Observation {
 
     /// Encode sparse features as variable-length u16 indices.
     ///
-    /// Returns raw bytes of a `&[u16]` slice (variable length, max 14 elements).
+    /// Returns raw bytes of a `&[u16]` slice (variable length, max 10 elements).
     /// Python side: `np.frombuffer(bytes, dtype=np.uint16)`.
     #[pyo3(name = "encode_seq_sparse", signature = (game_style=1))]
     pub fn encode_seq_sparse_py<'py>(
@@ -1398,6 +1398,23 @@ impl Observation {
         let byte_len = tokens.len() * std::mem::size_of::<u16>();
         let byte_slice =
             unsafe { std::slice::from_raw_parts(tokens.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
+    /// Encode current meld features as N × 9 u16 rows.
+    ///
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 9)`.
+    #[pyo3(name = "encode_seq_sparse_melds")]
+    pub fn encode_seq_sparse_melds_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let melds = self.encode_seq_sparse_melds();
+        let byte_len = melds.len()
+            * std::mem::size_of::<[u16; crate::observation::sequence_features::MELD_FEATURE_WIDTH]>(
+            );
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(melds.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
@@ -1449,6 +1466,21 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
+    /// Encode factorized meld sidecar rows aligned with progression.
+    #[pyo3(name = "encode_seq_progression_melds")]
+    pub fn encode_seq_progression_melds_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let melds = self.encode_seq_progression_melds();
+        let byte_len = melds.len()
+            * std::mem::size_of::<[u16; crate::observation::sequence_features::MELD_FEATURE_WIDTH]>(
+            );
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(melds.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
     /// Encode candidate (legal action) features as M × 4 u16 tuples.
     ///
     /// Returns raw bytes of flattened row-major `&[[u16; 4]]`.
@@ -1463,6 +1495,21 @@ impl Observation {
         let byte_len = cands.len() * std::mem::size_of::<[u16; 4]>();
         let byte_slice =
             unsafe { std::slice::from_raw_parts(cands.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
+    /// Encode factorized meld sidecar rows aligned with candidates.
+    #[pyo3(name = "encode_seq_candidate_melds")]
+    pub fn encode_seq_candidate_melds_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let melds = self.encode_seq_candidate_melds();
+        let byte_len = melds.len()
+            * std::mem::size_of::<[u16; crate::observation::sequence_features::MELD_FEATURE_WIDTH]>(
+            );
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(melds.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 }

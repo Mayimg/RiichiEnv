@@ -172,6 +172,7 @@ impl GameStateEventHandler for GameState {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    added_tile: None,
                 });
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
@@ -207,6 +208,7 @@ impl GameStateEventHandler for GameState {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    added_tile: None,
                 });
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
@@ -258,6 +260,7 @@ impl GameStateEventHandler for GameState {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    added_tile: None,
                 });
                 self.phase = Phase::WaitAct;
                 self.active_players = vec![actor as u8];
@@ -278,6 +281,7 @@ impl GameStateEventHandler for GameState {
                     opened: false,
                     from_who: -1,
                     called_tile: None,
+                    added_tile: None,
                 });
                 self.current_player = actor as u8;
                 self.phase = Phase::WaitAct;
@@ -345,17 +349,18 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression;
+                    use crate::observation::sequence_features::process_single_event_progression_with_meld;
                     use crate::parser::tid_to_mjai;
                     use std::sync::Arc;
 
                     if *is_liqi || *is_wliqi {
                         let ev = serde_json::json!({"type": "reach", "actor": s});
-                        if let Some(entry) = process_single_event_progression(
+                        if let Some((entry, meld)) = process_single_event_progression_with_meld(
                             &ev,
                             &mut self.round_seq_prog_pending_reach,
                         ) {
                             Arc::make_mut(&mut self.round_seq_progression).push(entry);
+                            Arc::make_mut(&mut self.round_seq_progression_melds).push(meld);
                         }
                     }
                     let pai = tid_to_mjai(t);
@@ -365,11 +370,12 @@ impl GameStateEventHandler for GameState {
                         "pai": pai,
                         "tsumogiri": is_tsumogiri,
                     });
-                    if let Some(entry) = process_single_event_progression(
+                    if let Some((entry, meld)) = process_single_event_progression_with_meld(
                         &ev,
                         &mut self.round_seq_prog_pending_reach,
                     ) {
                         Arc::make_mut(&mut self.round_seq_progression).push(entry);
+                        Arc::make_mut(&mut self.round_seq_progression_melds).push(meld);
                     }
                 }
 
@@ -439,7 +445,7 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression;
+                    use crate::observation::sequence_features::process_single_event_progression_with_meld;
                     use crate::parser::tid_to_mjai;
                     use std::sync::Arc;
 
@@ -472,11 +478,12 @@ impl GameStateEventHandler for GameState {
                             "pai": pai_str,
                             "consumed": consumed_strs,
                         });
-                        if let Some(entry) = process_single_event_progression(
+                        if let Some((entry, meld)) = process_single_event_progression_with_meld(
                             &ev,
                             &mut self.round_seq_prog_pending_reach,
                         ) {
                             Arc::make_mut(&mut self.round_seq_progression).push(entry);
+                            Arc::make_mut(&mut self.round_seq_progression_melds).push(meld);
                         }
                     }
                 }
@@ -518,6 +525,7 @@ impl GameStateEventHandler for GameState {
                     opened: true,
                     from_who,
                     called_tile: ct,
+                    added_tile: None,
                 });
 
                 // PAO detection: daisangen (3 dragon melds) or daisuushii (4 wind melds)
@@ -569,7 +577,7 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression;
+                    use crate::observation::sequence_features::process_single_event_progression_with_meld;
                     use crate::parser::tid_to_mjai;
                     use std::sync::Arc;
 
@@ -587,17 +595,27 @@ impl GameStateEventHandler for GameState {
                     } else {
                         // Kakan
                         let pai_str = tid_to_mjai(tiles[0]);
+                        let existing_pon = self.players[*seat].melds.iter().find(|m| {
+                            m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tiles[0] / 4
+                        });
+                        let called = existing_pon.and_then(|m| m.called_tile).map(tid_to_mjai);
+                        let consumed_strs: Vec<String> = existing_pon
+                            .map(|m| m.tiles.iter().map(|&t| tid_to_mjai(t)).collect())
+                            .unwrap_or_default();
                         serde_json::json!({
                             "type": "kakan",
                             "actor": *seat,
                             "pai": pai_str,
+                            "called": called,
+                            "consumed": consumed_strs,
                         })
                     };
-                    if let Some(entry) = process_single_event_progression(
+                    if let Some((entry, meld)) = process_single_event_progression_with_meld(
                         &ev,
                         &mut self.round_seq_prog_pending_reach,
                     ) {
                         Arc::make_mut(&mut self.round_seq_progression).push(entry);
+                        Arc::make_mut(&mut self.round_seq_progression_melds).push(meld);
                     }
                 }
 
@@ -627,6 +645,7 @@ impl GameStateEventHandler for GameState {
                         opened: false,
                         from_who: -1,
                         called_tile: None,
+                        added_tile: None,
                     });
                 } else {
                     // Kakan
@@ -639,6 +658,7 @@ impl GameStateEventHandler for GameState {
                             m.meld_type = MeldType::Kakan;
                             m.tiles.push(tile);
                             m.tiles.sort();
+                            m.added_tile = Some(tile);
                             break;
                         }
                     }
