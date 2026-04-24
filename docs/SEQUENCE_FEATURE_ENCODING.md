@@ -6,16 +6,62 @@ The encoding design is based on [Kanachan v3](https://github.com/Cryolite/kanach
 
 ## Overview
 
-Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors, the sequence feature encoding produces **four heterogeneous feature groups** designed for embedding-based transformer architectures:
+Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors, the sequence feature encoding produces **five heterogeneous feature groups** designed for embedding-based transformer architectures:
 
 | Feature Group | Shape | Type | Description |
 |---------------|-------|------|-------------|
-| **Sparse** | `(25,)` | int64 | Categorical tokens for embedding lookup |
+| **Sparse** | `(14,)` | int64 | Categorical tokens for embedding lookup |
+| **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
 | **Numeric** | `(12,)` | float32 | Continuous scalar features |
 | **Progression** | `(256, 5)` | int64 | Action history as 5-tuple sequences |
 | **Candidates** | `(32, 4)` | int64 | Legal actions as 4-tuple sets |
 
 Each variable-length group is padded to its maximum length, with accompanying boolean masks indicating real vs. padding entries.
+
+## Current Transformer Embedding Strategy
+
+The **encoding format above is unchanged**. The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) now factorizes tile-only tokens with a **shared tile embedding module** instead of learning separate tile embeddings independently inside each feature group.
+
+### Shared tile attributes
+
+For tile-only tokens, a tile embedding is built as:
+
+```text
+attribute embeddings -> concat -> linear projection
+```
+
+with the following attributes:
+
+| Attribute | Values |
+|-----------|--------|
+| `tile34` | `0-33`, padding |
+| `suit` | `man / pin / sou / honor / padding` |
+| `rank` | `1-9 / none / padding` |
+| `honor_kind` | `E / S / W / N / white / green / red / none / padding` |
+| `red_flag` | `normal / red / padding` |
+| `tile_class` | `simple / terminal / wind / dragon / padding` |
+| `dora_flag` | `dora / none / padding` |
+
+Notes:
+- `tile34` collapses red fives onto their non-red 5 tile type.
+- `dora_flag` is computed from the **current observation state**, not from the historical state at each progression event.
+- Red fives are treated as `dora` for `dora_flag`.
+- `ankan` tokens only carry `tile34` in the encoded features, so their `red_flag` is treated as padding / unknown in the model.
+
+### Where the shared tile embedding is used
+
+The shared tile embedding is currently applied only to feature fields that represent a **single tile kind**:
+
+| Feature group | Field / token range | Uses shared tile embedding |
+|---------------|---------------------|----------------------------|
+| Hand | `tile37` | Yes |
+| Sparse | dora-indicator tokens (`83-267`) | Yes, with an extra dora-slot embedding |
+| Progression | discard / daiminkan / ankan / kakan type ranges | Yes |
+| Candidates | discard / ankan / kakan / daiminkan type ranges | Yes |
+| Sparse meld tokens | chi / pon / kan pattern ids | No |
+| Progression / candidates | chi / pon / pass / ron / tsumo / markers | No |
+
+For sparse dora-indicator tokens, the model keeps the existing dora-slot distinction (`1st` indicator, `2nd` indicator, etc.) as a separate embedding and combines it with the shared tile embedding for the indicator tile itself.
 
 ## Tile Encodings
 

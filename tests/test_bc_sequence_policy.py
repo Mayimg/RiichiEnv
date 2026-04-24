@@ -1,15 +1,27 @@
 import json
 import re
 
+import pytest
+import riichienv_ml.trainers.bc_policy as bc_policy_module
 import torch
 import torch.nn.functional as F
-import pytest
-
-from riichienv import MjaiReplay
 from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
 from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, SequenceFeaturePackedEncoder
-from riichienv_ml.models.transformer import TransformerActorCritic, TransformerPolicyNetwork
-import riichienv_ml.trainers.bc_policy as bc_policy_module
+from riichienv_ml.models.transformer import (
+    _ACTION_KIND_ANKAN,
+    _ACTION_KIND_DAIMINKAN,
+    _ACTION_KIND_DISCARD,
+    _ACTION_KIND_KAKAN,
+    _ACTION_KIND_PAD,
+    _RED_FLAG_PAD,
+    _RED_FLAG_RED,
+    _SPARSE_DORA_OFFSET,
+    _TILE34_PAD,
+    TransformerActorCritic,
+    TransformerPolicyNetwork,
+)
+
+from riichienv import MjaiReplay, Observation
 
 
 class DummyEncoder:
@@ -132,13 +144,28 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
     assert logits.shape == (1, 82)
 
 
-def test_sequence_feature_encoder_factorizes_hand_draw_state(tmp_path):
-    file_path = tmp_path / "bc_sequence_hand_sample.jsonl"
-    _write_simple_4p_log(file_path)
-
-    replay = MjaiReplay.from_jsonl(str(file_path), rule="tenhou")
-    kyoku = list(replay.take_kyokus())[0]
-    obs, _ = next(iter(kyoku.steps(0)))
+def test_sequence_feature_encoder_factorizes_hand_draw_state():
+    obs = Observation(
+        0,
+        [[0, 1, 4], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        ['{"type":"tsumo","actor":0,"pai":"1m"}'],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+    )
 
     features = SequenceFeatureEncoder().encode(obs)
     hand = features["hand"]
@@ -148,6 +175,62 @@ def test_sequence_feature_encoder_factorizes_hand_draw_state(tmp_path):
     assert valid_hand.shape[1] == 2
     assert torch.count_nonzero(valid_hand[:, 1] == 1) == 1
     assert torch.count_nonzero(valid_hand[:, 1] == 0) == len(valid_hand) - 1
+
+
+def test_transformer_decodes_current_dora_tiles_from_sparse_tokens():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    sparse = torch.tensor(
+        [[_SPARSE_DORA_OFFSET + 4, _SPARSE_DORA_OFFSET + 36, SequenceFeatureEncoder.SPARSE_PAD]],
+        dtype=torch.long,
+    )
+
+    dora_tile34 = model._decode_current_dora_tiles(sparse)
+
+    assert dora_tile34.tolist() == [[4, 31, _TILE34_PAD]]
+
+
+def test_transformer_tile_only_action_type_lookups_ignore_meld_patterns():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+
+    assert model.prog_type_action_kind[1 + 5].item() == _ACTION_KIND_DISCARD
+    assert model.prog_type_action_kind[168 + 6].item() == _ACTION_KIND_DAIMINKAN
+    assert model.prog_type_action_kind[205 + 4].item() == _ACTION_KIND_ANKAN
+    assert model.prog_type_action_kind[239 + 7].item() == _ACTION_KIND_KAKAN
+    assert model.prog_type_action_kind[38].item() == _ACTION_KIND_PAD
+
+    assert model.cand_type_action_kind[5].item() == _ACTION_KIND_DISCARD
+    assert model.cand_type_action_kind[37 + 4].item() == _ACTION_KIND_ANKAN
+    assert model.cand_type_action_kind[71 + 7].item() == _ACTION_KIND_KAKAN
+    assert model.cand_type_action_kind[241 + 6].item() == _ACTION_KIND_DAIMINKAN
+    assert model.cand_type_action_kind[111].item() == _ACTION_KIND_PAD
+
+
+def test_transformer_shared_tile_embedding_marks_red_and_tile34_unknown_red():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+
+    assert model.tile_embed.tile37_red_flag[0].item() == _RED_FLAG_RED
+    assert model.tile_embed.tile34_red_flag[4].item() == _RED_FLAG_PAD
 
 
 def test_bc_policy_trainer_logs_recent_100_batch_metrics(monkeypatch):
