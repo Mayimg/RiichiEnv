@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::action::{Action, ActionEncoder};
 use crate::errors::{RiichiError, RiichiResult};
 use crate::types::Meld;
+#[cfg(feature = "python")]
+use sequence_features::MELD_FEATURE_WIDTH;
 
 #[cfg_attr(
     feature = "python",
@@ -37,6 +39,9 @@ pub struct Observation {
     #[serde(skip)]
     #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) cached_progression: Option<Vec<[u16; 5]>>,
+    #[serde(skip)]
+    #[cfg(feature = "python")]
+    pub(crate) cached_progression_melds: Option<Vec<[u16; MELD_FEATURE_WIDTH]>>,
 
     pub honba: u8,
     pub riichi_sticks: u32,
@@ -90,6 +95,8 @@ impl Observation {
             _legal_actions: legal_actions,
             events,
             cached_progression: None,
+            #[cfg(feature = "python")]
+            cached_progression_melds: None,
             honba,
             riichi_sticks,
             round_wind,

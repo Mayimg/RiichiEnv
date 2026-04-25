@@ -103,6 +103,9 @@ pub struct Meld {
     /// The tile claimed from another player's discard (for chi/pon/daiminkan).
     /// None for ankan/kakan or melds not involving a discard claim.
     pub called_tile: Option<u8>,
+    /// The tile added to an existing pon for kakan.
+    #[serde(default)]
+    pub added_tile: Option<u8>,
 }
 
 impl Meld {
@@ -119,11 +122,17 @@ impl Meld {
             opened,
             from_who,
             called_tile,
+            added_tile: None,
         }
     }
 
     pub fn tiles_as_u32(&self) -> Vec<u32> {
         self.tiles.iter().map(|&t| t as u32).collect()
+    }
+
+    pub fn with_added_tile(mut self, tile: u8) -> Self {
+        self.added_tile = Some(tile);
+        self
     }
 }
 
@@ -185,6 +194,16 @@ impl Meld {
     #[getter]
     pub fn get_called_tile(&self) -> Option<u8> {
         self.called_tile
+    }
+
+    #[getter]
+    pub fn get_added_tile(&self) -> Option<u8> {
+        self.added_tile
+    }
+
+    #[setter]
+    pub fn set_added_tile(&mut self, added_tile: Option<u8>) {
+        self.added_tile = added_tile;
     }
 }
 

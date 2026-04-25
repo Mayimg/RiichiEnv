@@ -504,6 +504,7 @@ impl GameState3P {
                                 m.meld_type = MeldType::Kakan;
                                 m.tiles.push(tile);
                                 m.tiles.sort();
+                                m.added_tile = Some(tile);
                                 break;
                             }
                         }
@@ -1111,6 +1112,7 @@ impl GameState3P {
                     opened: true,
                     from_who: discarder as i8,
                     called_tile: Some(tile),
+                    added_tile: None,
                 });
 
                 if !self.skip_mjai_logging {
@@ -1338,6 +1340,7 @@ impl GameState3P {
                 opened: m_type == MeldType::Daiminkan,
                 from_who,
                 called_tile: ct,
+                added_tile: None,
             });
 
             // PAO check for Daiminkan
