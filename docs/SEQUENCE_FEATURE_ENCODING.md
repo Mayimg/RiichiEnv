@@ -286,50 +286,49 @@ prog_melds = np.frombuffer(obs.encode_seq_progression_melds(), dtype=np.uint16).
 
 ## 5. Candidate Features (Legal Actions)
 
-**4-tuple set, max 32 entries (default)**
+**2-tuple set, max 32 entries (default)**
 
-Each legal action is encoded as a 4-tuple `(type, moqie, liqi, from)`.
+Each legal action candidate is encoded as a 2-tuple `(type, from)`. The candidate list is collapsed to one representative per current 4-player 82-action id, matching the policy pointer target. When multiple physical legal actions map to one action id, discard candidates prefer a non-red tile over a red five, while chi/pon candidates prefer representatives that consume red fives.
 
 ### Tuple Fields
 
 | Field | Vocab | Values |
 |-------|-------|--------|
-| type | 47 | see table below |
-| moqie | 3 | 0=tedashi, 1=tsumogiri, 2=N/A |
-| liqi | 3 | 0=no riichi, 1=with riichi, 2=N/A |
+| type | 45 | see table below |
 | from | 4 | 0=shimocha, 1=toimen, 2=kamicha, 3=self |
 
-**Padding tuple:** `(46, 2, 2, 3)`
+**Padding tuple:** `(44, 3)`
 
-### Type Encoding (47 values)
+`moqie` and `liqi` are intentionally not present in the current candidate tuple. The fixed 82-action space does not distinguish tedashi/tsumogiri, and riichi is represented as a standalone action type. If the action space later distinguishes tedashi/tsumogiri, a moqie field can be reintroduced together with that action-space change.
+
+### Type Encoding (45 values)
 
 | Range | Count | Action | Encoding |
 |-------|-------|--------|----------|
-| 0-36 | 37 | Discard | `kan37(tile)` |
-| 37 | 1 | Ankan | Details in aligned candidate meld row |
-| 38 | 1 | Kakan | Details in aligned candidate meld row |
-| 39 | 1 | Tsumo (win) | Fixed |
-| 40 | 1 | Kyushu kyuhai (9 terminals draw) | Fixed |
-| 41 | 1 | Pass | Fixed |
-| 42 | 1 | Chi | Details in aligned candidate meld row |
-| 43 | 1 | Pon | Details in aligned candidate meld row |
-| 44 | 1 | Daiminkan | Details in aligned candidate meld row |
-| 45 | 1 | Ron (win) | Fixed |
-| 46 | 1 | Padding | - |
-
-**Note:** `Riichi` is not a separate candidate type. When riichi is available, the corresponding discard candidates should be interpreted with `liqi=1`.
+| 0-33 | 34 | Discard | `tile34(tile)` |
+| 34 | 1 | Riichi | Fixed |
+| 35 | 1 | Ankan | Details in aligned candidate meld row |
+| 36 | 1 | Kakan | Details in aligned candidate meld row |
+| 37 | 1 | Tsumo (win) | Fixed |
+| 38 | 1 | Kyushu kyuhai (9 terminals draw) | Fixed |
+| 39 | 1 | Pass | Fixed |
+| 40 | 1 | Chi | Details in aligned candidate meld row |
+| 41 | 1 | Pon | Details in aligned candidate meld row |
+| 42 | 1 | Daiminkan | Details in aligned candidate meld row |
+| 43 | 1 | Ron (win) | Fixed |
+| 44 | 1 | Padding | - |
 
 ### Rust API
 
 ```rust
-obs.encode_seq_candidates() -> Vec<[u16; 4]>
+obs.encode_seq_candidates() -> Vec<[u16; 2]>
 ```
 
 ### Python API (raw)
 
 ```python
 cand_bytes = obs.encode_seq_candidates()
-cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 4)  # variable length
+cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable length
 cand_melds = np.frombuffer(obs.encode_seq_candidate_melds(), dtype=np.uint16).reshape(-1, 9)
 ```
 
@@ -355,7 +354,7 @@ for pid, obs in obs_dict.items():
     # features["numeric"]     -- (12,) float32
     # features["progression"] -- (256, 5) int64, padded with (4, 43, 2, 2, 4)
     # features["prog_melds"]  -- (256, 9) int64, aligned with progression
-    # features["candidates"]  -- (32, 4) int64, padded with (46, 2, 2, 3)
+    # features["candidates"]  -- (32, 2) int64, padded with (44, 3)
     # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
     # features["sparse_mask"] -- (10,) bool, True for real tokens
     # features["hand_mask"]   -- (14,) bool, True for real entries
@@ -376,7 +375,7 @@ SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 12
 SequenceFeatureEncoder.PROG_DIMS           # (5, 44, 3, 3, 5)
-SequenceFeatureEncoder.CAND_DIMS           # (47, 3, 3, 4)
+SequenceFeatureEncoder.CAND_DIMS           # (45, 4)
 ```
 
 ## Implementation

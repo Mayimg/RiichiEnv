@@ -21,8 +21,9 @@ from riichienv_ml.models.transformer import (
     TransformerActorCritic,
     TransformerPolicyNetwork,
 )
+from riichienv_ml.utils import build_encoder
 
-from riichienv import MjaiReplay, Observation
+from riichienv import Action, ActionType, MjaiReplay, Observation
 
 
 class DummyEncoder:
@@ -142,7 +143,7 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
 
     logits = model(features)
 
-    assert logits.shape == (1, 82)
+    assert logits.shape == (1, 32)
 
 
 def test_sequence_feature_encoder_factorizes_hand_draw_state():
@@ -176,6 +177,80 @@ def test_sequence_feature_encoder_factorizes_hand_draw_state():
     assert valid_hand.shape[1] == 2
     assert torch.count_nonzero(valid_hand[:, 1] == 1) == 1
     assert torch.count_nonzero(valid_hand[:, 1] == 0) == len(valid_hand) - 1
+
+
+def test_sequence_candidates_collapse_to_82_action_representatives():
+    obs = Observation(
+        0,
+        [[16, 17, 18, 19], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [
+            Action(ActionType.DISCARD, 16, []),
+            Action(ActionType.DISCARD, 17, []),
+            Action(ActionType.RIICHI, None, []),
+        ],
+        ['{"type":"tsumo","actor":0,"pai":"5m"}'],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+    )
+
+    candidates = obs.candidate_actions()
+    assert len(candidates) == 2
+    discard = next(a for a in candidates if a.action_type == ActionType.DISCARD)
+    assert discard.tile == 17
+    assert obs.find_candidate_action(obs.find_candidate_index(Action(ActionType.DISCARD, 16, []))).tile == 17
+
+    features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
+    valid = features["candidates"][features["cand_mask"]]
+    assert valid.tolist() == [[4, 3], [34, 3]]
+
+
+def test_sequence_candidates_prefer_red_consumes_for_same_action_id():
+    obs = Observation(
+        1,
+        [[], [16, 17, 18], [], []],
+        [[], [], [], []],
+        [[19], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [
+            Action(ActionType.PON, 19, [17, 18]),
+            Action(ActionType.PON, 19, [16, 17]),
+        ],
+        ['{"type":"dahai","actor":0,"pai":"5m","tsumogiri":false}'],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+    )
+
+    candidates = obs.candidate_actions()
+    assert len(candidates) == 1
+    assert candidates[0].action_type == ActionType.PON
+    assert candidates[0].consume_tiles == [16, 17]
+
+    features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
+    valid = features["candidates"][features["cand_mask"]]
+    assert valid.tolist() == [[41, 2]]
 
 
 def test_transformer_decodes_current_dora_tiles_from_sparse_tokens():
@@ -328,3 +403,63 @@ def test_bc_policy_trainer_logs_recent_100_batch_metrics(monkeypatch):
     assert float(match["acc"]) == pytest.approx(1 / 101, abs=1e-4)
     assert float(match["window_loss"]) == pytest.approx(loss_recent, abs=1e-4)
     assert float(match["window_acc"]) == pytest.approx(0.0, abs=1e-4)
+
+
+def test_build_encoder_passes_sequence_lengths_from_model_config():
+    encoder = build_encoder(
+        SequenceFeaturePackedEncoder,
+        tile_dim=34,
+        model_config={"max_prog_len": 11, "max_cand_len": 7, "unused": 123},
+    )
+
+    assert encoder._P == 11
+    assert encoder._C == 7
+
+
+def test_bc_policy_trainer_train_epoch_accepts_pointer_candidate_logits():
+    trainer = object.__new__(bc_policy_module.BCPolicyTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.label_smoothing = 0.0
+    trainer.max_grad_norm = 10.0
+    trainer.limit = 1
+
+    max_prog_len = 2
+    max_cand_len = 3
+    encoder = SequenceFeaturePackedEncoder(max_prog_len=max_prog_len, max_cand_len=max_cand_len)
+    features = torch.zeros(2, encoder.PACKED_SIZE, dtype=torch.float32)
+    masks = torch.tensor(
+        [
+            [1, 1, 0],
+            [1, 1, 1],
+        ],
+        dtype=torch.float32,
+    )
+    features[:, -max_cand_len:] = masks
+    actions = torch.tensor([0, 2])
+
+    model = TransformerPolicyNetwork(
+        d_model=32,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=64,
+        dropout=0.0,
+        d_sub=8,
+        max_prog_len=max_prog_len,
+        max_cand_len=max_cand_len,
+        policy_head_type="pointer",
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+
+    metrics, step = trainer._train_epoch(
+        model=model,
+        dataloader=[(features, actions, masks)],
+        optimizer=optimizer,
+        scheduler=scheduler,
+        step=0,
+        epoch=0,
+    )
+
+    assert step == 1
+    assert metrics["train/loss"] > 0
+    assert 0.0 <= metrics["train/acc"] <= 1.0

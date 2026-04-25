@@ -25,7 +25,48 @@ import numpy as np
 import torch
 import yaml
 
-from riichienv_ml.config import load_config, import_class
+from riichienv_ml.config import import_class, load_config
+from riichienv_ml.utils import build_encoder
+
+
+def _candidate_mask(obs, width: int, device: torch.device) -> torch.Tensor:
+    mask = torch.zeros(1, width, dtype=torch.bool, device=device)
+    n_cand = min(len(obs.candidate_actions()), width)
+    if n_cand > 0:
+        mask[:, :n_cand] = True
+    return mask
+
+
+def _select_action_from_logits(
+    obs,
+    logits: torch.Tensor,
+    device: torch.device,
+    *,
+    candidate_logits: bool | None = None,
+):
+    fixed_mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
+
+    if candidate_logits is None:
+        candidate_logits = logits.shape[-1] != fixed_mask.shape[0]
+
+    if not candidate_logits:
+        mask_t = torch.from_numpy(fixed_mask).to(device).unsqueeze(0)
+        masked_logits = logits.masked_fill(mask_t == 0, -1e9)
+        action_idx = masked_logits.argmax(dim=1).item()
+        action = obs.find_action(action_idx)
+    else:
+        mask_t = _candidate_mask(obs, logits.shape[-1], device)
+        masked_logits = logits.masked_fill(~mask_t, -1e9)
+        action_idx = masked_logits.argmax(dim=1).item()
+        action = obs.find_candidate_action(action_idx)
+
+    if action is not None:
+        return action
+
+    legals = obs.legal_actions()
+    if legals:
+        return legals[0]
+    raise ValueError(f"No legal action for action_idx={action_idx}")
 
 
 class Agent:
@@ -61,7 +102,8 @@ class Agent:
 
         # Build model from config
         ModelClass = import_class(sub_cfg.model_class)
-        self.model = ModelClass(**sub_cfg.model.model_dump()).to(self.device)
+        model_config = sub_cfg.model.model_dump()
+        self.model = ModelClass(**model_config).to(self.device)
 
         # Load weights
         state = torch.load(
@@ -73,7 +115,7 @@ class Agent:
 
         # Build encoder
         EncoderClass = import_class(sub_cfg.encoder_class)
-        self.encoder = EncoderClass(tile_dim=game.tile_dim)
+        self.encoder = build_encoder(EncoderClass, tile_dim=game.tile_dim, model_config=model_config)
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -179,22 +221,13 @@ class Agent:
             greedy argmax over masked logits.
         """
         feat = self.encoder.encode(obs)
-        mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
-
         feat_batch = feat.to(self.device).unsqueeze(0)
-        mask_t = torch.from_numpy(mask).to(self.device).unsqueeze(0)
 
         output = self.model(feat_batch)
         logits = output[0] if isinstance(output, tuple) else output
-        logits = logits.masked_fill(mask_t == 0, -1e9)
-        action_idx = logits.argmax(dim=1).item()
-
-        action = obs.find_action(action_idx)
-        if action is not None:
-            return action
-
-        # Fallback: first legal action (should be unreachable)
-        legals = obs.legal_actions()
-        if legals:
-            return legals[0]
-        raise ValueError(f"No legal action for action_id={action_idx}")
+        return _select_action_from_logits(
+            obs,
+            logits,
+            self.device,
+            candidate_logits=getattr(self.model, "policy_head_type", None) == "pointer",
+        )

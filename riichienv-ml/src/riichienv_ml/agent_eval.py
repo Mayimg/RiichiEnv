@@ -17,12 +17,13 @@ import numpy as np
 import torch
 from loguru import logger
 
-from riichienv_ml.agents import Agent
+from riichienv_ml.agents import Agent, _select_action_from_logits
 from riichienv_ml.config import (
     GAME_PARAMS,
     OpponentConfig,
     import_class,
 )
+from riichienv_ml.utils import build_encoder
 
 
 class AgentEvaluator:
@@ -74,7 +75,7 @@ class AgentEvaluator:
 
         # Build hero encoder
         EncoderClass = import_class(encoder_class)
-        self.hero_encoder = EncoderClass(tile_dim=self.tile_dim)
+        self.hero_encoder = build_encoder(EncoderClass, tile_dim=self.tile_dim, model_config=model_config)
 
         # Build opponent agents (pad to N-1 if needed)
         opp_cfgs = [
@@ -211,21 +212,13 @@ class AgentEvaluator:
     def _hero_act(self, obs):
         """Select an action for the hero using the hero model."""
         feat = self.hero_encoder.encode(obs)
-        mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
-
         feat_batch = feat.to(self.device).unsqueeze(0)
-        mask_t = torch.from_numpy(mask).to(self.device).unsqueeze(0)
 
         output = self.hero_model(feat_batch)
         logits = output[0] if isinstance(output, tuple) else output
-        logits = logits.masked_fill(mask_t == 0, -1e9)
-        action_idx = logits.argmax(dim=1).item()
-
-        action = obs.find_action(action_idx)
-        if action is not None:
-            return action
-
-        legals = obs.legal_actions()
-        if legals:
-            return legals[0]
-        raise ValueError(f"No legal action for action_id={action_idx}")
+        return _select_action_from_logits(
+            obs,
+            logits,
+            self.device,
+            candidate_logits=getattr(self.hero_model, "policy_head_type", None) == "pointer",
+        )

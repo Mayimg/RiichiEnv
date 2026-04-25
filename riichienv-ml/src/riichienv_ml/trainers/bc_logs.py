@@ -6,15 +6,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import wandb
+from loguru import logger
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-from loguru import logger
-
-import wandb
 
 from riichienv_ml.config import import_class
 from riichienv_ml.models.grp_model import RewardPredictor
-from riichienv_ml.utils import AverageMeter, load_model_weights
+from riichienv_ml.utils import AverageMeter, build_encoder, load_model_weights
 
 
 def _create_evaluator(cfg_kwargs: dict, model_config: dict):
@@ -152,7 +151,7 @@ class Trainer:
 
         # Instantiate encoder
         EncoderClass = import_class(self.encoder_class)
-        encoder = EncoderClass(tile_dim=self.tile_dim)
+        encoder = build_encoder(EncoderClass, tile_dim=self.tile_dim, model_config=self.model_config)
 
         # Dataset
         data_files = glob.glob(self.data_glob, recursive=True)

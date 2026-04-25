@@ -280,6 +280,15 @@ class Observation:
             observations = env.step({player_id: chosen})
         """
         ...
+    def candidate_actions(self) -> list[Action]:
+        """Return legal actions collapsed to one representative per 82-action id."""
+        ...
+    def find_candidate_action(self, candidate_index: int) -> Action | None:
+        """Return the representative candidate action at ``candidate_index``."""
+        ...
+    def find_candidate_index(self, action: Action) -> int | None:
+        """Return the candidate index whose 82-action id matches ``action``."""
+        ...
     def select_action_from_mjai(self, mjai: str | dict[str, Any]) -> Action | None:
         """Find the legal action matching an MJAI event, or ``None`` if no match."""
         ...
@@ -480,9 +489,9 @@ class Observation:
     def encode_seq_candidates(self) -> bytes:
         """Encode sequence candidate features.
 
-        Shape: ``(M, 4)`` / dtype: ``uint16``.
+        Shape: ``(M, 2)`` / dtype: ``uint16``.
 
-        Each row represents one legal action candidate with 4 token values.
+        Each row represents one legal action candidate with 2 token values.
         """
         ...
     def encode_seq_candidate_melds(self) -> bytes:
