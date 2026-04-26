@@ -9,6 +9,7 @@ time is spent inside the training loop.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import time
 from contextlib import nullcontext
@@ -321,9 +322,17 @@ def build_profile_objects(args: argparse.Namespace):
     encoder_class = import_class(cfg.encoder_class)
     encoder = build_encoder(encoder_class, tile_dim=game.tile_dim, model_config=cfg.model.model_dump())
 
+    train_files = sorted(glob.glob(cfg.data_glob, recursive=True))
+    if not train_files:
+        raise ValueError(
+            f"No data found at data_glob={cfg.data_glob!r}. "
+            "Pass --data_glob with the path used on this machine."
+        )
+    print(f"Found {len(train_files)} training files")
+
     dataset_class = import_class(cfg.dataset_class)
     train_dataset = dataset_class(
-        cfg.data_glob,
+        train_files,
         is_train=True,
         n_players=game.n_players,
         replay_rule=game.replay_rule,
@@ -349,7 +358,7 @@ def build_profile_objects(args: argparse.Namespace):
     optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=max(cfg.limit, 1), eta_min=cfg.lr_min)
     model.train()
-    return cfg, device, dataloader, model, optimizer, scheduler
+    return cfg, device, dataloader, model, optimizer, scheduler, len(train_files)
 
 
 def profile_dataloader_only(args: argparse.Namespace, dataloader: DataLoader, batch_size: int) -> dict[str, Any]:
@@ -372,7 +381,13 @@ def profile_dataloader_only(args: argparse.Namespace, dataloader: DataLoader, ba
             measured = step_idx - args.warmup + 1
             if measured % args.report_every == 0:
                 print(f"measured {measured}/{args.steps} dataloader batches")
-    return summarize_meters(meters, batch_size=batch_size, device=None, cuda_available=False)
+    summary = summarize_meters(meters, batch_size=batch_size, device=None, cuda_available=False)
+    if summary["measured_steps"] == 0:
+        raise RuntimeError(
+            "No measured DataLoader batches were collected. "
+            "The dataset ended before --warmup completed; reduce --warmup or check --data_glob."
+        )
+    return summary
 
 
 def profile_training_loop(
@@ -439,12 +454,18 @@ def profile_training_loop(
                         f"{avg_ms:.3f} ms/batch, loss={meters.losses.avg:.4f}, acc={meters.accuracies.avg:.4f}"
                     )
 
-    return summarize_meters(
+    summary = summarize_meters(
         meters,
         batch_size=cfg.batch_size,
         device=device,
         cuda_available=device.type == "cuda" and torch.cuda.is_available(),
     )
+    if summary["measured_steps"] == 0:
+        raise RuntimeError(
+            "No measured training batches were collected. "
+            "The dataset ended before --warmup completed; reduce --warmup or check --data_glob."
+        )
+    return summary
 
 
 def run_torch_profiler(
@@ -557,7 +578,14 @@ def summarize_meters(
     return summary
 
 
-def print_summary(summary: dict[str, Any], *, args: argparse.Namespace, cfg, device: torch.device) -> None:
+def print_summary(
+    summary: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    cfg,
+    device: torch.device,
+    train_file_count: int,
+) -> None:
     print("\n=== BC Policy Trainer Profile ===")
     print(f"config: {args.config}")
     print(f"device: {device}")
@@ -566,6 +594,8 @@ def print_summary(summary: dict[str, Any], *, args: argparse.Namespace, cfg, dev
     print(f"model_class: {cfg.model_class}")
     print(f"dataset_class: {cfg.dataset_class}")
     print(f"encoder_class: {cfg.encoder_class}")
+    print(f"data_glob: {cfg.data_glob}")
+    print(f"train_files: {train_file_count}")
     print(f"batch_size: {cfg.batch_size}")
     print(f"num_workers: {cfg.num_workers}")
     print(f"warmup_steps: {args.warmup}")
@@ -608,7 +638,7 @@ def main() -> None:
     if args.warmup < 0:
         raise ValueError("--warmup must be >= 0")
 
-    cfg, device, dataloader, model, optimizer, scheduler = build_profile_objects(args)
+    cfg, device, dataloader, model, optimizer, scheduler, train_file_count = build_profile_objects(args)
     if args.dataloader_only:
         summary = profile_dataloader_only(args, dataloader, cfg.batch_size)
     else:
@@ -631,7 +661,9 @@ def main() -> None:
             scheduler=scheduler,
         )
 
-    print_summary(summary, args=args, cfg=cfg, device=device)
+    summary["data_glob"] = cfg.data_glob
+    summary["train_file_count"] = train_file_count
+    print_summary(summary, args=args, cfg=cfg, device=device, train_file_count=train_file_count)
 
     if args.json_output:
         output_path = Path(args.json_output)
