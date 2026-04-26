@@ -288,6 +288,14 @@ class SharedTileEmbedding(nn.Module):
         for name, value in _build_tile34_lookups().items():
             self.register_buffer(f"tile34_{name}", value, persistent=False)
 
+    @staticmethod
+    def _gather_table(table: torch.Tensor, tile_ids: torch.Tensor) -> torch.Tensor:
+        batch_size = table.shape[0]
+        flat_ids = tile_ids.reshape(batch_size, -1)
+        gather_ids = flat_ids.unsqueeze(-1).expand(-1, -1, table.shape[-1])
+        gathered = table.gather(1, gather_ids)
+        return gathered.reshape(*tile_ids.shape, table.shape[-1])
+
     def _compute_dora_flag(
         self,
         tile34: torch.Tensor,
@@ -352,6 +360,21 @@ class SharedTileEmbedding(nn.Module):
             dora_tile34,
         )
 
+    def build_tables(self, dora_tile34: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_size = dora_tile34.shape[0]
+        tile37 = torch.arange(_TILE37_PAD + 1, device=dora_tile34.device).expand(batch_size, -1)
+        tile34 = torch.arange(_TILE34_PAD + 1, device=dora_tile34.device).expand(batch_size, -1)
+        return (
+            self.embed_tile37(tile37, dora_tile34),
+            self.embed_tile34(tile34, dora_tile34),
+        )
+
+    def embed_tile37_from_table(self, tile37: torch.Tensor, tile37_table: torch.Tensor) -> torch.Tensor:
+        return self._gather_table(tile37_table, tile37)
+
+    def embed_tile34_from_table(self, tile34: torch.Tensor, tile34_table: torch.Tensor) -> torch.Tensor:
+        return self._gather_table(tile34_table, tile34)
+
 
 class SharedMeldEmbedding(nn.Module):
     """Encode chi/pon/kan melds from tile slots, slot roles, and meld kind."""
@@ -374,13 +397,17 @@ class SharedMeldEmbedding(nn.Module):
         meld: torch.Tensor,
         dora_tile34: torch.Tensor,
         tile_embed: SharedTileEmbedding,
+        tile37_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
         kind = meld[..., 0]
         slot_tiles = torch.stack([meld[..., 1], meld[..., 3], meld[..., 5], meld[..., 7]], dim=-1)
         slot_roles = torch.stack([meld[..., 2], meld[..., 4], meld[..., 6], meld[..., 8]], dim=-1)
         slot_mask = slot_tiles != _TILE37_PAD
 
-        tile_emb = tile_embed.embed_tile37(slot_tiles, dora_tile34)
+        if tile37_table is None:
+            tile_emb = tile_embed.embed_tile37(slot_tiles, dora_tile34)
+        else:
+            tile_emb = tile_embed.embed_tile37_from_table(slot_tiles, tile37_table)
         role_emb = self.role_embed(slot_roles)
         slot_emb = self.slot_proj(torch.cat([tile_emb, role_emb], dim=-1))
         slot_emb = torch.where(slot_mask.unsqueeze(-1), slot_emb, torch.zeros_like(slot_emb))
@@ -638,7 +665,12 @@ class TransformerActorCritic(nn.Module):
         """Return current dora tiles as tile34 ids, one slot per sparse token."""
         return self.sparse_dora_tile34[sparse]
 
-    def _embed_sparse(self, sparse: torch.Tensor, dora_tile34: torch.Tensor) -> torch.Tensor:
+    def _embed_sparse(
+        self,
+        sparse: torch.Tensor,
+        dora_tile34: torch.Tensor,
+        tile37_table: torch.Tensor,
+    ) -> torch.Tensor:
         sparse_emb = self.sparse_embed(sparse)
         dora_slot = self.sparse_dora_slot[sparse]
         dora_mask = dora_slot != _DORA_SLOT_PAD
@@ -646,13 +678,18 @@ class TransformerActorCritic(nn.Module):
             return sparse_emb
 
         indicator_tile37 = self.sparse_indicator_tile37[sparse]
-        tile_emb = self.tile_embed.embed_tile37(indicator_tile37, dora_tile34)
+        tile_emb = self.tile_embed.embed_tile37_from_table(indicator_tile37, tile37_table)
         slot_emb = self.dora_slot_embed(dora_slot)
         dora_emb = self.sparse_dora_proj(torch.cat([tile_emb, slot_emb], dim=-1))
         return torch.where(dora_mask.unsqueeze(-1), dora_emb, sparse_emb)
 
-    def _embed_sparse_melds(self, melds: torch.Tensor, dora_tile34: torch.Tensor) -> torch.Tensor:
-        meld_emb = self.meld_embed(melds, dora_tile34, self.tile_embed)
+    def _embed_sparse_melds(
+        self,
+        melds: torch.Tensor,
+        dora_tile34: torch.Tensor,
+        tile37_table: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        meld_emb = self.meld_embed(melds, dora_tile34, self.tile_embed, tile37_table)
         return self.sparse_meld_proj(meld_emb)
 
     def _embed_tile_only_action_type(
@@ -663,6 +700,8 @@ class TransformerActorCritic(nn.Module):
         tile37_lookup: torch.Tensor,
         tile34_lookup: torch.Tensor,
         dora_tile34: torch.Tensor,
+        tile37_table: torch.Tensor | None = None,
+        tile34_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
         type_emb = generic_embed(type_ids)
         action_kind = action_kind_lookup[type_ids]
@@ -672,8 +711,14 @@ class TransformerActorCritic(nn.Module):
 
         tile37 = tile37_lookup[type_ids]
         tile34 = tile34_lookup[type_ids]
-        tile37_emb = self.tile_embed.embed_tile37(tile37, dora_tile34)
-        tile34_emb = self.tile_embed.embed_tile34(tile34, dora_tile34)
+        if tile37_table is None:
+            tile37_emb = self.tile_embed.embed_tile37(tile37, dora_tile34)
+        else:
+            tile37_emb = self.tile_embed.embed_tile37_from_table(tile37, tile37_table)
+        if tile34_table is None:
+            tile34_emb = self.tile_embed.embed_tile34(tile34, dora_tile34)
+        else:
+            tile34_emb = self.tile_embed.embed_tile34_from_table(tile34, tile34_table)
         tile_emb = torch.where((tile37 != _TILE37_PAD).unsqueeze(-1), tile37_emb, tile34_emb)
         action_emb = self.tile_action_kind_embed(action_kind)
         target_emb = self.tile_action_proj(torch.cat([tile_emb, action_emb], dim=-1))
@@ -684,17 +729,37 @@ class TransformerActorCritic(nn.Module):
         type_emb: torch.Tensor,
         melds: torch.Tensor,
         dora_tile34: torch.Tensor,
+        tile37_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
         meld_kind = melds[:, :, 0]
         meld_mask = meld_kind != _MELD_KIND_PAD
         if not torch.any(meld_mask):
             return type_emb
 
-        meld_emb = self.meld_embed(melds, dora_tile34, self.tile_embed)
-        return torch.where(meld_mask.unsqueeze(-1), meld_emb, type_emb)
+        batch_idx = meld_mask.nonzero(as_tuple=True)[0]
+        selected_melds = melds[meld_mask].unsqueeze(1)
+        selected_dora_tile34 = dora_tile34[batch_idx]
+        selected_tile37_table = tile37_table[batch_idx] if tile37_table is not None else None
+        meld_emb = self.meld_embed(
+            selected_melds,
+            selected_dora_tile34,
+            self.tile_embed,
+            selected_tile37_table,
+        ).squeeze(1)
+        out = type_emb.clone()
+        out[meld_mask] = meld_emb
+        return out
 
-    def _embed_hand(self, hand: torch.Tensor, dora_tile34: torch.Tensor) -> torch.Tensor:
-        tile_emb = self.tile_embed.embed_tile37(hand[:, :, 0], dora_tile34)
+    def _embed_hand(
+        self,
+        hand: torch.Tensor,
+        dora_tile34: torch.Tensor,
+        tile37_table: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if tile37_table is None:
+            tile_emb = self.tile_embed.embed_tile37(hand[:, :, 0], dora_tile34)
+        else:
+            tile_emb = self.tile_embed.embed_tile37_from_table(hand[:, :, 0], tile37_table)
         draw_state_emb = self.hand_draw_state_embed(hand[:, :, 1])
         return self.hand_proj(torch.cat([tile_emb, draw_state_emb], dim=-1))
 
@@ -703,6 +768,8 @@ class TransformerActorCritic(nn.Module):
         prog: torch.Tensor,
         prog_melds: torch.Tensor,
         dora_tile34: torch.Tensor,
+        tile37_table: torch.Tensor | None = None,
+        tile34_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
         prog_parts = []
         for i, emb in enumerate(self.prog_embeds):
@@ -714,8 +781,10 @@ class TransformerActorCritic(nn.Module):
                     self.prog_type_tile37,
                     self.prog_type_tile34,
                     dora_tile34,
+                    tile37_table,
+                    tile34_table,
                 )
-                prog_parts.append(self._embed_meld_action_type(type_emb, prog_melds, dora_tile34))
+                prog_parts.append(self._embed_meld_action_type(type_emb, prog_melds, dora_tile34, tile37_table))
             else:
                 prog_parts.append(emb(prog[:, :, i]))
         return self.prog_proj(torch.cat(prog_parts, dim=-1))
@@ -725,6 +794,8 @@ class TransformerActorCritic(nn.Module):
         cand: torch.Tensor,
         cand_melds: torch.Tensor,
         dora_tile34: torch.Tensor,
+        tile37_table: torch.Tensor | None = None,
+        tile34_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
         cand_parts = []
         for i, emb in enumerate(self.cand_embeds):
@@ -736,8 +807,10 @@ class TransformerActorCritic(nn.Module):
                     self.cand_type_tile37,
                     self.cand_type_tile34,
                     dora_tile34,
+                    tile37_table,
+                    tile34_table,
                 )
-                cand_parts.append(self._embed_meld_action_type(type_emb, cand_melds, dora_tile34))
+                cand_parts.append(self._embed_meld_action_type(type_emb, cand_melds, dora_tile34, tile37_table))
             else:
                 cand_parts.append(emb(cand[:, :, i]))
         return self.cand_proj(torch.cat(cand_parts, dim=-1))
@@ -761,24 +834,25 @@ class TransformerActorCritic(nn.Module):
             cand_mask,
         ) = self._unpack(x)
         dora_tile34 = self._decode_current_dora_tiles(sparse)
+        tile37_table, tile34_table = self.tile_embed.build_tables(dora_tile34)
 
         # Embed sparse tokens: (B, S, d)
-        sparse_emb = self._embed_sparse(sparse, dora_tile34)
+        sparse_emb = self._embed_sparse(sparse, dora_tile34, tile37_table)
 
         # Embed current melds: (B, SM, d)
-        sparse_meld_emb = self._embed_sparse_melds(sparse_melds, dora_tile34)
+        sparse_meld_emb = self._embed_sparse_melds(sparse_melds, dora_tile34, tile37_table)
 
         # Embed hand tuples: (B, H, d)
-        hand_emb = self._embed_hand(hand, dora_tile34)
+        hand_emb = self._embed_hand(hand, dora_tile34, tile37_table)
 
         # Project numeric: (B, 1, d)
         numeric_emb = self.numeric_proj(numeric).unsqueeze(1)
 
         # Embed progression 5-tuples: (B, P, d)
-        prog_emb = self._embed_progression(prog, prog_melds, dora_tile34)
+        prog_emb = self._embed_progression(prog, prog_melds, dora_tile34, tile37_table, tile34_table)
 
         # Embed candidate tuples: (B, C, d)
-        cand_emb = self._embed_candidates(cand, cand_melds, dora_tile34)
+        cand_emb = self._embed_candidates(cand, cand_melds, dora_tile34, tile37_table, tile34_table)
 
         # CLS token: (B, 1, d)
         cls = self.cls_token.expand(batch_size, -1, -1)

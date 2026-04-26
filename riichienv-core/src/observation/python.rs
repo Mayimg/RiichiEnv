@@ -1527,4 +1527,20 @@ impl Observation {
             unsafe { std::slice::from_raw_parts(melds.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
+
+    /// Encode candidate 2-tuples and aligned meld sidecar rows as M × 11 u16 rows.
+    #[pyo3(name = "encode_seq_candidate_features")]
+    pub fn encode_seq_candidate_features_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let features = self.encode_seq_candidate_features();
+        let byte_len = features.len()
+            * std::mem::size_of::<
+                [u16; crate::observation::sequence_features::CANDIDATE_FEATURE_WIDTH],
+            >();
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(features.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
 }

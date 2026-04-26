@@ -337,6 +337,69 @@ def test_transformer_shared_tile_embedding_marks_red_and_tile34_unknown_red():
     assert model.tile_embed.tile34_red_flag[4].item() == _RED_FLAG_PAD
 
 
+def test_transformer_tile_embedding_tables_match_direct_embedding():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        d_sub=8,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    sparse = torch.tensor(
+        [[_SPARSE_DORA_OFFSET + 4, _SPARSE_DORA_OFFSET + 36, SequenceFeatureEncoder.SPARSE_PAD]],
+        dtype=torch.long,
+    )
+    dora_tile34 = model._decode_current_dora_tiles(sparse)
+    tile37_table, tile34_table = model.tile_embed.build_tables(dora_tile34)
+
+    tile37 = torch.tensor([[0, 5, 37]], dtype=torch.long)
+    tile34 = torch.tensor([[4, 31, 34]], dtype=torch.long)
+
+    torch.testing.assert_close(
+        model.tile_embed.embed_tile37_from_table(tile37, tile37_table),
+        model.tile_embed.embed_tile37(tile37, dora_tile34),
+    )
+    torch.testing.assert_close(
+        model.tile_embed.embed_tile34_from_table(tile34, tile34_table),
+        model.tile_embed.embed_tile34(tile34, dora_tile34),
+    )
+
+
+def test_transformer_sparse_meld_action_embedding_matches_full_where():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        d_sub=8,
+        max_prog_len=4,
+        max_cand_len=4,
+    )
+    sparse = torch.tensor(
+        [[_SPARSE_DORA_OFFSET + 4, SequenceFeatureEncoder.SPARSE_PAD]],
+        dtype=torch.long,
+    )
+    dora_tile34 = model._decode_current_dora_tiles(sparse)
+    tile37_table, _ = model.tile_embed.build_tables(dora_tile34)
+    type_emb = torch.randn(1, 3, 8)
+    melds = torch.tensor(
+        [[
+            [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
+            [_MELD_KIND_CHI, 1, _MELD_ROLE_CALLED, 2, _MELD_ROLE_CONSUMED, 3, _MELD_ROLE_CONSUMED, 37, 3],
+            [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
+        ]],
+        dtype=torch.long,
+    )
+
+    actual = model._embed_meld_action_type(type_emb, melds, dora_tile34, tile37_table)
+    full_meld_emb = model.meld_embed(melds, dora_tile34, model.tile_embed, tile37_table)
+    expected = torch.where((melds[:, :, 0] != _MELD_KIND_PAD).unsqueeze(-1), full_meld_emb, type_emb)
+
+    torch.testing.assert_close(actual, expected)
+
+
 def test_bc_policy_trainer_logs_recent_100_batch_metrics(monkeypatch):
     class DummyLogger:
         def __init__(self):

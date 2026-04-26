@@ -500,6 +500,12 @@ class Observation:
         Shape: ``(M, 9)`` / dtype: ``uint16``.
         """
         ...
+    def encode_seq_candidate_features(self) -> bytes:
+        """Encode sequence candidate and aligned meld features.
+
+        Shape: ``(M, 11)`` / dtype: ``uint16``.
+        """
+        ...
     def __init__(self, *args: Any, **kwargs: Any): ...
 
 class Observation3P:

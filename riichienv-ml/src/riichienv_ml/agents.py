@@ -44,12 +44,15 @@ def _select_action_from_logits(
     *,
     candidate_logits: bool | None = None,
 ):
-    fixed_mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
+    fixed_mask = None
 
     if candidate_logits is None:
+        fixed_mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
         candidate_logits = logits.shape[-1] != fixed_mask.shape[0]
 
     if not candidate_logits:
+        if fixed_mask is None:
+            fixed_mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
         mask_t = torch.from_numpy(fixed_mask).to(device).unsqueeze(0)
         masked_logits = logits.masked_fill(mask_t == 0, -1e9)
         action_idx = masked_logits.argmax(dim=1).item()
@@ -101,9 +104,9 @@ class Agent:
             model_path = self._find_model_path(sub_cfg, section)
 
         # Build model from config
-        ModelClass = import_class(sub_cfg.model_class)
+        model_class = import_class(sub_cfg.model_class)
         model_config = sub_cfg.model.model_dump()
-        self.model = ModelClass(**model_config).to(self.device)
+        self.model = model_class(**model_config).to(self.device)
 
         # Load weights
         state = torch.load(
@@ -114,8 +117,8 @@ class Agent:
         self.model.eval()
 
         # Build encoder
-        EncoderClass = import_class(sub_cfg.encoder_class)
-        self.encoder = build_encoder(EncoderClass, tile_dim=game.tile_dim, model_config=model_config)
+        encoder_class = import_class(sub_cfg.encoder_class)
+        self.encoder = build_encoder(encoder_class, tile_dim=game.tile_dim, model_config=model_config)
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -199,10 +202,14 @@ class Agent:
             result = self.model.load_state_dict(state, strict=False)
         if result.missing_keys:
             warnings.warn(
-                f"Missing keys when loading weights: {result.missing_keys}")
+                f"Missing keys when loading weights: {result.missing_keys}",
+                stacklevel=2,
+            )
         if result.unexpected_keys:
             warnings.warn(
-                f"Unexpected keys when loading weights: {result.unexpected_keys}")
+                f"Unexpected keys when loading weights: {result.unexpected_keys}",
+                stacklevel=2,
+            )
 
     # ------------------------------------------------------------------
     # Game interface
