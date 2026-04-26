@@ -253,11 +253,11 @@ def _build_cand_type_lookups(vocab_size: int) -> dict[str, torch.Tensor]:
     tile37 = [_TILE37_PAD] * vocab_size
     tile34 = [_TILE34_PAD] * vocab_size
 
-    for k37 in range(_TILE37_PAD):
-        idx = k37
+    for t34 in range(_TILE34_PAD):
+        idx = t34
         if idx < vocab_size:
             action_kind[idx] = _ACTION_KIND_DISCARD
-            tile37[idx] = k37
+            tile34[idx] = t34
 
     return {
         "action_kind": torch.tensor(action_kind, dtype=torch.long),
@@ -395,7 +395,8 @@ class TransformerActorCritic(nn.Module):
     """Transformer Actor-Critic over packed sequence features.
 
     Input:  (B, PACKED_SIZE)  float32 — from SequenceFeaturePackedEncoder
-    Output: (logits, value) tuple — (B, num_actions), (B,)
+    Output: (logits, value) tuple. For policy_head_type="pointer",
+    logits are (B, max_cand_len); otherwise logits are (B, num_actions).
 
     V2 defaults: d_model=384, max_prog_len=256, max_cand_len=32, d_type=96, d_other=32
     V1 compat:   pass d_sub=32, max_prog_len=512, max_cand_len=64
@@ -409,8 +410,8 @@ class TransformerActorCritic(nn.Module):
         dim_feedforward: int = 1536,
         dropout: float = 0.1,
         num_actions: int = 82,
-        # Policy head type: "cls" (V2) or "cross_attn" (V3)
-        policy_head_type: str = "cross_attn",
+        # Policy head type: "pointer" (candidate logits), "cls", or "cross_attn"
+        policy_head_type: str = "pointer",
         emit_value: bool = True,
         # Embedding sub-dimensions (asymmetric)
         d_sub: int | None = None,   # V1 compat: if set, d_type=d_other=d_sub
@@ -424,7 +425,7 @@ class TransformerActorCritic(nn.Module):
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 268
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,            # (38,3)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,            # (5,44,3,3,5)
-        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (47,3,3,4)
+        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (45,4)
         **kwargs,
     ):
         super().__init__()
@@ -488,8 +489,8 @@ class TransformerActorCritic(nn.Module):
             nn.LayerNorm(d_model),
         )
 
-        # Candidates: embed each of 4 fields → concat → project
-        # field[0] is type (vocab=47) -> d_type; others -> d_other
+        # Candidates: embed each field → concat → project
+        # field[0] is type (vocab=45) -> d_type; others -> d_other
         cand_sub_dims = [d_other if i != 0 else d_type for i in range(len(cand_dims))]
         self.cand_embeds = nn.ModuleList([
             nn.Embedding(dim, d_s) for dim, d_s in zip(cand_dims, cand_sub_dims)
@@ -529,18 +530,27 @@ class TransformerActorCritic(nn.Module):
         )
         self.final_norm = nn.LayerNorm(d_model)
 
-        # --- Cross-attention for policy head (V3) ---
+        # --- Cross-attention for fixed policy head (V3) ---
         if self.policy_head_type == "cross_attn":
             self.cand_cross_attn = nn.MultiheadAttention(
                 d_model, nhead, dropout=dropout, batch_first=True)
             self.cross_attn_norm = nn.LayerNorm(d_model)
 
         # --- Output heads ---
-        self.policy_head = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.GELU(),
-            nn.Linear(d_model, num_actions),
-        )
+        if self.policy_head_type == "pointer":
+            self.policy_head = None
+            self.candidate_scorer = nn.Sequential(
+                nn.Linear(d_model * 2, d_model),
+                nn.GELU(),
+                nn.Linear(d_model, 1),
+            )
+        else:
+            self.candidate_scorer = None
+            self.policy_head = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                nn.GELU(),
+                nn.Linear(d_model, num_actions),
+            )
         self.value_head = None
         if self.emit_value:
             self.value_head = nn.Sequential(
@@ -594,8 +604,8 @@ class TransformerActorCritic(nn.Module):
         o += self._P * 5
         prog_melds = x[:, o:o + self._P * self._MW].reshape(-1, self._P, self._MW).long()
         o += self._P * self._MW
-        cand = x[:, o:o + self._C * 4].reshape(-1, self._C, 4).long()
-        o += self._C * 4
+        cand = x[:, o:o + self._C * 2].reshape(-1, self._C, 2).long()
+        o += self._C * 2
         cand_melds = x[:, o:o + self._C * self._MW].reshape(-1, self._C, self._MW).long()
         o += self._C * self._MW
         sparse_mask = x[:, o:o + self._S].bool()
@@ -767,7 +777,7 @@ class TransformerActorCritic(nn.Module):
         # Embed progression 5-tuples: (B, P, d)
         prog_emb = self._embed_progression(prog, prog_melds, dora_tile34)
 
-        # Embed candidate 4-tuples: (B, C, d)
+        # Embed candidate tuples: (B, C, d)
         cand_emb = self._embed_candidates(cand, cand_melds, dora_tile34)
 
         # CLS token: (B, 1, d)
@@ -812,21 +822,28 @@ class TransformerActorCritic(nn.Module):
         # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
 
+        cand_offset = 1 + self._S + self._SM + self._H + 1 + self._P
+        cand_out = output[:, cand_offset:cand_offset + self._C]  # (B, C, d_model)
+
         # Policy head
         if self.policy_head_type == "cross_attn":
             # Cross-attention: CLS queries candidate token outputs
-            cand_offset = 1 + self._S + self._SM + self._H + 1 + self._P
-            cand_out = output[:, cand_offset:cand_offset + self._C]  # (B, C, d_model)
             cls_q = cls_out.unsqueeze(1)  # (B, 1, d_model)
             cand_attn_mask = ~cand_mask   # True = padding (PyTorch convention)
             attn_out, _ = self.cand_cross_attn(
                 cls_q, cand_out, cand_out,
                 key_padding_mask=cand_attn_mask)  # (B, 1, d_model)
             policy_input = self.cross_attn_norm(cls_out + attn_out.squeeze(1))
+            logits = self.policy_head(policy_input)
+        elif self.policy_head_type == "pointer":
+            cls_expanded = cls_out.unsqueeze(1).expand(-1, self._C, -1)
+            logits = self.candidate_scorer(
+                torch.cat([cand_out, cls_expanded], dim=-1)
+            ).squeeze(-1)
         else:
             policy_input = cls_out
+            logits = self.policy_head(policy_input)
 
-        logits = self.policy_head(policy_input)
         if not self.emit_value:
             return logits
 

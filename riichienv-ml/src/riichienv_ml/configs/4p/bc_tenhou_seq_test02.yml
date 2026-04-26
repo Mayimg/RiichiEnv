@@ -6,7 +6,6 @@ bc:
   offline_algorithm: behavior_cloning
   data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
   val_data_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
-  load_model: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test03/model.pth
   output: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test04/model.pth
   device: cuda
   batch_size: 64
@@ -32,4 +31,4 @@ bc:
     dim_feedforward: 1536
     dropout: 0.1
     num_actions: 82
-    policy_head_type: cross_attn
+    policy_head_type: pointer

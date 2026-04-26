@@ -1,13 +1,14 @@
 import random
 import time
 
+import numpy as np
 import ray
 import torch
-import numpy as np
-from riichienv import RiichiEnv
 
-from riichienv_ml.config import import_class, GAME_PARAMS
+from riichienv import RiichiEnv
+from riichienv_ml.config import GAME_PARAMS, import_class
 from riichienv_ml.models.grp_model import RewardPredictor
+from riichienv_ml.utils import build_encoder
 
 
 @ray.remote
@@ -53,7 +54,7 @@ class PPOWorker:
             self.baseline_model = torch.compile(self.baseline_model)
 
         EncoderClass = import_class(encoder_class)
-        self.encoder = EncoderClass(tile_dim=tile_dim)
+        self.encoder = build_encoder(EncoderClass, tile_dim=tile_dim, model_config=mc)
         self._compiled_warmup = False
 
         pw = pts_weight or GAME_PARAMS[n_players].get("pts_weight", [10.0, 4.0, -4.0, -10.0])

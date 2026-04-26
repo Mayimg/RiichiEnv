@@ -4,11 +4,25 @@ import sys
 import tempfile
 import warnings
 from datetime import datetime
+from inspect import signature
 from pathlib import Path
 
 import torch
 import wandb
 from loguru import logger
+
+
+def build_encoder(encoder_class, *, tile_dim: int = 34, model_config: dict | None = None):
+    """Instantiate an observation encoder with kwargs supported by its constructor."""
+    model_config = model_config or {}
+    params = signature(encoder_class).parameters
+    kwargs = {}
+    if "tile_dim" in params:
+        kwargs["tile_dim"] = tile_dim
+    for key in ("max_prog_len", "max_cand_len"):
+        if key in params and key in model_config:
+            kwargs[key] = model_config[key]
+    return encoder_class(**kwargs)
 
 
 def setup_logging(output_dir: str, script_name: str) -> Path:

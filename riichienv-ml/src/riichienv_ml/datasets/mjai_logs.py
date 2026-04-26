@@ -131,7 +131,22 @@ class MCDataset(BaseDataset):
 
 
 class BehaviorCloningDataset(BaseDataset):
-    """Yields (features, action_id, mask) tuples for pure action cloning."""
+    """Yields (features, candidate_index, candidate_mask) tuples for pure action cloning."""
+
+    def _max_candidate_len(self) -> int:
+        if hasattr(self.encoder, "_C"):
+            return int(self.encoder._C)
+        inner = getattr(self.encoder, "inner", None)
+        if inner is not None and hasattr(inner, "MAX_CAND_LEN"):
+            return int(inner.MAX_CAND_LEN)
+        return 32
+
+    def _candidate_mask(self, obs) -> np.ndarray:
+        max_cand_len = self._max_candidate_len()
+        n_cand = min(len(obs.candidate_actions()), max_cand_len)
+        mask = np.zeros(max_cand_len, dtype=np.uint8)
+        mask[:n_cand] = 1
+        return mask
 
     def __iter__(self):
         files = self._get_files()
@@ -160,13 +175,15 @@ class BehaviorCloningDataset(BaseDataset):
                     for player_id in range(self.n_players):
                         for obs, action in kyoku.steps(player_id):
                             features = self.encoder.encode(obs)
-                            action_id = action.encode()
+                            action_id = obs.find_candidate_index(action)
+                            if action_id is None:
+                                raise ValueError(f"action {action} is not in candidate actions")
 
-                            mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
-                            assert 0 <= action_id < mask.shape[0], (
-                                f"action_id should be in [0, {mask.shape[0]})"
-                            )
-                            assert mask[action_id] == 1, f"action_id {action_id} should be legal"
+                            mask = self._candidate_mask(obs)
+                            if not 0 <= action_id < mask.shape[0]:
+                                raise ValueError(f"candidate index {action_id} exceeds max_cand_len={mask.shape[0]}")
+                            if mask[action_id] != 1:
+                                raise ValueError(f"candidate index {action_id} is not legal")
                             buffer.append((features, action_id, mask))
             except (RuntimeError, ValueError) as e:
                 logger.warning("Skipping replay due to error: %s: %s", file_path, e)

@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 
 from riichienv_ml.config import import_class
 from riichienv_ml.trainers.bc_logs import _create_evaluator
-from riichienv_ml.utils import AverageMeter, load_model_weights
+from riichienv_ml.utils import AverageMeter, build_encoder, load_model_weights
 
 
 def _move_to_device(value: Any, device: torch.device):
@@ -161,7 +161,7 @@ class BCPolicyTrainer:
             logger.info(f"Found {len(val_files)} validation files")
 
         EncoderClass = import_class(self.encoder_class)
-        encoder = EncoderClass(tile_dim=self.tile_dim)
+        encoder = build_encoder(EncoderClass, tile_dim=self.tile_dim, model_config=self.model_config)
 
         DatasetClass = import_class(self.dataset_class)
         train_dataset = DatasetClass(

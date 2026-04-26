@@ -93,6 +93,21 @@ impl Observation {
         self.legal_actions_method()
     }
 
+    #[pyo3(name = "candidate_actions")]
+    pub fn candidate_actions_py(&self) -> Vec<Action> {
+        self.candidate_actions()
+    }
+
+    #[pyo3(name = "find_candidate_action", signature = (candidate_index))]
+    pub fn find_candidate_action_py(&self, candidate_index: usize) -> Option<Action> {
+        self.find_candidate_action(candidate_index)
+    }
+
+    #[pyo3(name = "find_candidate_index", signature = (action))]
+    pub fn find_candidate_index_py(&self, action: Action) -> Option<usize> {
+        self.find_candidate_index(&action)
+    }
+
     #[pyo3(name = "mask")]
     pub fn mask_method<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let encoder = ActionEncoder::FourPlayer;
@@ -1481,18 +1496,18 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode candidate (legal action) features as M × 4 u16 tuples.
+    /// Encode candidate (legal action) features as M × 2 u16 tuples.
     ///
-    /// Returns raw bytes of flattened row-major `&[[u16; 4]]`.
-    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 4)`.
+    /// Returns raw bytes of flattened row-major `&[[u16; 2]]`.
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 2)`.
     #[pyo3(name = "encode_seq_candidates")]
     pub fn encode_seq_candidates_py<'py>(
         &self,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let cands = self.encode_seq_candidates();
-        // [u16; 4] is contiguous in memory; treat the slice as a flat u8 buffer directly.
-        let byte_len = cands.len() * std::mem::size_of::<[u16; 4]>();
+        // [u16; 2] is contiguous in memory; treat the slice as a flat u8 buffer directly.
+        let byte_len = cands.len() * std::mem::size_of::<[u16; 2]>();
         let byte_slice =
             unsafe { std::slice::from_raw_parts(cands.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))

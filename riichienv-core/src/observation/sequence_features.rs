@@ -7,7 +7,7 @@
 //! Based on the Kanachan v3 encoding (subset — Room and Grade removed):
 //! <https://github.com/Cryolite/kanachan/wiki/%5Bv3%5DNotes-on-Training-Data>
 
-use crate::action::{Action, ActionType};
+use crate::action::{Action, ActionEncoder, ActionType};
 use crate::parser::mjai_to_tid;
 use crate::types::{Meld, MeldType};
 
@@ -35,13 +35,13 @@ pub const MAX_PROG_LEN: usize = 512;
 #[allow(dead_code)]
 pub const PROG_PAD: [u16; 5] = [4, 43, 2, 2, 4];
 
-/// Candidate tuple dimensions: (type, moqie, liqi, from)
+/// Candidate tuple dimensions: (type, from)
 #[allow(dead_code)]
-pub const CAND_DIMS: [u16; 4] = [47, 3, 3, 4];
+pub const CAND_DIMS: [u16; 2] = [45, 4];
 #[allow(dead_code)]
 pub const MAX_CAND_LEN: usize = 64;
 #[allow(dead_code)]
-pub const CAND_PAD: [u16; 4] = [46, 2, 2, 3];
+pub const CAND_PAD: [u16; 2] = [44, 3];
 
 /// Meld feature row: (kind, slot0_tile37, slot0_role, ..., slot3_tile37, slot3_role)
 #[allow(dead_code)]
@@ -67,6 +67,17 @@ const MELD_KIND_KAKAN: u16 = 4;
 const MELD_ROLE_CALLED: u16 = 0;
 const MELD_ROLE_CONSUMED: u16 = 1;
 const MELD_ROLE_ADDED: u16 = 2;
+
+const CAND_TYPE_RIICHI: u16 = 34;
+const CAND_TYPE_ANKAN: u16 = 35;
+const CAND_TYPE_KAKAN: u16 = 36;
+const CAND_TYPE_TSUMO: u16 = 37;
+const CAND_TYPE_KYUSHU_KYUHAI: u16 = 38;
+const CAND_TYPE_PASS: u16 = 39;
+const CAND_TYPE_CHI: u16 = 40;
+const CAND_TYPE_PON: u16 = 41;
+const CAND_TYPE_DAIMINKAN: u16 = 42;
+const CAND_TYPE_RON: u16 = 43;
 
 // ── Tile conversions ─────────────────────────────────────────────────────────
 
@@ -106,6 +117,32 @@ fn tile_type_to_kan37(tile_type: u8) -> u8 {
 fn mjai_tile_to_kan37(mjai: &str) -> Option<u8> {
     let tid = mjai_to_tid(mjai)?;
     Some(tile_id_to_kan37(tid as u32))
+}
+
+fn is_red_five(tile: u8) -> bool {
+    matches!(tile, 16 | 52 | 88)
+}
+
+fn consumed_red_count(action: &Action) -> usize {
+    action
+        .consume_tiles
+        .iter()
+        .filter(|&&tile| is_red_five(tile))
+        .count()
+}
+
+fn prefer_candidate_action(candidate: &Action, current: &Action) -> bool {
+    match candidate.action_type {
+        ActionType::Discard => {
+            let candidate_is_red = candidate.tile.is_some_and(is_red_five);
+            let current_is_red = current.tile.is_some_and(is_red_five);
+            !candidate_is_red && current_is_red
+        }
+        ActionType::Chi | ActionType::Pon => {
+            consumed_red_count(candidate) > consumed_red_count(current)
+        }
+        _ => false,
+    }
 }
 
 // ── Factorized meld encoding ─────────────────────────────────────────────────
@@ -626,25 +663,63 @@ impl Observation {
 
     // ── Candidate features ───────────────────────────────────────────────
 
-    /// Encode candidate (legal action) features as variable-length 4-tuples.
+    /// Return candidate actions in one-to-one correspondence with the current
+    /// 4-player 82-action space legal mask.
     ///
-    /// Each tuple: (type, moqie, liqi, from)
-    /// - type: 0-46
-    /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
-    /// - liqi: 0=no, 1=yes, 2=N/A
-    /// - from: 0-2 (relative seat), 3=self
-    pub fn encode_seq_candidates(&self) -> Vec<[u16; 4]> {
-        let mut cands: Vec<[u16; 4]> = Vec::with_capacity(64);
-        let pid = self.player_id;
-
-        // Check if there's a pending reach (riichi action in legal_actions)
-        let has_riichi = self
-            ._legal_actions
-            .iter()
-            .any(|a| a.action_type == ActionType::Riichi);
+    /// The engine keeps physical tile choices in legal_actions.  For pointer
+    /// policy training we collapse those choices by Action::encode():
+    /// - Discard candidates prefer a non-red tile when red and non-red copies
+    ///   map to the same tile34 action.
+    /// - Chi/Pon candidates prefer representatives that consume red fives when
+    ///   several physical consumes map to the same 82-action id.
+    pub fn candidate_actions(&self) -> Vec<Action> {
+        let encoder = ActionEncoder::FourPlayer;
+        let mut ids: Vec<i32> = Vec::with_capacity(self._legal_actions.len());
+        let mut actions: Vec<Action> = Vec::with_capacity(self._legal_actions.len());
 
         for action in &self._legal_actions {
-            let tuple = self.encode_candidate_action(action, pid, has_riichi);
+            let Ok(action_id) = encoder.encode(action) else {
+                continue;
+            };
+
+            if let Some(pos) = ids.iter().position(|&id| id == action_id) {
+                if prefer_candidate_action(action, &actions[pos]) {
+                    actions[pos] = action.clone();
+                }
+            } else {
+                ids.push(action_id);
+                actions.push(action.clone());
+            }
+        }
+
+        actions
+    }
+
+    pub fn find_candidate_action(&self, candidate_index: usize) -> Option<Action> {
+        self.candidate_actions().get(candidate_index).cloned()
+    }
+
+    pub fn find_candidate_index(&self, action: &Action) -> Option<usize> {
+        let encoder = ActionEncoder::FourPlayer;
+        let target_id = encoder.encode(action).ok()?;
+        self.candidate_actions().iter().position(|candidate| {
+            encoder
+                .encode(candidate)
+                .is_ok_and(|candidate_id| candidate_id == target_id)
+        })
+    }
+
+    /// Encode candidate (legal action) features as variable-length 2-tuples.
+    ///
+    /// Each tuple: (type, from)
+    /// - type: 0-44
+    /// - from: 0-2 (relative seat), 3=self
+    pub fn encode_seq_candidates(&self) -> Vec<[u16; 2]> {
+        let mut cands: Vec<[u16; 2]> = Vec::with_capacity(64);
+        let pid = self.player_id;
+
+        for action in self.candidate_actions() {
+            let tuple = self.encode_candidate_action(&action, pid);
             if let Some(t) = tuple {
                 cands.push(t);
             }
@@ -657,65 +732,38 @@ impl Observation {
     pub fn encode_seq_candidate_melds(&self) -> Vec<[u16; MELD_FEATURE_WIDTH]> {
         let mut melds: Vec<[u16; MELD_FEATURE_WIDTH]> = Vec::with_capacity(64);
         let pid = self.player_id;
-        let has_riichi = self
-            ._legal_actions
-            .iter()
-            .any(|a| a.action_type == ActionType::Riichi);
 
-        for action in &self._legal_actions {
-            if self
-                .encode_candidate_action(action, pid, has_riichi)
-                .is_some()
-            {
-                melds.push(self.encode_candidate_action_meld(action, pid));
+        for action in self.candidate_actions() {
+            if self.encode_candidate_action(&action, pid).is_some() {
+                melds.push(self.encode_candidate_action_meld(&action, pid));
             }
         }
 
         melds
     }
 
-    /// Encode a single legal action as a candidate 4-tuple.
-    fn encode_candidate_action(
-        &self,
-        action: &Action,
-        pid: u8,
-        _has_riichi: bool,
-    ) -> Option<[u16; 4]> {
+    /// Encode a single legal action as a candidate 2-tuple.
+    fn encode_candidate_action(&self, action: &Action, pid: u8) -> Option<[u16; 2]> {
         match action.action_type {
             ActionType::Discard => {
                 let tile = action.tile?;
-                let k37 = tile_id_to_kan37(tile as u32);
-                let type_idx = k37 as u16; // 0-36
-
-                // Determine moqie (tedashi vs tsumogiri)
-                let moqie = if self.is_tsumogiri_candidate(tile) {
-                    1
-                } else {
-                    0
-                };
-
-                Some([type_idx, moqie, 2, 3]) // from=3 (self)
+                let type_idx = (tile / 4) as u16; // 0-33 tile34
+                Some([type_idx, 3]) // from=3 (self)
             }
-            ActionType::Riichi => {
-                // Riichi is encoded as discard + liqi=1
-                // It will appear alongside the discard candidates
-                // Skip the riichi action itself; the discard actions
-                // that follow riichi are the actual candidates
-                None
-            }
+            ActionType::Riichi => Some([CAND_TYPE_RIICHI, 3]),
             ActionType::Ankan => {
                 action.consume_tiles.first()?;
-                Some([37, 2, 2, 3])
+                Some([CAND_TYPE_ANKAN, 3])
             }
             ActionType::Kakan => {
                 action
                     .tile
                     .or_else(|| action.consume_tiles.first().copied())?;
-                Some([38, 2, 2, 3])
+                Some([CAND_TYPE_KAKAN, 3])
             }
-            ActionType::Tsumo => Some([39, 2, 2, 3]),
-            ActionType::KyushuKyuhai => Some([40, 2, 2, 3]),
-            ActionType::Pass => Some([41, 2, 2, 3]),
+            ActionType::Tsumo => Some([CAND_TYPE_TSUMO, 3]),
+            ActionType::KyushuKyuhai => Some([CAND_TYPE_KYUSHU_KYUHAI, 3]),
+            ActionType::Pass => Some([CAND_TYPE_PASS, 3]),
             ActionType::Chi => {
                 action.tile?;
                 if action.consume_tiles.len() < 2 {
@@ -726,7 +774,7 @@ impl Observation {
                 let target = self.find_last_discard_actor()?;
                 let rel = relative_from(pid, target);
 
-                Some([42, 2, 2, rel as u16])
+                Some([CAND_TYPE_CHI, rel as u16])
             }
             ActionType::Pon => {
                 action.tile?;
@@ -737,7 +785,7 @@ impl Observation {
                 let target = self.find_last_discard_actor()?;
                 let rel = relative_from(pid, target);
 
-                Some([43, 2, 2, rel as u16])
+                Some([CAND_TYPE_PON, rel as u16])
             }
             ActionType::Daiminkan => {
                 action.tile?;
@@ -745,12 +793,12 @@ impl Observation {
                 let target = self.find_last_discard_actor()?;
                 let rel = relative_from(pid, target);
 
-                Some([44, 2, 2, rel as u16])
+                Some([CAND_TYPE_DAIMINKAN, rel as u16])
             }
             ActionType::Ron => {
                 let target = self.find_last_discard_actor()?;
                 let rel = relative_from(pid, target);
-                Some([45, 2, 2, rel as u16])
+                Some([CAND_TYPE_RON, rel as u16])
             }
             ActionType::Kita => None, // 3P only, not supported
         }
@@ -800,15 +848,6 @@ impl Observation {
                 encode_kakan_meld(added, called, existing)
             }
             _ => meld_pad(),
-        }
-    }
-
-    /// Check if discarding this tile would be tsumogiri.
-    fn is_tsumogiri_candidate(&self, tile: u8) -> bool {
-        if let Some(drawn) = self.get_drawn_tile() {
-            drawn == tile
-        } else {
-            false
         }
     }
 
@@ -1092,8 +1131,8 @@ mod tests {
     #[test]
     fn test_candidate_type_bounds() {
         let cand_type_max = CAND_DIMS[0];
-        assert!(36 < cand_type_max); // discard max: 36
-        assert!(46 < cand_type_max); // padding
-        assert!(45 < cand_type_max); // ron
+        assert!(33 < cand_type_max); // discard max: 33
+        assert!(44 < cand_type_max); // padding
+        assert!(43 < cand_type_max); // ron
     }
 }
