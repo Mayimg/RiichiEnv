@@ -4,6 +4,7 @@ bc:
     replay_rule: tenhou
   online: false
   offline_algorithm: behavior_cloning
+  matmul_precision: high
   data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
   val_data_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
   output: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test04/model.pth

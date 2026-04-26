@@ -26,7 +26,7 @@ import torch
 import yaml
 
 from riichienv_ml.config import import_class, load_config
-from riichienv_ml.utils import build_encoder
+from riichienv_ml.utils import build_encoder, configure_matmul_precision
 
 
 def _candidate_mask(obs, width: int, device: torch.device) -> torch.Tensor:
@@ -98,6 +98,7 @@ class Agent:
         # Detect config section and load
         section, sub_cfg = self._load_section(config_path)
         game = sub_cfg.game
+        configure_matmul_precision(getattr(sub_cfg, "matmul_precision", None))
 
         # Resolve model path
         if model_path is None:

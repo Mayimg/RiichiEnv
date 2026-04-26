@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, computed_field, model_validator
 
 from riichienv_ml.features.grp_agari_features import get_grp_input_dim
 
-
 GAME_PARAMS = {
     4: {
         "tile_dim": 34,
@@ -153,6 +152,7 @@ class BcConfig(OfflineTrainConfig):
     online: bool = False
     offline_algorithm: Literal["cql", "behavior_cloning"] = "cql"
     load_model: str | None = None
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
     # LR scheduler
     lr_min: float = 1e-5
     label_smoothing: float = 0.0
