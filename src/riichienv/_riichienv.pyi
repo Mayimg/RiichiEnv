@@ -469,7 +469,7 @@ class Observation:
     def encode_seq_numeric(self) -> bytes:
         """Encode sequence features as numeric values.
 
-        Shape: ``(12,)`` / dtype: ``float32``.
+        Shape: ``(6,)`` / dtype: ``float32``.
         """
         ...
     def encode_seq_progression(self) -> bytes:

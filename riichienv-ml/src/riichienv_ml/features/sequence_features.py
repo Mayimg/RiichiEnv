@@ -51,7 +51,7 @@ class SequenceFeatureEncoder:
     CAND_PAD = (44, 3)
     MAX_CAND_LEN = 32
 
-    NUM_NUMERIC = 12
+    NUM_NUMERIC = 6
 
     def __init__(self, n_players: int = 4, game_style: int = 1,
                  max_prog_len: int = 256, max_cand_len: int = 32):
@@ -227,7 +227,7 @@ class SequenceFeaturePackedEncoder:
         sparse      (10)       int indices stored as float
         sparse_melds(4 * 9)    int meld rows stored as float
         hand        (14 * 2)   int tuples stored as float
-        numeric     (12)       continuous values
+        numeric     (6)        continuous values
         progression (P * 5)    int tuples stored as float
         prog_melds  (P * 9)    int meld rows stored as float
         candidates  (C * 2)    int tuples stored as float
@@ -243,7 +243,7 @@ class SequenceFeaturePackedEncoder:
     _SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
     _MW = SequenceFeatureEncoder.MELD_WIDTH
     _H = SequenceFeatureEncoder.MAX_HAND_LEN     # 14
-    _N = SequenceFeatureEncoder.NUM_NUMERIC       # 12
+    _N = SequenceFeatureEncoder.NUM_NUMERIC       # 6
 
     def __init__(self, tile_dim: int = 34, n_players: int = 4,
                  game_style: int = 1,

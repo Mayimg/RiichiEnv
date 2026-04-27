@@ -57,7 +57,10 @@ pub const MAX_SPARSE_MELDS: usize = 4;
 #[allow(dead_code)]
 pub const MELD_PAD: [u16; MELD_FEATURE_WIDTH] = [5, 37, 3, 37, 3, 37, 3, 37, 3];
 
-pub const NUM_NUMERIC: usize = 12;
+pub const NUM_NUMERIC: usize = 6;
+
+const SCORE_NORM_BASE: f32 = 25000.0;
+const SCORE_NORM_SCALE: f32 = 10000.0;
 
 const SPARSE_DORA_OFFSET: u16 = 83;
 const MELD_KIND_CHI: u16 = 0;
@@ -80,6 +83,10 @@ const CAND_TYPE_CHI: u16 = 40;
 const CAND_TYPE_PON: u16 = 41;
 const CAND_TYPE_DAIMINKAN: u16 = 42;
 const CAND_TYPE_RON: u16 = 43;
+
+fn normalize_score(score: i32) -> f32 {
+    (score as f32 - SCORE_NORM_BASE) / SCORE_NORM_SCALE
+}
 
 // ── Tile conversions ─────────────────────────────────────────────────────────
 
@@ -543,14 +550,11 @@ impl Observation {
 
     // ── Numeric features ─────────────────────────────────────────────────
 
-    /// Encode numeric features: 12 floats.
+    /// Encode numeric features: 6 floats.
     ///
     /// [0] honba (current)
     /// [1] riichi deposits (current)
-    /// [2-5] scores (self, right, opposite, left) relative to player_id
-    /// [6] honba (round start)
-    /// [7] riichi deposits (round start)
-    /// [8-11] scores at round start (self-relative)
+    /// [2-5] normalized scores (self, right, opposite, left) relative to player_id
     pub fn encode_seq_numeric(&self) -> [f32; NUM_NUMERIC] {
         let mut out = [0.0f32; NUM_NUMERIC];
         let pid = self.player_id as usize;
@@ -562,39 +566,10 @@ impl Observation {
         // Scores (self-relative rotation)
         for i in 0..4 {
             let seat = (pid + i) % 4;
-            out[2 + i] = self.scores[seat] as f32;
-        }
-
-        // Round-start values from start_kyoku event
-        let (start_honba, start_riichi, start_scores) = self.parse_start_kyoku_info();
-        out[6] = start_honba as f32;
-        out[7] = start_riichi as f32;
-        for i in 0..4 {
-            let seat = (pid + i) % 4;
-            out[8 + i] = start_scores[seat] as f32;
+            out[2 + i] = normalize_score(self.scores[seat]);
         }
 
         out
-    }
-
-    /// Parse start_kyoku event for initial round state.
-    fn parse_start_kyoku_info(&self) -> (u32, u32, [i32; 4]) {
-        for event_str in &self.events {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(event_str)
-                && v["type"].as_str() == Some("start_kyoku")
-            {
-                let honba = v["honba"].as_u64().unwrap_or(0) as u32;
-                let kyotaku = v["kyotaku"].as_u64().unwrap_or(0) as u32;
-                let mut scores = [0i32; 4];
-                if let Some(arr) = v["scores"].as_array() {
-                    for (i, val) in arr.iter().enumerate().take(4) {
-                        scores[i] = val.as_i64().unwrap_or(0) as i32;
-                    }
-                }
-                return (honba, kyotaku, scores);
-            }
-        }
-        (self.honba as u32, self.riichi_sticks, self.scores)
     }
 
     // ── Progression features ─────────────────────────────────────────────
@@ -1106,6 +1081,40 @@ mod tests {
 
         let hand = obs.encode_seq_hand();
         assert_eq!(hand, vec![[1, 0], [2, 0], [3, 0]]);
+    }
+
+    #[test]
+    fn test_encode_seq_numeric_uses_current_normalized_scores_only() {
+        let obs = Observation::new(
+            2,
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [35000, 15000, 25000, 42000],
+            [false; 4],
+            vec![],
+            vec![
+                r#"{"type":"start_kyoku","honba":9,"kyotaku":8,"scores":[1000,2000,3000,4000]}"#
+                    .to_string(),
+            ],
+            3,
+            2,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+        );
+
+        let numeric = obs.encode_seq_numeric();
+        let expected = [3.0, 2.0, 0.0, 1.7, 1.0, -1.0];
+        for (actual, expected) in numeric.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
     }
 
     #[test]

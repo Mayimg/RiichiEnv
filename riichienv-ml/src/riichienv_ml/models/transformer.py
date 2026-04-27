@@ -471,7 +471,7 @@ class TransformerActorCritic(nn.Module):
         self._SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
         self._MW = SequenceFeatureEncoder.MELD_WIDTH
         self._H = SequenceFeatureEncoder.MAX_HAND_LEN     # 14
-        self._N = SequenceFeatureEncoder.NUM_NUMERIC       # 12
+        self._N = SequenceFeatureEncoder.NUM_NUMERIC       # 6
         self._P = max_prog_len
         self._C = max_cand_len
 
