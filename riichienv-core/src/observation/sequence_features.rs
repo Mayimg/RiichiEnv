@@ -47,6 +47,8 @@ pub const CAND_PAD: [u16; 2] = [44, 3];
 #[allow(dead_code)]
 pub const MELD_FEATURE_WIDTH: usize = 9;
 #[allow(dead_code)]
+pub const CANDIDATE_FEATURE_WIDTH: usize = 2 + MELD_FEATURE_WIDTH;
+#[allow(dead_code)]
 pub const MELD_KIND_DIMS: u16 = 6;
 #[allow(dead_code)]
 pub const MELD_ROLE_DIMS: u16 = 4;
@@ -742,6 +744,32 @@ impl Observation {
         melds
     }
 
+    /// Encode candidate tuples and aligned factorized meld rows in one pass.
+    pub fn encode_seq_candidate_features(&self) -> Vec<[u16; CANDIDATE_FEATURE_WIDTH]> {
+        self.candidate_action_features()
+            .into_iter()
+            .map(|(candidate, meld)| {
+                let mut row = [0u16; CANDIDATE_FEATURE_WIDTH];
+                row[..2].copy_from_slice(&candidate);
+                row[2..].copy_from_slice(&meld);
+                row
+            })
+            .collect()
+    }
+
+    fn candidate_action_features(&self) -> Vec<([u16; 2], [u16; MELD_FEATURE_WIDTH])> {
+        let mut features: Vec<([u16; 2], [u16; MELD_FEATURE_WIDTH])> = Vec::with_capacity(64);
+        let pid = self.player_id;
+
+        for action in self.candidate_actions() {
+            if let Some(candidate) = self.encode_candidate_action(&action, pid) {
+                features.push((candidate, self.encode_candidate_action_meld(&action, pid)));
+            }
+        }
+
+        features
+    }
+
     /// Encode a single legal action as a candidate 2-tuple.
     fn encode_candidate_action(&self, action: &Action, pid: u8) -> Option<[u16; 2]> {
         match action.action_type {
@@ -1119,6 +1147,45 @@ mod tests {
         assert_eq!(melds.len(), 2);
         assert_eq!(melds[0][0], MELD_KIND_PON);
         assert_eq!(melds[1][0], MELD_KIND_CHI);
+    }
+
+    #[test]
+    fn test_candidate_features_bundle_matches_separate_encoders() {
+        let obs = Observation::new(
+            1,
+            [vec![], vec![16, 17, 18, 20], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [[19].to_vec(), vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![
+                Action::new(ActionType::Discard, Some(16), vec![], None),
+                Action::new(ActionType::Pon, Some(19), vec![16, 17], None),
+            ],
+            vec![r#"{"type":"dahai","actor":0,"pai":"5m","tsumogiri":false}"#.to_string()],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+        );
+
+        let candidates = obs.encode_seq_candidates();
+        let melds = obs.encode_seq_candidate_melds();
+        let bundled = obs.encode_seq_candidate_features();
+
+        assert_eq!(bundled.len(), candidates.len());
+        assert_eq!(bundled.len(), melds.len());
+        for (i, row) in bundled.iter().enumerate() {
+            assert_eq!(row[..2], candidates[i]);
+            assert_eq!(row[2..], melds[i]);
+        }
     }
 
     #[test]

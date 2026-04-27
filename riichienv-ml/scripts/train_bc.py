@@ -10,6 +10,7 @@ Usage:
 import argparse
 from pathlib import Path
 
+import torch
 import torch.multiprocessing
 
 try:
@@ -21,7 +22,7 @@ except ModuleNotFoundError:
 load_dotenv()
 
 from riichienv_ml.config import load_config
-from riichienv_ml.utils import setup_logging, init_wandb
+from riichienv_ml.utils import configure_matmul_precision, init_wandb, setup_logging
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--label_smoothing", type=float, default=None)
+    parser.add_argument("--matmul_precision", choices=["highest", "high", "medium"], default=None)
     parser.add_argument("--num_blocks", type=int, default=None)
     parser.add_argument("--conv_channels", type=int, default=None)
     parser.add_argument("--fc_dim", type=int, default=None)
@@ -54,8 +56,10 @@ def main():
 
     # Override config with CLI args
     overrides = {}
-    for field in ["data_glob", "val_data_glob", "grp_model", "load_model", "output", "device", "batch_size", "lr", "lr_min", "alpha",
-                  "gamma", "num_epochs", "num_workers", "limit", "label_smoothing"]:
+    for field in [
+        "data_glob", "val_data_glob", "grp_model", "load_model", "output", "device", "batch_size", "lr",
+        "lr_min", "alpha", "gamma", "num_epochs", "num_workers", "limit", "label_smoothing", "matmul_precision",
+    ]:
         val = getattr(args, field, None)
         if val is not None:
             overrides[field] = val
@@ -72,6 +76,7 @@ def main():
 
     log_dir = str(Path(cfg.output).parent)
     setup_logging(log_dir, "train_bc")
+    configure_matmul_precision(cfg.matmul_precision)
     init_wandb(cfg, config_path=args.config)
 
     game = cfg.game

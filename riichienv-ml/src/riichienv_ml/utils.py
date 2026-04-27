@@ -25,6 +25,22 @@ def build_encoder(encoder_class, *, tile_dim: int = 34, model_config: dict | Non
     return encoder_class(**kwargs)
 
 
+def configure_matmul_precision(precision: str | None) -> str:
+    """Configure PyTorch float32 matmul precision when requested.
+
+    ``high`` enables TF32 fast paths on supported NVIDIA GPUs while keeping
+    tensors and checkpoints in FP32.
+    """
+    if precision is None:
+        return torch.get_float32_matmul_precision()
+    if precision not in {"highest", "high", "medium"}:
+        raise ValueError(f"Unsupported matmul_precision={precision!r}")
+    torch.set_float32_matmul_precision(precision)
+    current = torch.get_float32_matmul_precision()
+    logger.info(f"Float32 matmul precision: {current}")
+    return current
+
+
 def setup_logging(output_dir: str, script_name: str) -> Path:
     """Configure loguru to log to both stderr and a file.
 

@@ -151,13 +151,38 @@ class SequenceFeatureEncoder:
             prog_melds[:n_prog_sidecar] = raw_prog_melds[:n_prog_sidecar]
 
         # Candidates
-        cand_bytes = obs.encode_seq_candidates()
-        if len(cand_bytes) > 0:
-            raw_cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 2)
-            n_cand = min(len(raw_cand), self.MAX_CAND_LEN)
+        raw_cand_features = None
+        if hasattr(obs, "encode_seq_candidate_features"):
+            cand_feature_bytes = obs.encode_seq_candidate_features()
+            if len(cand_feature_bytes) > 0:
+                raw_cand_features = np.frombuffer(cand_feature_bytes, dtype=np.uint16).reshape(
+                    -1, 2 + self.MELD_WIDTH
+                )
+
+        if raw_cand_features is not None:
+            raw_cand = raw_cand_features[:, :2]
+            raw_cand_melds = raw_cand_features[:, 2:]
+            n_cand = min(len(raw_cand_features), self.MAX_CAND_LEN)
+            n_cand_melds = n_cand
         else:
-            raw_cand = np.empty((0, 2), dtype=np.uint16)
-            n_cand = 0
+            cand_bytes = obs.encode_seq_candidates()
+            if len(cand_bytes) > 0:
+                raw_cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 2)
+                n_cand = min(len(raw_cand), self.MAX_CAND_LEN)
+            else:
+                raw_cand = np.empty((0, 2), dtype=np.uint16)
+                n_cand = 0
+
+            cand_meld_bytes = obs.encode_seq_candidate_melds()
+            if len(cand_meld_bytes) > 0:
+                raw_cand_melds = np.frombuffer(
+                    cand_meld_bytes, dtype=np.uint16
+                ).reshape(-1, self.MELD_WIDTH)
+                n_cand_melds = min(len(raw_cand_melds), self.MAX_CAND_LEN)
+            else:
+                raw_cand_melds = np.empty((0, self.MELD_WIDTH), dtype=np.uint16)
+                n_cand_melds = 0
+
         cand = np.tile(
             np.array(self.CAND_PAD, dtype=np.int64), (self.MAX_CAND_LEN, 1)
         )
@@ -166,15 +191,6 @@ class SequenceFeatureEncoder:
         cand_mask = np.zeros(self.MAX_CAND_LEN, dtype=np.bool_)
         cand_mask[:n_cand] = True
 
-        cand_meld_bytes = obs.encode_seq_candidate_melds()
-        if len(cand_meld_bytes) > 0:
-            raw_cand_melds = np.frombuffer(
-                cand_meld_bytes, dtype=np.uint16
-            ).reshape(-1, self.MELD_WIDTH)
-            n_cand_melds = min(len(raw_cand_melds), self.MAX_CAND_LEN)
-        else:
-            raw_cand_melds = np.empty((0, self.MELD_WIDTH), dtype=np.uint16)
-            n_cand_melds = 0
         cand_melds = np.tile(
             np.array(self.MELD_PAD, dtype=np.int64), (self.MAX_CAND_LEN, 1)
         )
