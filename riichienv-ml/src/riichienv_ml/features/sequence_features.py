@@ -21,7 +21,7 @@ class SequenceFeatureEncoder:
         numeric:     (NUM_NUMERIC,)      float32
         progression: (MAX_PROG_LEN, 5)   int64   padded action-history 5-tuples
         prog_melds:  (MAX_PROG_LEN, 9)   int64   padded progression meld rows
-        candidates:  (MAX_CAND_LEN, 2)   int64   padded legal-action 2-tuples
+        candidates:  (MAX_CAND_LEN, 3)   int64   padded legal-action 3-tuples
         cand_melds:  (MAX_CAND_LEN, 9)   int64   padded candidate meld rows
         sparse_mask: (MAX_SPARSE_LEN,)   bool    True for real tokens
         sparse_meld_mask: (MAX_SPARSE_MELDS,) bool True for real current melds
@@ -47,8 +47,9 @@ class SequenceFeatureEncoder:
     PROG_PAD = (4, 43, 2, 2, 4)
     MAX_PROG_LEN = 256
 
-    CAND_DIMS = (45, 5)
-    CAND_PAD = (44, 4)
+    CAND_DIMS = (48, 3, 5)
+    CAND_PAD = (47, 2, 4)
+    CAND_WIDTH = len(CAND_DIMS)
     MAX_CAND_LEN = 32
 
     NUM_NUMERIC = 6
@@ -156,21 +157,21 @@ class SequenceFeatureEncoder:
             cand_feature_bytes = obs.encode_seq_candidate_features()
             if len(cand_feature_bytes) > 0:
                 raw_cand_features = np.frombuffer(cand_feature_bytes, dtype=np.uint16).reshape(
-                    -1, 2 + self.MELD_WIDTH
+                    -1, self.CAND_WIDTH + self.MELD_WIDTH
                 )
 
         if raw_cand_features is not None:
-            raw_cand = raw_cand_features[:, :2]
-            raw_cand_melds = raw_cand_features[:, 2:]
+            raw_cand = raw_cand_features[:, :self.CAND_WIDTH]
+            raw_cand_melds = raw_cand_features[:, self.CAND_WIDTH:]
             n_cand = min(len(raw_cand_features), self.MAX_CAND_LEN)
             n_cand_melds = n_cand
         else:
             cand_bytes = obs.encode_seq_candidates()
             if len(cand_bytes) > 0:
-                raw_cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 2)
+                raw_cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, self.CAND_WIDTH)
                 n_cand = min(len(raw_cand), self.MAX_CAND_LEN)
             else:
-                raw_cand = np.empty((0, 2), dtype=np.uint16)
+                raw_cand = np.empty((0, self.CAND_WIDTH), dtype=np.uint16)
                 n_cand = 0
 
             cand_meld_bytes = obs.encode_seq_candidate_melds()
@@ -230,7 +231,7 @@ class SequenceFeaturePackedEncoder:
         numeric     (6)        continuous values
         progression (P * 5)    int tuples stored as float
         prog_melds  (P * 9)    int meld rows stored as float
-        candidates  (C * 2)    int tuples stored as float
+        candidates  (C * 3)    int tuples stored as float
         cand_melds  (C * 9)    int meld rows stored as float
         sparse_mask (9)        bool stored as float
         sparse_meld_mask (4)   bool stored as float
@@ -242,6 +243,7 @@ class SequenceFeaturePackedEncoder:
     _S = SequenceFeatureEncoder.MAX_SPARSE_LEN
     _SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
     _MW = SequenceFeatureEncoder.MELD_WIDTH
+    _CW = SequenceFeatureEncoder.CAND_WIDTH
     _H = SequenceFeatureEncoder.MAX_HAND_LEN     # 14
     _N = SequenceFeatureEncoder.NUM_NUMERIC       # 6
 
@@ -259,7 +261,7 @@ class SequenceFeaturePackedEncoder:
         self.PACKED_SIZE = (
             self._S + self._SM * self._MW + self._H * 2 + self._N
             + self._P * 5 + self._P * self._MW
-            + self._C * 2 + self._C * self._MW
+            + self._C * self._CW + self._C * self._MW
             + self._S + self._SM + self._H + self._P + self._C
         )
 
@@ -281,8 +283,8 @@ class SequenceFeaturePackedEncoder:
         o += self._P * 5
         packed[o:o + self._P * self._MW] = d["prog_melds"].reshape(-1).float()
         o += self._P * self._MW
-        packed[o:o + self._C * 2] = d["candidates"].reshape(-1).float()
-        o += self._C * 2
+        packed[o:o + self._C * self._CW] = d["candidates"].reshape(-1).float()
+        o += self._C * self._CW
         packed[o:o + self._C * self._MW] = d["cand_melds"].reshape(-1).float()
         o += self._C * self._MW
         packed[o:o + self._S] = d["sparse_mask"].float()

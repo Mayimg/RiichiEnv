@@ -281,13 +281,13 @@ class Observation:
         """
         ...
     def candidate_actions(self) -> list[Action]:
-        """Return legal actions collapsed to one representative per 82-action id."""
+        """Return legal actions collapsed to one representative per strict pointer candidate."""
         ...
     def find_candidate_action(self, candidate_index: int) -> Action | None:
         """Return the representative candidate action at ``candidate_index``."""
         ...
     def find_candidate_index(self, action: Action) -> int | None:
-        """Return the candidate index whose 82-action id matches ``action``."""
+        """Return the candidate index whose strict pointer candidate matches ``action``."""
         ...
     def select_action_from_mjai(self, mjai: str | dict[str, Any]) -> Action | None:
         """Find the legal action matching an MJAI event, or ``None`` if no match."""
@@ -489,9 +489,9 @@ class Observation:
     def encode_seq_candidates(self) -> bytes:
         """Encode sequence candidate features.
 
-        Shape: ``(M, 2)`` / dtype: ``uint16``.
+        Shape: ``(M, 3)`` / dtype: ``uint16``.
 
-        Each row represents one legal action candidate with 2 token values.
+        Each row represents one legal action candidate with 3 token values.
         """
         ...
     def encode_seq_candidate_melds(self) -> bytes:
@@ -503,7 +503,7 @@ class Observation:
     def encode_seq_candidate_features(self) -> bytes:
         """Encode sequence candidate and aligned meld features.
 
-        Shape: ``(M, 11)`` / dtype: ``uint16``.
+        Shape: ``(M, 12)`` / dtype: ``uint16``.
         """
         ...
     def __init__(self, *args: Any, **kwargs: Any): ...
@@ -537,6 +537,8 @@ class Observation3P:
         last_tedashis: The last tedashi (hand-picked discard) per player,
             or ``None``.
         last_discard: The most recently discarded tile id, or ``None``.
+        last_discard_actor: Seat index of the player who made the most recent
+            discard, or ``None``.
     """
 
     player_id: int
@@ -557,6 +559,7 @@ class Observation3P:
     riichi_sutehais: list[int | None]
     last_tedashis: list[int | None]
     last_discard: int | None
+    last_discard_actor: int | None
     @property
     def hand(self) -> list[int]:
         """Shorthand for ``hands[player_id]``."""

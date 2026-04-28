@@ -9,6 +9,24 @@ fn parse_mjai_tile(s: &str) -> u8 {
     mjai_to_tid(s).unwrap_or(0)
 }
 
+fn log_tile_kan37(tile_id: u8) -> u8 {
+    match tile_id {
+        16 => 0,
+        52 => 10,
+        88 => 20,
+        _ => match tile_id / 4 {
+            0..=8 => tile_id / 4 + 1,
+            9..=17 => tile_id / 4 + 2,
+            18..=33 => tile_id / 4 + 3,
+            _ => 0,
+        },
+    }
+}
+
+fn same_log_tile(a: u8, b: u8) -> bool {
+    log_tile_kan37(a) == log_tile_kan37(b)
+}
+
 pub trait GameStateEventHandler {
     fn apply_mjai_event(&mut self, event: MjaiEvent);
     fn apply_log_action(&mut self, action: &LogAction);
@@ -338,16 +356,32 @@ impl GameStateEventHandler for GameState {
             LogAction::DiscardTile {
                 seat,
                 tile,
+                tsumogiri,
                 is_liqi,
                 is_wliqi,
                 ..
             } => {
                 let s = *seat;
-                let t = *tile;
-                let is_tsumogiri = if let Some(dt) = self.drawn_tile {
-                    dt == t
+                let log_tile = *tile;
+                let is_tsumogiri = tsumogiri.unwrap_or_else(|| self.drawn_tile == Some(log_tile));
+                let t = if is_tsumogiri {
+                    self.drawn_tile
+                        .filter(|&drawn| same_log_tile(drawn, log_tile))
+                        .unwrap_or(log_tile)
                 } else {
-                    false
+                    self.players[s]
+                        .hand
+                        .iter()
+                        .copied()
+                        .find(|&hand_tile| hand_tile == log_tile)
+                        .or_else(|| {
+                            self.players[s]
+                                .hand
+                                .iter()
+                                .copied()
+                                .find(|&hand_tile| same_log_tile(hand_tile, log_tile))
+                        })
+                        .unwrap_or(log_tile)
                 };
 
                 // Update progression cache (replay mode).

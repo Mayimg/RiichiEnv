@@ -12,6 +12,7 @@ from riichienv_ml.models.transformer import (
     _ACTION_KIND_PAD,
     _MELD_KIND_CHI,
     _MELD_KIND_PAD,
+    _MELD_KIND_PON,
     _MELD_ROLE_CALLED,
     _MELD_ROLE_CONSUMED,
     _RED_FLAG_PAD,
@@ -208,7 +209,7 @@ def test_sequence_numeric_features_use_current_normalized_scores_only():
     assert torch.allclose(features["numeric"], torch.tensor([3.0, 2.0, 0.0, 1.7, 1.0, -1.0]))
 
 
-def test_sequence_candidates_collapse_to_82_action_representatives():
+def test_sequence_candidates_distinguish_red_and_moqie_discards():
     obs = Observation(
         0,
         [[16, 17, 18, 19], [], [], []],
@@ -233,20 +234,21 @@ def test_sequence_candidates_collapse_to_82_action_representatives():
         [None, None, None, None],
         [None, None, None, None],
         None,
+        17,
     )
 
     candidates = obs.candidate_actions()
-    assert len(candidates) == 2
-    discard = next(a for a in candidates if a.action_type == ActionType.DISCARD)
-    assert discard.tile == 17
-    assert obs.find_candidate_action(obs.find_candidate_index(Action(ActionType.DISCARD, 16, []))).tile == 17
+    assert len(candidates) == 3
+    assert [a.tile for a in candidates if a.action_type == ActionType.DISCARD] == [16, 17]
+    assert obs.find_candidate_action(obs.find_candidate_index(Action(ActionType.DISCARD, 16, []))).tile == 16
+    assert obs.find_candidate_action(obs.find_candidate_index(Action(ActionType.DISCARD, 17, []))).tile == 17
 
     features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
     valid = features["candidates"][features["cand_mask"]]
-    assert valid.tolist() == [[4, 0], [34, 0]]
+    assert valid.tolist() == [[0, 0, 0], [5, 1, 0], [37, 2, 0]]
 
 
-def test_sequence_candidates_prefer_red_consumes_for_same_action_id():
+def test_sequence_candidates_distinguish_red_consumed_melds():
     obs = Observation(
         1,
         [[], [16, 17, 18], [], []],
@@ -273,13 +275,99 @@ def test_sequence_candidates_prefer_red_consumes_for_same_action_id():
     )
 
     candidates = obs.candidate_actions()
-    assert len(candidates) == 1
-    assert candidates[0].action_type == ActionType.PON
-    assert candidates[0].consume_tiles == [16, 17]
+    assert len(candidates) == 2
+    assert [a.action_type for a in candidates] == [ActionType.PON, ActionType.PON]
+    assert [a.consume_tiles for a in candidates] == [[17, 18], [16, 17]]
 
     features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
     valid = features["candidates"][features["cand_mask"]]
-    assert valid.tolist() == [[41, 3]]
+    assert valid.tolist() == [[44, 2, 3], [44, 2, 3]]
+    valid_melds = features["cand_melds"][features["cand_mask"]]
+    assert valid_melds.tolist() == [
+        [_MELD_KIND_PON, 5, _MELD_ROLE_CALLED, 5, _MELD_ROLE_CONSUMED, 5, _MELD_ROLE_CONSUMED, 37, 3],
+        [_MELD_KIND_PON, 5, _MELD_ROLE_CALLED, 0, _MELD_ROLE_CONSUMED, 5, _MELD_ROLE_CONSUMED, 37, 3],
+    ]
+
+
+def test_sequence_response_candidates_use_last_discard_actor_without_events():
+    obs = Observation(
+        1,
+        [[], [16, 17, 18], [], []],
+        [[], [], [], []],
+        [[19], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [
+            Action(ActionType.PON, 19, [17, 18]),
+            Action(ActionType.RON, 19, []),
+            Action(ActionType.PASS, None, []),
+        ],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        19,
+        last_discard_actor=0,
+    )
+
+    candidates = obs.candidate_actions()
+
+    assert [a.action_type for a in candidates] == [ActionType.PON, ActionType.RON, ActionType.PASS]
+    features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
+    valid = features["candidates"][features["cand_mask"]]
+    assert valid.tolist() == [[44, 2, 3], [46, 2, 3], [42, 2, 0]]
+
+
+def test_mjai_replay_claim_labels_remain_strict_candidate_actions(tmp_path):
+    file_path = tmp_path / "claim_sample.jsonl"
+    data = [
+        {"type": "start_game", "names": ["A", "B", "C", "D"], "id": "claim_sample"},
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 1,
+            "honba": 0,
+            "kyoutaku": 0,
+            "oya": 1,
+            "scores": [25000, 25000, 25000, 25000],
+            "dora_marker": "1m",
+            "tehais": [
+                ["E", "E", "1p", "2p", "3p", "4p", "5p", "6p", "7p", "8p", "9p", "9p", "9p"],
+                ["E", "1m", "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "9m", "9m"],
+                ["1s", "1s", "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "9s", "9s"],
+                ["P", "P", "F", "F", "C", "C", "S", "S", "W", "W", "N", "N", "1p"],
+            ],
+        },
+        {"type": "tsumo", "actor": 1, "pai": "2m"},
+        {"type": "dahai", "actor": 1, "pai": "E", "tsumogiri": False},
+        {"type": "pon", "actor": 0, "target": 1, "pai": "E", "consumed": ["E", "E"]},
+        {"type": "ryukyoku", "reason": "test"},
+        {"type": "end_kyoku"},
+        {"type": "end_game"},
+    ]
+    with file_path.open("w", encoding="utf-8") as f:
+        for event in data:
+            f.write(json.dumps(event) + "\n")
+
+    replay = MjaiReplay.from_jsonl(str(file_path), rule="tenhou")
+    kyoku = next(iter(replay.take_kyokus()))
+    pon_steps = [
+        (obs, action)
+        for obs, action in kyoku.steps(0)
+        if action.action_type == ActionType.PON
+    ]
+
+    assert pon_steps
+    obs, action = pon_steps[0]
+    assert len(action.consume_tiles) == 2
+    assert obs.find_candidate_index(action) is not None
 
 
 def test_transformer_decodes_current_dora_tiles_from_sparse_tokens():
@@ -318,7 +406,12 @@ def test_transformer_tile_only_action_type_lookups_ignore_meld_patterns():
     assert model.prog_type_action_kind[41].item() == _ACTION_KIND_PAD
     assert model.prog_type_action_kind[42].item() == _ACTION_KIND_PAD
 
+    assert model.cand_type_action_kind[0].item() == _ACTION_KIND_DISCARD
+    assert model.cand_type_tile37[0].item() == 0
     assert model.cand_type_action_kind[5].item() == _ACTION_KIND_DISCARD
+    assert model.cand_type_tile37[5].item() == 5
+    assert model.cand_type_tile34[5].item() == _TILE34_PAD
+    assert model.cand_type_action_kind[36].item() == _ACTION_KIND_DISCARD
     assert model.cand_type_action_kind[37].item() == _ACTION_KIND_PAD
     assert model.cand_type_action_kind[38].item() == _ACTION_KIND_PAD
     assert model.cand_type_action_kind[42].item() == _ACTION_KIND_PAD

@@ -1,6 +1,8 @@
 # Action Encoding Specification
 
-This document describes the mapping between `Action` objects and integer IDs used for model training and inference in RiichiEnv.
+This document describes the fixed `ActionEncoder` integer IDs used by the engine and legacy policy heads.
+The Transformer BC pointer head uses a stricter candidate encoding described below and in
+[`SEQUENCE_FEATURE_ENCODING.md`](SEQUENCE_FEATURE_ENCODING.md).
 
 ## Action Space
 
@@ -34,14 +36,27 @@ In 3-player (sanma) mode, the action space is compacted to 60 actions. Manzu 2-8
 | **58** | **Pass** | **Pass / No Action.** |
 | **59** | **Kita** | **Kita (BaBei / 北抜き) declaration.** |
 
-## Limitations
+## Transformer Pointer Candidate Space
+
+For Transformer BC with `policy_head_type="pointer"`, legal actions are not trained directly against the fixed 82 IDs.
+They are represented as strict candidate rows:
+
+- Candidate tuple: `(type, moqie, from)`
+- `type`: `0-36` discard `kan37(tile)`, `37` riichi, `38` ankan, `39` kakan, `40` tsumo, `41` kyushu kyuhai, `42` pass, `43` chi, `44` pon, `45` daiminkan, `46` ron, `47` padding
+- `moqie`: `0` tedashi, `1` tsumogiri, `2` N/A
+- `from`: `0` self, `1` shimocha, `2` toimen, `3` kamicha, `4` padding
+- Chi/pon/kan details are represented by the aligned meld sidecar row using `tile37` slots.
+
+This pointer candidate space distinguishes red-five discards, tedashi/tsumogiri discards, and red/non-red consumed chi/pon variants. Physical copies with the same visible semantics still collapse.
+
+## Fixed ActionEncoder Limitations
 
 ### Red 5 Ambiguity in Calls (Chi/Pon)
 
-The current encoding does **not** distinguish between using a Red 5 or a Normal 5 when making a call (Chi or Pon) if both are available in the hand.
+The fixed 82-action encoding does **not** distinguish between using a Red 5 or a Normal 5 when making a call (Chi or Pon) if both are available in the hand.
 -   **Example**: If a player holds `[0m (Red 5), 5m (Normal 5)]` and calls Pon on a discarded `5m`, the action ID `41` (Pon) is used regardless of whether the player consumes the Red 5 or the Normal 5.
 
 ### Tsumogiri/Tedashi Ambiguity
 
-The current encoding does **not** distinguish between discarding a tile that was just drawn (Tsumogiri) and discarding a tile that was previously drawn (Tedashi).
+The fixed 82-action encoding does **not** distinguish between discarding a tile that was just drawn (Tsumogiri) and discarding a tile that was previously drawn (Tedashi).
 -   **Example**: If a player draws a `5m` and immediately discards it, the action ID `5` (Discard 5m) is used. However, the encoding does not differentiate this from a situation where the player had previously discarded a `5m` and then drew another `5m` to discard.

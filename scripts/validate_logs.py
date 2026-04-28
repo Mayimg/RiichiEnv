@@ -17,14 +17,20 @@ import argparse
 import json
 from pathlib import Path
 
-from riichienv import MjaiReplay
-from riichienv._riichienv import (
-    Action, Action3P, ActionType, Observation, Observation3P,
-    HandEvaluator, HandEvaluator3P,
-    calculate_shanten, calculate_shanten_3p,
-)
 import numpy as np
 
+from riichienv import MjaiReplay
+from riichienv._riichienv import (
+    Action,
+    Action3P,
+    ActionType,
+    HandEvaluator,
+    HandEvaluator3P,
+    Observation,
+    Observation3P,
+    calculate_shanten,
+    calculate_shanten_3p,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -109,9 +115,9 @@ def validate_obs_encoding_4p(obs: Observation) -> None:
         feat = feat.reshape(-1, 5)
 
     feat = np.frombuffer(obs.encode_seq_candidates(), dtype=np.uint16)
-    assert feat.size % 4 == 0, f"Seq candidates size {feat.size} not divisible by 4"
+    assert feat.size % 3 == 0, f"Seq candidates size {feat.size} not divisible by 3"
     if feat.size > 0:
-        feat = feat.reshape(-1, 4)
+        feat = feat.reshape(-1, 3)
 
 
 def validate_obs_encoding_3p(obs: Observation3P) -> None:

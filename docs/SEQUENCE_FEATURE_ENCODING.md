@@ -289,49 +289,50 @@ prog_melds = np.frombuffer(obs.encode_seq_progression_melds(), dtype=np.uint16).
 
 ## 5. Candidate Features (Legal Actions)
 
-**2-tuple set, max 32 entries (default)**
+**3-tuple set, max 32 entries (default)**
 
-Each legal action candidate is encoded as a 2-tuple `(type, from)`. The candidate list is collapsed to one representative per current 4-player 82-action id, matching the policy pointer target. When multiple physical legal actions map to one action id, discard candidates prefer a non-red tile over a red five, while chi/pon candidates prefer representatives that consume red fives.
+Each legal action candidate is encoded as a 3-tuple `(type, moqie, from)`. The candidate list is collapsed by the strict candidate tuple plus its aligned meld sidecar row. Physical copies with identical visible semantics still collapse, but red-five discards, tedashi/tsumogiri discards, and red/non-red consumed chi/pon candidates remain distinct pointer targets.
 
 ### Tuple Fields
 
 | Field | Vocab | Values |
 |-------|-------|--------|
-| type | 45 | see table below |
+| type | 48 | see table below |
+| moqie | 3 | 0=tedashi, 1=tsumogiri, 2=N/A |
 | from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding |
 
-**Padding tuple:** `(44, 4)`
+**Padding tuple:** `(47, 2, 4)`
 
-`moqie` and `liqi` are intentionally not present in the current candidate tuple. The fixed 82-action space does not distinguish tedashi/tsumogiri, and riichi is represented as a standalone action type. If the action space later distinguishes tedashi/tsumogiri, a moqie field can be reintroduced together with that action-space change.
-
-### Type Encoding (45 values)
+### Type Encoding (48 values)
 
 | Range | Count | Action | Encoding |
 |-------|-------|--------|----------|
-| 0-33 | 34 | Discard | `tile34(tile)` |
-| 34 | 1 | Riichi | Fixed |
-| 35 | 1 | Ankan | Details in aligned candidate meld row |
-| 36 | 1 | Kakan | Details in aligned candidate meld row |
-| 37 | 1 | Tsumo (win) | Fixed |
-| 38 | 1 | Kyushu kyuhai (9 terminals draw) | Fixed |
-| 39 | 1 | Pass | Fixed |
-| 40 | 1 | Chi | Details in aligned candidate meld row |
-| 41 | 1 | Pon | Details in aligned candidate meld row |
-| 42 | 1 | Daiminkan | Details in aligned candidate meld row |
-| 43 | 1 | Ron (win) | Fixed |
-| 44 | 1 | Padding | - |
+| 0-36 | 37 | Discard | `kan37(tile)`; red fives are separate from normal fives |
+| 37 | 1 | Riichi | Fixed |
+| 38 | 1 | Ankan | Details in aligned candidate meld row |
+| 39 | 1 | Kakan | Details in aligned candidate meld row |
+| 40 | 1 | Tsumo (win) | Fixed |
+| 41 | 1 | Kyushu kyuhai (9 terminals draw) | Fixed |
+| 42 | 1 | Pass | Fixed |
+| 43 | 1 | Chi | Details in aligned candidate meld row |
+| 44 | 1 | Pon | Details in aligned candidate meld row |
+| 45 | 1 | Daiminkan | Details in aligned candidate meld row |
+| 46 | 1 | Ron (win) | Fixed |
+| 47 | 1 | Padding | - |
+
+For chi/pon, the tuple may be identical between red-consume and non-red-consume variants. That distinction is represented by the aligned candidate meld row, whose tile slots use `tile37`.
 
 ### Rust API
 
 ```rust
-obs.encode_seq_candidates() -> Vec<[u16; 2]>
+obs.encode_seq_candidates() -> Vec<[u16; 3]>
 ```
 
 ### Python API (raw)
 
 ```python
 cand_bytes = obs.encode_seq_candidates()
-cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable length
+cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 3)  # variable length
 cand_melds = np.frombuffer(obs.encode_seq_candidate_melds(), dtype=np.uint16).reshape(-1, 9)
 ```
 
@@ -357,7 +358,7 @@ for pid, obs in obs_dict.items():
     # features["numeric"]     -- (6,) float32
     # features["progression"] -- (256, 5) int64, padded with (4, 43, 2, 2, 4)
     # features["prog_melds"]  -- (256, 9) int64, aligned with progression
-    # features["candidates"]  -- (32, 2) int64, padded with (44, 4)
+    # features["candidates"]  -- (32, 3) int64, padded with (47, 2, 4)
     # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
     # features["sparse_mask"] -- (9,) bool, True for real tokens
     # features["hand_mask"]   -- (14,) bool, True for real entries
@@ -378,7 +379,7 @@ SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
 SequenceFeatureEncoder.PROG_DIMS           # (5, 44, 3, 3, 5)
-SequenceFeatureEncoder.CAND_DIMS           # (45, 5)
+SequenceFeatureEncoder.CAND_DIMS           # (48, 3, 5)
 ```
 
 ## Implementation
