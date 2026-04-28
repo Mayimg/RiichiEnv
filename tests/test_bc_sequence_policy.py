@@ -243,7 +243,7 @@ def test_sequence_candidates_collapse_to_82_action_representatives():
 
     features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
     valid = features["candidates"][features["cand_mask"]]
-    assert valid.tolist() == [[4, 3], [34, 3]]
+    assert valid.tolist() == [[4, 0], [34, 0]]
 
 
 def test_sequence_candidates_prefer_red_consumes_for_same_action_id():
@@ -279,7 +279,7 @@ def test_sequence_candidates_prefer_red_consumes_for_same_action_id():
 
     features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
     valid = features["candidates"][features["cand_mask"]]
-    assert valid.tolist() == [[41, 2]]
+    assert valid.tolist() == [[41, 3]]
 
 
 def test_transformer_decodes_current_dora_tiles_from_sparse_tokens():

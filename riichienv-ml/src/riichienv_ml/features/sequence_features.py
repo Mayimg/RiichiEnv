@@ -30,9 +30,9 @@ class SequenceFeatureEncoder:
         cand_mask:   (MAX_CAND_LEN,)     bool    True for real entries
     """
 
-    SPARSE_VOCAB_SIZE = 269
-    SPARSE_PAD = 268
-    MAX_SPARSE_LEN = 10
+    SPARSE_VOCAB_SIZE = 265
+    SPARSE_PAD = 264
+    MAX_SPARSE_LEN = 9
 
     MELD_DIMS = (6, 38, 4, 38, 4, 38, 4, 38, 4)
     MELD_PAD = (5, 37, 3, 37, 3, 37, 3, 37, 3)
@@ -47,8 +47,8 @@ class SequenceFeatureEncoder:
     PROG_PAD = (4, 43, 2, 2, 4)
     MAX_PROG_LEN = 256
 
-    CAND_DIMS = (45, 4)
-    CAND_PAD = (44, 3)
+    CAND_DIMS = (45, 5)
+    CAND_PAD = (44, 4)
     MAX_CAND_LEN = 32
 
     NUM_NUMERIC = 6
@@ -224,7 +224,7 @@ class SequenceFeaturePackedEncoder:
     internally.
 
     Layout (all float32, P=max_prog_len, C=max_cand_len):
-        sparse      (10)       int indices stored as float
+        sparse      (9)        int indices stored as float
         sparse_melds(4 * 9)    int meld rows stored as float
         hand        (14 * 2)   int tuples stored as float
         numeric     (6)        continuous values
@@ -232,7 +232,7 @@ class SequenceFeaturePackedEncoder:
         prog_melds  (P * 9)    int meld rows stored as float
         candidates  (C * 2)    int tuples stored as float
         cand_melds  (C * 9)    int meld rows stored as float
-        sparse_mask (10)       bool stored as float
+        sparse_mask (9)        bool stored as float
         sparse_meld_mask (4)   bool stored as float
         hand_mask   (14)       bool stored as float
         prog_mask   (P)        bool stored as float
