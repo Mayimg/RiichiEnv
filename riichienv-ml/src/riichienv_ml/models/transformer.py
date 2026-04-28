@@ -76,7 +76,7 @@ _MELD_ROLE_ADDED = 2
 _MELD_ROLE_PAD = 3
 _MELD_WIDTH = 9
 
-_SPARSE_DORA_OFFSET = 83
+_SPARSE_DORA_OFFSET = 79
 _SPARSE_DORA_SLOTS = 5
 _DORA_SLOT_PAD = _SPARSE_DORA_SLOTS
 
@@ -448,11 +448,11 @@ class TransformerActorCritic(nn.Module):
         max_prog_len: int = 256,
         max_cand_len: int = 32,
         # Vocab sizes (from SequenceFeatureEncoder)
-        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,   # 269
-        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 268
+        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,   # 265
+        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 264
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,            # (38,3)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,            # (5,44,3,3,5)
-        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (45,4)
+        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (45,5)
         **kwargs,
     ):
         super().__init__()

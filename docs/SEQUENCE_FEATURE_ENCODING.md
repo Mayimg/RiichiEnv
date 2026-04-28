@@ -10,13 +10,13 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 
 | Feature Group | Shape | Type | Description |
 |---------------|-------|------|-------------|
-| **Sparse** | `(10,)` | int64 | Table metadata, tiles remaining, and dora indicators |
+| **Sparse** | `(9,)` | int64 | Table metadata, tiles remaining, and dora indicators |
 | **Sparse Melds** | `(4, 9)` | int64 | Current player's melds in factorized meld layout |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Progression** | `(256, 5)` | int64 | Action history as 5-tuple sequences |
 | **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
-| **Candidates** | `(32, 4)` | int64 | Legal actions as 4-tuple sets |
+| **Candidates** | `(32, 2)` | int64 | Legal actions as 2-tuple sets |
 | **Candidate Melds** | `(32, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
 
 Each variable-length group is padded to its maximum length, with accompanying boolean masks indicating real vs. padding entries.
@@ -58,7 +58,7 @@ The shared tile embedding is applied to single-tile fields and to the tile slots
 | Feature group | Field / token range | Uses shared tile embedding |
 |---------------|---------------------|----------------------------|
 | Hand | `tile37` | Yes |
-| Sparse | dora-indicator tokens (`83-267`) | Yes, with an extra dora-slot embedding |
+| Sparse | dora-indicator tokens (`79-263`) | Yes, with an extra dora-slot embedding |
 | Progression | discard type range | Yes |
 | Candidates | discard type range | Yes |
 | Sparse / progression / candidate meld sidecars | 4 tile slots per meld | Yes, via shared meld embedding |
@@ -90,32 +90,37 @@ Conversion from 136-tile ID:
 
 ### Relative Seat
 
-`(target - actor + 3) % 4`:
-- 0 = shimocha (right / downstream)
-- 1 = toimen (across)
-- 2 = kamicha (left / upstream)
+All seat fields used by the transformer are observer-relative:
+
+`(target - observer + 4) % 4`:
+- 0 = self
+- 1 = shimocha (right / downstream)
+- 2 = toimen (across)
+- 3 = kamicha (left / upstream)
+- 4 = N/A or padding, where supported
+
+External MJAI logs still use absolute seats. The conversion to observer-relative seats happens only inside the sequence feature encoder.
 
 ## 1. Sparse Features
 
-**Vocabulary size: 269, max tokens: 10, padding index: 268**
+**Vocabulary size: 265, max tokens: 9, padding index: 264**
 
-Each observation produces 5-10 sparse tokens. Each token is an index into an embedding table.
+Each observation produces 4-9 sparse tokens. Each token is an index into an embedding table.
 
 | Offset | Count | Feature | Source |
 |--------|-------|---------|--------|
 | 0-1 | 2 | Game style (0=tonpuusen, 1=hanchan) | parameter |
-| 2-5 | 4 | Seat (`player_id`) | `obs.player_id` |
-| 6-8 | 3 | Chang / round wind (E/S/W) | `obs.round_wind` |
-| 9-12 | 4 | Ju / dealer round (0-3) | `obs.oya` |
-| 13-82 | 70 | Tiles remaining (0-69) | derived from visible tiles |
-| 83-267 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
-| 268 | 1 | Padding | - |
+| 2-4 | 3 | Chang / round wind (E/S/W) | `obs.round_wind` |
+| 5-8 | 4 | Dealer relative to observer | `relative_seat(obs.player_id, obs.oya)` |
+| 9-78 | 70 | Tiles remaining (0-69) | derived from visible tiles |
+| 79-263 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
+| 264 | 1 | Padding | - |
 
 **Token composition per observation:**
-- 4 fixed tokens (game style + seat + round wind + dealer)
+- 3 fixed tokens (game style + round wind + dealer-relative)
 - 1 tiles-remaining token
 - 1-5 dora indicator tokens
-- Total: typically 6-10 tokens
+- Total: typically 5-9 tokens
 
 Current melds are encoded separately by `encode_seq_sparse_melds()` with the shared factorized meld layout.
 
@@ -231,11 +236,11 @@ Each action from the kyoku start to the current decision point is encoded as a 5
 
 | Field | Vocab | Values |
 |-------|-------|--------|
-| actor | 5 | 0-3 (seats), 4 (padding/marker) |
+| actor | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding/marker |
 | type | 44 | see table below |
 | moqie | 3 | 0=tedashi (hand tile), 1=tsumogiri (drawn tile), 2=N/A |
 | liqi | 3 | 0=no riichi, 1=with riichi declaration, 2=N/A |
-| from | 5 | 0=shimocha, 1=toimen, 2=kamicha, 4=N/A |
+| from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=N/A |
 
 **Padding tuple:** `(4, 43, 2, 2, 4)`
 
@@ -257,15 +262,16 @@ Each action from the kyoku start to the current decision point is encoded as a 5
 | Event | Tuple |
 |-------|-------|
 | `start_kyoku` | `(4, 0, 2, 2, 4)` |
-| `dahai` | `(actor, 1+kan37, moqie, liqi, 4)` |
-| `chi` | `(actor, 38, 2, 2, relative_from)` |
-| `pon` | `(actor, 39, 2, 2, relative_from)` |
-| `daiminkan` | `(actor, 40, 2, 2, relative_from)` |
-| `ankan` | `(actor, 41, 2, 2, 4)` |
-| `kakan` | `(actor, 42, 2, 2, 4)` |
+| `dahai` | `(actor_rel, 1+kan37, moqie, liqi, 4)` |
+| `chi` | `(actor_rel, 38, 2, 2, target_rel)` |
+| `pon` | `(actor_rel, 39, 2, 2, target_rel)` |
+| `daiminkan` | `(actor_rel, 40, 2, 2, target_rel)` |
+| `ankan` | `(actor_rel, 41, 2, 2, 4)` |
+| `kakan` | `(actor_rel, 42, 2, 2, 4)` |
 
 - For `dahai`: `liqi=1` if preceded by a `reach` event from the same actor
 - `tsumo`, `dora`, `reach_accepted` events are **not** included in progression
+- `actor_rel` and `target_rel` are relative to the observing player, not to the event actor.
 
 ### Rust API
 
@@ -292,9 +298,9 @@ Each legal action candidate is encoded as a 2-tuple `(type, from)`. The candidat
 | Field | Vocab | Values |
 |-------|-------|--------|
 | type | 45 | see table below |
-| from | 4 | 0=shimocha, 1=toimen, 2=kamicha, 3=self |
+| from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding |
 
-**Padding tuple:** `(44, 3)`
+**Padding tuple:** `(44, 4)`
 
 `moqie` and `liqi` are intentionally not present in the current candidate tuple. The fixed 82-action space does not distinguish tedashi/tsumogiri, and riichi is represented as a standalone action type. If the action space later distinguishes tedashi/tsumogiri, a moqie field can be reintroduced together with that action-space change.
 
@@ -345,15 +351,15 @@ enc = SequenceFeatureEncoder(n_players=4, game_style=1)
 
 for pid, obs in obs_dict.items():
     features = enc.encode(obs)
-    # features["sparse"]      -- (10,) int64, padded with 268
+    # features["sparse"]      -- (9,) int64, padded with 264
     # features["sparse_melds"]-- (4, 9) int64, padded with (5, 37, 3, ...)
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
     # features["numeric"]     -- (6,) float32
     # features["progression"] -- (256, 5) int64, padded with (4, 43, 2, 2, 4)
     # features["prog_melds"]  -- (256, 9) int64, aligned with progression
-    # features["candidates"]  -- (32, 2) int64, padded with (44, 3)
+    # features["candidates"]  -- (32, 2) int64, padded with (44, 4)
     # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
-    # features["sparse_mask"] -- (10,) bool, True for real tokens
+    # features["sparse_mask"] -- (9,) bool, True for real tokens
     # features["hand_mask"]   -- (14,) bool, True for real entries
     # features["prog_mask"]   -- (256,) bool, True for real entries
     # features["cand_mask"]   -- (32,) bool, True for real entries
@@ -362,8 +368,8 @@ for pid, obs in obs_dict.items():
 ### Constants
 
 ```python
-SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 269
-SequenceFeatureEncoder.MAX_SPARSE_LEN     # 10
+SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 265
+SequenceFeatureEncoder.MAX_SPARSE_LEN     # 9
 SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 4
 SequenceFeatureEncoder.MELD_DIMS           # (6, 38, 4, 38, 4, 38, 4, 38, 4)
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
@@ -372,7 +378,7 @@ SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
 SequenceFeatureEncoder.PROG_DIMS           # (5, 44, 3, 3, 5)
-SequenceFeatureEncoder.CAND_DIMS           # (45, 4)
+SequenceFeatureEncoder.CAND_DIMS           # (45, 5)
 ```
 
 ## Implementation

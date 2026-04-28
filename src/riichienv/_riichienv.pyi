@@ -447,7 +447,7 @@ class Observation:
     def encode_seq_sparse(self, game_style: int = 1) -> bytes:
         """Encode sequence features as sparse token ids.
 
-        Shape: variable-length 1-D array (up to 10 elements) / dtype: ``uint16``.
+        Shape: variable-length 1-D array (up to 9 elements) / dtype: ``uint16``.
         The token stream includes table metadata and dora indicators.
         """
         ...

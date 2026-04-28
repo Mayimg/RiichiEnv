@@ -16,10 +16,10 @@ use super::Observation;
 // ── Constants ────────────────────────────────────────────────────────────────
 // These constants are `pub` for Python-side consumption (see riichienv-ml).
 #[allow(dead_code)]
-pub const SPARSE_VOCAB_SIZE: usize = 269;
+pub const SPARSE_VOCAB_SIZE: usize = 265;
 #[allow(dead_code)]
-pub const SPARSE_PAD: u16 = 268;
-pub const MAX_SPARSE_LEN: usize = 10;
+pub const SPARSE_PAD: u16 = 264;
+pub const MAX_SPARSE_LEN: usize = 9;
 
 /// Hand tuple dimensions: (tile37, draw_state)
 #[allow(dead_code)]
@@ -37,11 +37,11 @@ pub const PROG_PAD: [u16; 5] = [4, 43, 2, 2, 4];
 
 /// Candidate tuple dimensions: (type, from)
 #[allow(dead_code)]
-pub const CAND_DIMS: [u16; 2] = [45, 4];
+pub const CAND_DIMS: [u16; 2] = [45, 5];
 #[allow(dead_code)]
 pub const MAX_CAND_LEN: usize = 64;
 #[allow(dead_code)]
-pub const CAND_PAD: [u16; 2] = [44, 3];
+pub const CAND_PAD: [u16; 2] = [44, 4];
 
 /// Meld feature row: (kind, slot0_tile37, slot0_role, ..., slot3_tile37, slot3_role)
 #[allow(dead_code)]
@@ -62,7 +62,7 @@ pub const NUM_NUMERIC: usize = 6;
 const SCORE_NORM_BASE: f32 = 25000.0;
 const SCORE_NORM_SCALE: f32 = 10000.0;
 
-const SPARSE_DORA_OFFSET: u16 = 83;
+const SPARSE_DORA_OFFSET: u16 = 79;
 const MELD_KIND_CHI: u16 = 0;
 const MELD_KIND_PON: u16 = 1;
 const MELD_KIND_DAIMINKAN: u16 = 2;
@@ -270,10 +270,11 @@ fn parse_optional_mjai_tid(v: &serde_json::Value, key: &str) -> Option<u8> {
     v[key].as_str().and_then(mjai_to_tid)
 }
 
-/// Relative seat: (target - actor + n_players - 1) % n_players
-/// For 4P: 0=shimocha(right), 1=toimen(across), 2=kamicha(left)
-fn relative_from(actor: u8, target: u8) -> u8 {
-    ((target as i8 - actor as i8 + 3) % 4) as u8
+/// Observer-relative seat.
+///
+/// 0=self, 1=shimocha(right/downstream), 2=toimen(across), 3=kamicha(left/upstream).
+fn relative_seat(observer: u8, target: u8) -> u8 {
+    ((target as i16 - observer as i16 + 4) % 4) as u8
 }
 
 /// Parse "consumed" array from MJAI event JSON → Vec<u8> of tile IDs.
@@ -291,7 +292,10 @@ fn parse_consumed_tids_from_value(v: &serde_json::Value) -> Vec<u8> {
     tids
 }
 
-/// Process a single MJAI event for progression and aligned meld sidecar caches.
+/// Process a single MJAI event for canonical progression and aligned meld sidecar caches.
+///
+/// Seat fields in the returned progression row are absolute MJAI seats. They are
+/// converted to observer-relative seats by `Observation::encode_seq_progression()`.
 pub fn process_single_event_progression_with_meld(
     event: &serde_json::Value,
     pending_reach_actor: &mut Option<u8>,
@@ -339,9 +343,8 @@ pub fn process_single_event_progression_with_meld(
             if consumed.len() < 2 {
                 return None;
             }
-            let rel = relative_from(actor, target);
             let meld = encode_called_consumed_meld(MELD_KIND_CHI, called_tid, consumed);
-            Some(([actor as u16, 38, 2, 2, rel as u16], meld))
+            Some(([actor as u16, 38, 2, 2, target as u16], meld))
         }
         "pon" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -355,9 +358,8 @@ pub fn process_single_event_progression_with_meld(
             if consumed.len() < 2 {
                 return None;
             }
-            let rel = relative_from(actor, target);
             let meld = encode_called_consumed_meld(MELD_KIND_PON, called_tid, consumed);
-            Some(([actor as u16, 39, 2, 2, rel as u16], meld))
+            Some(([actor as u16, 39, 2, 2, target as u16], meld))
         }
         "daiminkan" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -371,9 +373,8 @@ pub fn process_single_event_progression_with_meld(
             if consumed.len() < 3 {
                 return None;
             }
-            let rel = relative_from(actor, target);
             let meld = encode_called_consumed_meld(MELD_KIND_DAIMINKAN, called_tid, consumed);
-            Some(([actor as u16, 40, 2, 2, rel as u16], meld))
+            Some(([actor as u16, 40, 2, 2, target as u16], meld))
         }
         "ankan" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -403,36 +404,33 @@ pub fn process_single_event_progression_with_meld(
 // ── Sparse features ──────────────────────────────────────────────────────────
 
 impl Observation {
-    /// Encode sparse features: variable-length u16 indices (max 10).
+    /// Encode sparse features: variable-length u16 indices (max 9).
     ///
     /// Offsets:
     /// - 0-1: game style (0=tonpuusen, 1=hanchan)
-    /// - 2-5: seat (player_id)
-    /// - 6-8: chang / round wind (E/S/W)
-    /// - 9-12: ju / dealer round (0-3)
-    /// - 13-82: tiles remaining (0-69)
-    /// - 83-267: dora indicators (5 slots × 37 tiles)
-    /// - 268: padding
+    /// - 2-4: chang / round wind (E/S/W)
+    /// - 5-8: dealer relative to observer (0=self, 1=shimocha, 2=toimen, 3=kamicha)
+    /// - 9-78: tiles remaining (0-69)
+    /// - 79-263: dora indicators (5 slots × 37 tiles)
+    /// - 264: padding
     pub fn encode_seq_sparse(&self, game_style: u8) -> Vec<u16> {
         let mut tokens: Vec<u16> = Vec::with_capacity(MAX_SPARSE_LEN);
 
         // 1. Game style (offset 0-1)
         tokens.push(game_style.min(1) as u16);
 
-        // 2. Seat (offset 2-5)
-        tokens.push(2 + self.player_id.min(3) as u16);
+        // 2. Chang / round wind (offset 2-4)
+        tokens.push(2 + self.round_wind.min(2) as u16);
 
-        // 3. Chang / round wind (offset 6-8)
-        tokens.push(6 + self.round_wind.min(2) as u16);
+        // 3. Dealer relative to the observing player (offset 5-8)
+        let dealer_rel = relative_seat(self.player_id.min(3), self.oya.min(3));
+        tokens.push(5 + dealer_rel as u16);
 
-        // 4. Ju / dealer (offset 9-12)
-        tokens.push(9 + self.oya.min(3) as u16);
-
-        // 5. Tiles remaining (offset 13-82)
+        // 4. Tiles remaining (offset 9-78)
         let tiles_remaining = self.count_tiles_remaining();
-        tokens.push(13 + tiles_remaining.min(69));
+        tokens.push(9 + tiles_remaining.min(69));
 
-        // 6. Dora indicators (offset 83-267, 5 slots × 37)
+        // 5. Dora indicators (offset 79-263, 5 slots × 37)
         for (i, &dora_tid) in self.dora_indicators.iter().enumerate() {
             if i >= 5 {
                 break;
@@ -582,11 +580,11 @@ impl Observation {
     ///   41=ankan, 42=kakan, 43=padding
     /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
     /// - liqi: 0=no riichi, 1=with riichi, 2=N/A
-    /// - from: 0-2 (relative seat), 4=N/A
+    /// - from: 0-3 (observer-relative seat), 4=N/A
     pub fn encode_seq_progression(&self) -> Vec<[u16; 5]> {
         // Fast path: use pre-computed progression from GameState
         if let Some(ref cached) = self.cached_progression {
-            return cached.clone();
+            return self.relativize_progression(cached.clone());
         }
 
         // Fallback: parse events from JSON (for deserialized Observations, replays, etc.)
@@ -608,7 +606,21 @@ impl Observation {
             }
         }
 
-        prog
+        self.relativize_progression(prog)
+    }
+
+    fn relativize_progression(&self, prog: Vec<[u16; 5]>) -> Vec<[u16; 5]> {
+        prog.into_iter()
+            .map(|mut row| {
+                if row[0] < 4 {
+                    row[0] = relative_seat(self.player_id, row[0] as u8) as u16;
+                }
+                if row[4] < 4 {
+                    row[4] = relative_seat(self.player_id, row[4] as u8) as u16;
+                }
+                row
+            })
+            .collect()
     }
 
     /// Encode factorized meld sidecar rows aligned with encode_seq_progression().
@@ -690,7 +702,7 @@ impl Observation {
     ///
     /// Each tuple: (type, from)
     /// - type: 0-44
-    /// - from: 0-2 (relative seat), 3=self
+    /// - from: 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding
     pub fn encode_seq_candidates(&self) -> Vec<[u16; 2]> {
         let mut cands: Vec<[u16; 2]> = Vec::with_capacity(64);
         let pid = self.player_id;
@@ -751,22 +763,22 @@ impl Observation {
             ActionType::Discard => {
                 let tile = action.tile?;
                 let type_idx = (tile / 4) as u16; // 0-33 tile34
-                Some([type_idx, 3]) // from=3 (self)
+                Some([type_idx, 0]) // from=0 (self)
             }
-            ActionType::Riichi => Some([CAND_TYPE_RIICHI, 3]),
+            ActionType::Riichi => Some([CAND_TYPE_RIICHI, 0]),
             ActionType::Ankan => {
                 action.consume_tiles.first()?;
-                Some([CAND_TYPE_ANKAN, 3])
+                Some([CAND_TYPE_ANKAN, 0])
             }
             ActionType::Kakan => {
                 action
                     .tile
                     .or_else(|| action.consume_tiles.first().copied())?;
-                Some([CAND_TYPE_KAKAN, 3])
+                Some([CAND_TYPE_KAKAN, 0])
             }
-            ActionType::Tsumo => Some([CAND_TYPE_TSUMO, 3]),
-            ActionType::KyushuKyuhai => Some([CAND_TYPE_KYUSHU_KYUHAI, 3]),
-            ActionType::Pass => Some([CAND_TYPE_PASS, 3]),
+            ActionType::Tsumo => Some([CAND_TYPE_TSUMO, 0]),
+            ActionType::KyushuKyuhai => Some([CAND_TYPE_KYUSHU_KYUHAI, 0]),
+            ActionType::Pass => Some([CAND_TYPE_PASS, 0]),
             ActionType::Chi => {
                 action.tile?;
                 if action.consume_tiles.len() < 2 {
@@ -775,7 +787,7 @@ impl Observation {
 
                 // from = relative seat of the discard source
                 let target = self.find_last_discard_actor()?;
-                let rel = relative_from(pid, target);
+                let rel = relative_seat(pid, target);
 
                 Some([CAND_TYPE_CHI, rel as u16])
             }
@@ -786,7 +798,7 @@ impl Observation {
                 }
 
                 let target = self.find_last_discard_actor()?;
-                let rel = relative_from(pid, target);
+                let rel = relative_seat(pid, target);
 
                 Some([CAND_TYPE_PON, rel as u16])
             }
@@ -794,13 +806,13 @@ impl Observation {
                 action.tile?;
 
                 let target = self.find_last_discard_actor()?;
-                let rel = relative_from(pid, target);
+                let rel = relative_seat(pid, target);
 
                 Some([CAND_TYPE_DAIMINKAN, rel as u16])
             }
             ActionType::Ron => {
                 let target = self.find_last_discard_actor()?;
-                let rel = relative_from(pid, target);
+                let rel = relative_seat(pid, target);
                 Some([CAND_TYPE_RON, rel as u16])
             }
             ActionType::Kita => None, // 3P only, not supported
@@ -906,15 +918,17 @@ mod tests {
     }
 
     #[test]
-    fn test_relative_from() {
-        // Player 0 calling from player 3 → kamicha (left) = 2
-        assert_eq!(relative_from(0, 3), 2);
-        // Player 0 calling from player 1 → shimocha (right) = 0
-        assert_eq!(relative_from(0, 1), 0);
-        // Player 0 calling from player 2 → toimen (across) = 1
-        assert_eq!(relative_from(0, 2), 1);
-        // Player 2 calling from player 3 → shimocha = 0
-        assert_eq!(relative_from(2, 3), 0);
+    fn test_relative_seat() {
+        // Player 0 observing player 0 -> self
+        assert_eq!(relative_seat(0, 0), 0);
+        // Player 0 observing player 1 -> shimocha
+        assert_eq!(relative_seat(0, 1), 1);
+        // Player 0 observing player 2 -> toimen
+        assert_eq!(relative_seat(0, 2), 2);
+        // Player 0 observing player 3 -> kamicha
+        assert_eq!(relative_seat(0, 3), 3);
+        // Player 2 observing player 3 -> shimocha
+        assert_eq!(relative_seat(2, 3), 1);
     }
 
     #[test]
@@ -922,7 +936,7 @@ mod tests {
         // Verify all sparse offsets are within vocab
         assert!(SPARSE_PAD < SPARSE_VOCAB_SIZE as u16);
 
-        // Dora max: 83 + 4*37 + 36 = 83 + 148 + 36 = 267
+        // Dora max: 79 + 4*37 + 36 = 79 + 148 + 36 = 263
         assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
 
         assert_eq!(SPARSE_PAD as usize + 1, SPARSE_VOCAB_SIZE);
@@ -1049,6 +1063,7 @@ mod tests {
             [None; 4],
             [None; 4],
             None,
+            None,
         );
 
         let hand = obs.encode_seq_hand();
@@ -1076,6 +1091,7 @@ mod tests {
             false,
             [None; 4],
             [None; 4],
+            None,
             None,
         );
 
@@ -1107,6 +1123,7 @@ mod tests {
             false,
             [None; 4],
             [None; 4],
+            None,
             None,
         );
 
@@ -1147,6 +1164,7 @@ mod tests {
             [None; 4],
             [None; 4],
             None,
+            None,
         );
 
         let sparse = obs.encode_seq_sparse(1);
@@ -1156,6 +1174,78 @@ mod tests {
         assert_eq!(melds.len(), 2);
         assert_eq!(melds[0][0], MELD_KIND_PON);
         assert_eq!(melds[1][0], MELD_KIND_CHI);
+    }
+
+    #[test]
+    fn test_sparse_uses_relative_dealer_and_no_absolute_seat() {
+        let obs = Observation::new(
+            2,
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![],
+            vec![],
+            0,
+            0,
+            1,
+            1,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+            None,
+        );
+
+        let sparse = obs.encode_seq_sparse(1);
+
+        assert_eq!(sparse[0], 1); // game style
+        assert_eq!(sparse[1], 3); // round wind S: 2 + 1
+        assert_eq!(sparse[2], 8); // dealer seat 1 from observer seat 2: kamicha -> 5 + 3
+        assert!(sparse.iter().all(|&t| t < SPARSE_PAD));
+    }
+
+    #[test]
+    fn test_progression_actor_and_from_are_observer_relative() {
+        let obs = Observation::new(
+            2,
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![],
+            vec![
+                r#"{"type":"start_kyoku"}"#.to_string(),
+                r#"{"type":"dahai","actor":1,"pai":"5m","tsumogiri":false}"#.to_string(),
+                r#"{"type":"pon","actor":3,"target":1,"pai":"5m","consumed":["5m","5m"]}"#
+                    .to_string(),
+            ],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+            None,
+        );
+
+        let progression = obs.encode_seq_progression();
+
+        assert_eq!(progression[0], [4, 0, 2, 2, 4]);
+        assert_eq!(progression[1][0], 3); // actor 1 from observer 2: kamicha
+        assert_eq!(progression[1][4], 4);
+        assert_eq!(progression[2][0], 1); // actor 3 from observer 2: shimocha
+        assert_eq!(progression[2][4], 3); // target 1 from observer 2: kamicha
     }
 
     #[test]
@@ -1182,6 +1272,7 @@ mod tests {
             false,
             [None; 4],
             [None; 4],
+            None,
             None,
         );
 
