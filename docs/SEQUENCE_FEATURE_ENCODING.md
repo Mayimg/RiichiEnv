@@ -13,7 +13,7 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Sparse** | `(10,)` | int64 | Table metadata, tiles remaining, and dora indicators |
 | **Sparse Melds** | `(4, 9)` | int64 | Current player's melds in factorized meld layout |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
-| **Numeric** | `(12,)` | float32 | Continuous scalar features |
+| **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Progression** | `(256, 5)` | int64 | Action history as 5-tuple sequences |
 | **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
 | **Candidates** | `(32, 4)` | int64 | Legal actions as 4-tuple sets |
@@ -195,33 +195,30 @@ hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable len
 
 ## 3. Numeric Features
 
-**Fixed: 12 floats**
+**Fixed: 6 floats**
 
 | Index | Feature | Source |
 |-------|---------|--------|
 | 0 | Honba (current) | `obs.honba` |
 | 1 | Riichi deposits (current) | `obs.riichi_sticks` |
-| 2 | Score (self) | `obs.scores[player_id]` |
-| 3 | Score (right / shimocha) | `obs.scores[(player_id+1)%4]` |
-| 4 | Score (across / toimen) | `obs.scores[(player_id+2)%4]` |
-| 5 | Score (left / kamicha) | `obs.scores[(player_id+3)%4]` |
-| 6 | Honba (round start) | `start_kyoku` event |
-| 7 | Riichi deposits (round start) | `start_kyoku` event |
-| 8-11 | Scores at round start (self-relative order) | `start_kyoku` event |
+| 2 | Normalized score (self) | `(obs.scores[player_id] - 25000) / 10000` |
+| 3 | Normalized score (right / shimocha) | `(obs.scores[(player_id+1)%4] - 25000) / 10000` |
+| 4 | Normalized score (across / toimen) | `(obs.scores[(player_id+2)%4] - 25000) / 10000` |
+| 5 | Normalized score (left / kamicha) | `(obs.scores[(player_id+3)%4] - 25000) / 10000` |
 
-**Note:** Scores are raw values (e.g. 25000), not normalized. Normalization should be applied in the model or data pipeline as needed.
+Round-start numeric features are intentionally omitted. The transformer policy uses the current score state for action decisions.
 
 ### Rust API
 
 ```rust
-obs.encode_seq_numeric() -> [f32; 12]
+obs.encode_seq_numeric() -> [f32; 6]
 ```
 
 ### Python API (raw)
 
 ```python
 numeric_bytes = obs.encode_seq_numeric()
-numeric = np.frombuffer(numeric_bytes, dtype=np.float32)  # shape (12,)
+numeric = np.frombuffer(numeric_bytes, dtype=np.float32)  # shape (6,)
 ```
 
 ## 4. Progression Features (Action History)
@@ -351,7 +348,7 @@ for pid, obs in obs_dict.items():
     # features["sparse"]      -- (10,) int64, padded with 268
     # features["sparse_melds"]-- (4, 9) int64, padded with (5, 37, 3, ...)
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
-    # features["numeric"]     -- (12,) float32
+    # features["numeric"]     -- (6,) float32
     # features["progression"] -- (256, 5) int64, padded with (4, 43, 2, 2, 4)
     # features["prog_melds"]  -- (256, 9) int64, aligned with progression
     # features["candidates"]  -- (32, 2) int64, padded with (44, 3)
@@ -373,7 +370,7 @@ SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
-SequenceFeatureEncoder.NUM_NUMERIC         # 12
+SequenceFeatureEncoder.NUM_NUMERIC         # 6
 SequenceFeatureEncoder.PROG_DIMS           # (5, 44, 3, 3, 5)
 SequenceFeatureEncoder.CAND_DIMS           # (45, 4)
 ```

@@ -1360,9 +1360,9 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode numeric features as 12 × f32.
+    /// Encode numeric features as 6 × f32.
     ///
-    /// Returns raw bytes of `[f32; 12]`.
+    /// Returns raw bytes of `[f32; 6]`.
     /// Python side: `np.frombuffer(bytes, dtype=np.float32)`.
     #[pyo3(name = "encode_seq_numeric")]
     pub fn encode_seq_numeric_py<'py>(

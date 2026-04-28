@@ -179,6 +179,35 @@ def test_sequence_feature_encoder_factorizes_hand_draw_state():
     assert torch.count_nonzero(valid_hand[:, 1] == 0) == len(valid_hand) - 1
 
 
+def test_sequence_numeric_features_use_current_normalized_scores_only():
+    obs = Observation(
+        2,
+        [[], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [35000, 15000, 25000, 42000],
+        [False, False, False, False],
+        [],
+        ['{"type":"start_kyoku","honba":9,"kyotaku":8,"scores":[1000,2000,3000,4000]}'],
+        3,
+        2,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+
+    assert features["numeric"].shape == (6,)
+    assert torch.allclose(features["numeric"], torch.tensor([3.0, 2.0, 0.0, 1.7, 1.0, -1.0]))
+
+
 def test_sequence_candidates_collapse_to_82_action_representatives():
     obs = Observation(
         0,
