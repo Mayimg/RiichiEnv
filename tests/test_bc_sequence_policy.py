@@ -358,11 +358,7 @@ def test_mjai_replay_claim_labels_remain_strict_candidate_actions(tmp_path):
 
     replay = MjaiReplay.from_jsonl(str(file_path), rule="tenhou")
     kyoku = next(iter(replay.take_kyokus()))
-    pon_steps = [
-        (obs, action)
-        for obs, action in kyoku.steps(0)
-        if action.action_type == ActionType.PON
-    ]
+    pon_steps = [(obs, action) for obs, action in kyoku.steps(0) if action.action_type == ActionType.PON]
 
     assert pon_steps
     obs, action = pon_steps[0]
@@ -419,6 +415,26 @@ def test_transformer_tile_only_action_type_lookups_ignore_meld_patterns():
     assert model.cand_type_action_kind[44].item() == _ACTION_KIND_PAD
 
 
+def test_transformer_embedding_padding_rows_remain_zero_after_custom_init():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+
+    checked = []
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Embedding) and module.padding_idx is not None:
+            checked.append(name)
+            padding_row = module.weight[module.padding_idx]
+            assert torch.count_nonzero(padding_row).item() == 0, name
+
+    assert checked
+
+
 def test_transformer_factorized_meld_embedding_uses_slot_padding():
     model = TransformerPolicyNetwork(
         d_model=64,
@@ -431,10 +447,12 @@ def test_transformer_factorized_meld_embedding_uses_slot_padding():
     sparse = torch.tensor([[SequenceFeatureEncoder.SPARSE_PAD]], dtype=torch.long)
     dora_tile34 = model._decode_current_dora_tiles(sparse)
     melds = torch.tensor(
-        [[
-            [_MELD_KIND_CHI, 1, _MELD_ROLE_CALLED, 2, _MELD_ROLE_CONSUMED, 3, _MELD_ROLE_CONSUMED, 37, 3],
-            [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
-        ]],
+        [
+            [
+                [_MELD_KIND_CHI, 1, _MELD_ROLE_CALLED, 2, _MELD_ROLE_CONSUMED, 3, _MELD_ROLE_CONSUMED, 37, 3],
+                [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
+            ]
+        ],
         dtype=torch.long,
     )
 
@@ -507,11 +525,13 @@ def test_transformer_sparse_meld_action_embedding_matches_full_where():
     tile37_table, _ = model.tile_embed.build_tables(dora_tile34)
     type_emb = torch.randn(1, 3, 8)
     melds = torch.tensor(
-        [[
-            [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
-            [_MELD_KIND_CHI, 1, _MELD_ROLE_CALLED, 2, _MELD_ROLE_CONSUMED, 3, _MELD_ROLE_CONSUMED, 37, 3],
-            [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
-        ]],
+        [
+            [
+                [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
+                [_MELD_KIND_CHI, 1, _MELD_ROLE_CALLED, 2, _MELD_ROLE_CONSUMED, 3, _MELD_ROLE_CONSUMED, 37, 3],
+                [_MELD_KIND_PAD, 37, 3, 37, 3, 37, 3, 37, 3],
+            ]
+        ],
         dtype=torch.long,
     )
 

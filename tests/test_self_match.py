@@ -3,11 +3,11 @@ from pathlib import Path
 
 import torch
 import yaml
-
-from riichienv import MjaiReplay
 from riichienv_ml.config import load_config
 from riichienv_ml.models.transformer import TransformerPolicyNetwork
 from riichienv_ml.self_match import SelfMatchRunner
+
+from riichienv import MjaiReplay
 
 
 def test_self_match_runner_writes_parseable_mjai_logs(tmp_path):

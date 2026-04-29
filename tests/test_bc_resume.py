@@ -1,5 +1,4 @@
 import torch
-
 from riichienv_ml.models.transformer import TransformerPolicyNetwork
 from riichienv_ml.utils import load_model_weights, load_torch_state_dict
 
