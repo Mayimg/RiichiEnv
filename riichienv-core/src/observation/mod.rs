@@ -57,6 +57,8 @@ pub struct Observation {
     pub last_tedashis: [Option<u8>; 4],
     pub last_discard: Option<u32>,
     #[serde(default)]
+    pub last_discard_actor: Option<u8>,
+    #[serde(default)]
     pub drawn_tile: Option<u8>,
 }
 
@@ -83,6 +85,7 @@ impl Observation {
         riichi_sutehais: [Option<u8>; 4],
         last_tedashis: [Option<u8>; 4],
         last_discard: Option<u32>,
+        last_discard_actor: Option<u8>,
         drawn_tile: Option<u8>,
     ) -> Self {
         let hands_u32 = hands.map(|h| h.into_iter().map(|x| x as u32).collect());
@@ -113,6 +116,7 @@ impl Observation {
             riichi_sutehais,
             last_tedashis,
             last_discard,
+            last_discard_actor,
             drawn_tile,
         }
     }

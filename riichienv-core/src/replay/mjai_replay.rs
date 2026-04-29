@@ -407,7 +407,7 @@ impl MjaiReplay {
             MjaiEvent::Dahai {
                 actor,
                 pai,
-                tsumogiri: _,
+                tsumogiri,
             } => {
                 let tile = parse_mjai_tile(&pai);
                 let is_liqi = builder.liqi_flags[actor];
@@ -420,6 +420,7 @@ impl MjaiReplay {
                 builder.actions.push(Action::DiscardTile {
                     seat: actor,
                     tile,
+                    tsumogiri: Some(tsumogiri),
                     is_liqi,
                     is_wliqi,
                     doras: None,

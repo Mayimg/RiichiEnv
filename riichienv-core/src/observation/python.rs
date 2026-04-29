@@ -14,7 +14,7 @@ use super::helpers::get_next_tile;
 impl Observation {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None))]
+    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None, last_discard_actor=None))]
     pub fn py_new(
         player_id: u8,
         hands: Vec<Vec<u8>>,
@@ -36,6 +36,7 @@ impl Observation {
         last_tedashis: Vec<Option<u8>>,
         last_discard: Option<u32>,
         drawn_tile: Option<u8>,
+        last_discard_actor: Option<u8>,
     ) -> Self {
         let hands: [Vec<u8>; 4] = hands.try_into().expect("expected 4 hands");
         let melds: [Vec<Meld>; 4] = melds.try_into().expect("expected 4 melds");
@@ -69,6 +70,7 @@ impl Observation {
             riichi_sutehais,
             last_tedashis,
             last_discard,
+            last_discard_actor,
             drawn_tile,
         )
     }
@@ -1346,7 +1348,7 @@ impl Observation {
 
     /// Encode hand features as N × 2 u16 tuples.
     ///
-    /// Returns raw bytes of flattened row-major `&[[u16; 2]]`.
+    /// Returns raw bytes of flattened row-major `&[[u16; 3]]`.
     /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 2)`.
     #[pyo3(name = "encode_seq_hand")]
     pub fn encode_seq_hand_py<'py>(
@@ -1407,18 +1409,18 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode candidate (legal action) features as M × 2 u16 tuples.
+    /// Encode candidate (legal action) features as M × 3 u16 tuples.
     ///
-    /// Returns raw bytes of flattened row-major `&[[u16; 2]]`.
-    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 2)`.
+    /// Returns raw bytes of flattened row-major `&[[u16; 3]]`.
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 3)`.
     #[pyo3(name = "encode_seq_candidates")]
     pub fn encode_seq_candidates_py<'py>(
         &self,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let cands = self.encode_seq_candidates();
-        // [u16; 2] is contiguous in memory; treat the slice as a flat u8 buffer directly.
-        let byte_len = cands.len() * std::mem::size_of::<[u16; 2]>();
+        // [u16; 3] is contiguous in memory; treat the slice as a flat u8 buffer directly.
+        let byte_len = cands.len() * std::mem::size_of::<[u16; 3]>();
         let byte_slice =
             unsafe { std::slice::from_raw_parts(cands.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
@@ -1439,7 +1441,7 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode candidate 2-tuples and aligned meld sidecar rows as M × 11 u16 rows.
+    /// Encode candidate 3-tuples and aligned meld sidecar rows as M × 12 u16 rows.
     #[pyo3(name = "encode_seq_candidate_features")]
     pub fn encode_seq_candidate_features_py<'py>(
         &self,

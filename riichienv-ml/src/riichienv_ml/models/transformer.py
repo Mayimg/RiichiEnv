@@ -253,11 +253,11 @@ def _build_cand_type_lookups(vocab_size: int) -> dict[str, torch.Tensor]:
     tile37 = [_TILE37_PAD] * vocab_size
     tile34 = [_TILE34_PAD] * vocab_size
 
-    for t34 in range(_TILE34_PAD):
-        idx = t34
+    for k37 in range(_TILE37_PAD):
+        idx = k37
         if idx < vocab_size:
             action_kind[idx] = _ACTION_KIND_DISCARD
-            tile34[idx] = t34
+            tile37[idx] = k37
 
     return {
         "action_kind": torch.tensor(action_kind, dtype=torch.long),
@@ -452,7 +452,7 @@ class TransformerActorCritic(nn.Module):
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 264
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,            # (38,3)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,            # (5,44,3,3,5)
-        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (45,5)
+        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (48,3,5)
         **kwargs,
     ):
         super().__init__()
@@ -474,6 +474,7 @@ class TransformerActorCritic(nn.Module):
         self._N = SequenceFeatureEncoder.NUM_NUMERIC       # 6
         self._P = max_prog_len
         self._C = max_cand_len
+        self._CW = len(cand_dims)
 
         # --- Embedding layers ---
         self.sparse_embed = nn.Embedding(
@@ -631,8 +632,8 @@ class TransformerActorCritic(nn.Module):
         o += self._P * 5
         prog_melds = x[:, o:o + self._P * self._MW].reshape(-1, self._P, self._MW).long()
         o += self._P * self._MW
-        cand = x[:, o:o + self._C * 2].reshape(-1, self._C, 2).long()
-        o += self._C * 2
+        cand = x[:, o:o + self._C * self._CW].reshape(-1, self._C, self._CW).long()
+        o += self._C * self._CW
         cand_melds = x[:, o:o + self._C * self._MW].reshape(-1, self._C, self._MW).long()
         o += self._C * self._MW
         sparse_mask = x[:, o:o + self._S].bool()

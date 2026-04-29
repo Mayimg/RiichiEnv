@@ -80,6 +80,8 @@ pub enum RawAction {
     DiscardTile {
         seat: usize,
         tile: String,
+        #[serde(default, alias = "moqie")]
+        tsumogiri: Option<bool>,
         #[serde(default)]
         is_liqi: bool,
         #[serde(default)]
@@ -549,12 +551,14 @@ impl MjSoulReplay {
             RawAction::DiscardTile {
                 seat,
                 tile,
+                tsumogiri,
                 is_liqi,
                 is_wliqi,
                 doras,
             } => Action::DiscardTile {
                 seat,
                 tile: TileConverter::parse_tile_136(&tile),
+                tsumogiri,
                 is_liqi,
                 is_wliqi,
                 doras: if doras.is_empty() {

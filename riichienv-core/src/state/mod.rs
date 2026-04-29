@@ -255,7 +255,8 @@ impl GameState {
             is_tenpai,
             self.riichi_sutehais,
             self.last_tedashis,
-            self.last_discard.map(|(tile, _pid)| tile as u32),
+            self.last_discard.map(|(_, tile)| tile as u32),
+            self.last_discard.map(|(pid, _)| pid),
             self.drawn_tile,
         );
 

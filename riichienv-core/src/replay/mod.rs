@@ -37,6 +37,7 @@ pub enum Action {
     DiscardTile {
         seat: usize,
         tile: u8,
+        tsumogiri: Option<bool>,
         is_liqi: bool,
         is_wliqi: bool,
         doras: Option<Vec<u8>>,
@@ -120,6 +121,180 @@ pub struct KyokuStepIterator3P {
     /// Queued (pid, observation) pairs for players who implicitly passed
     /// on a claim opportunity (pon/ron) that existed in the log.
     pending_pass_obs: Vec<(u8, crate::observation_3p::Observation3P)>,
+}
+
+#[cfg(feature = "python")]
+fn replay_tile_kan37(tile: u8) -> u8 {
+    crate::observation::sequence_features::tile_id_to_kan37(tile as u32)
+}
+
+#[cfg(feature = "python")]
+fn same_visible_replay_tile(a: u8, b: u8) -> bool {
+    replay_tile_kan37(a) == replay_tile_kan37(b)
+}
+
+#[cfg(feature = "python")]
+fn choose_replay_discard_tile(
+    hand: &[u8],
+    drawn_tile: Option<u8>,
+    log_tile: u8,
+    tsumogiri: Option<bool>,
+) -> u8 {
+    if tsumogiri == Some(true)
+        && let Some(drawn) = drawn_tile.filter(|&tile| same_visible_replay_tile(tile, log_tile))
+    {
+        return drawn;
+    }
+
+    if tsumogiri == Some(false) {
+        if let Some(&tile) = hand.iter().find(|&&tile| tile == log_tile) {
+            return tile;
+        }
+        if let Some(&tile) = hand
+            .iter()
+            .find(|&&tile| same_visible_replay_tile(tile, log_tile))
+        {
+            return tile;
+        }
+    }
+
+    if let Some(&tile) = hand.iter().find(|&&tile| tile == log_tile) {
+        return tile;
+    }
+    if let Some(drawn) = drawn_tile.filter(|&tile| tile == log_tile) {
+        return drawn;
+    }
+    if let Some(&tile) = hand
+        .iter()
+        .find(|&&tile| same_visible_replay_tile(tile, log_tile))
+    {
+        return tile;
+    }
+    if let Some(drawn) = drawn_tile.filter(|&tile| same_visible_replay_tile(tile, log_tile)) {
+        return drawn;
+    }
+    log_tile
+}
+
+#[cfg(feature = "python")]
+fn choose_replay_called_tile(last_discard: Option<(u8, u8)>, log_tile: u8) -> u8 {
+    if let Some((_pid, tile)) =
+        last_discard.filter(|(_, tile)| same_visible_replay_tile(*tile, log_tile))
+    {
+        tile
+    } else {
+        log_tile
+    }
+}
+
+#[cfg(feature = "python")]
+fn remove_exact_or_visible_tile(tiles: &mut Vec<u8>, target: u8) {
+    if let Some(idx) = tiles.iter().position(|&tile| tile == target) {
+        tiles.remove(idx);
+        return;
+    }
+    if let Some(idx) = tiles
+        .iter()
+        .position(|&tile| same_visible_replay_tile(tile, target))
+    {
+        tiles.remove(idx);
+    }
+}
+
+#[cfg(feature = "python")]
+fn take_exact_or_visible_tile(tiles: &mut Vec<u8>, target: u8) -> Option<u8> {
+    if let Some(idx) = tiles.iter().position(|&tile| tile == target) {
+        return Some(tiles.remove(idx));
+    }
+    tiles
+        .iter()
+        .position(|&tile| same_visible_replay_tile(tile, target))
+        .map(|idx| tiles.remove(idx))
+}
+
+#[cfg(feature = "python")]
+fn choose_replay_consumed_tiles(hand: &[u8], log_consumed: &[u8]) -> Vec<u8> {
+    let mut available = hand.to_vec();
+    let mut consumed = Vec::with_capacity(log_consumed.len());
+    for &tile in log_consumed {
+        consumed.push(take_exact_or_visible_tile(&mut available, tile).unwrap_or(tile));
+    }
+    consumed
+}
+
+#[cfg(feature = "python")]
+fn expected_call_consumed_len(action_type: ActionType) -> Option<usize> {
+    match action_type {
+        ActionType::Chi | ActionType::Pon => Some(2),
+        ActionType::Daiminkan => Some(3),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "python")]
+fn replay_consumed_key(action: &EnvAction) -> Vec<u8> {
+    let mut tiles = action.consume_tiles.clone();
+    if let Some(expected_len) = expected_call_consumed_len(action.action_type)
+        && tiles.len() > expected_len
+        && let Some(called) = action.tile
+    {
+        remove_exact_or_visible_tile(&mut tiles, called);
+    }
+    let mut key: Vec<u8> = tiles.into_iter().map(replay_tile_kan37).collect();
+    key.sort_unstable();
+    key
+}
+
+#[cfg(feature = "python")]
+fn resolve_replay_action_4p(
+    obs: &crate::observation::Observation,
+    action: &EnvAction,
+    tsumogiri: Option<bool>,
+) -> EnvAction {
+    let target_tile = action.tile.map(replay_tile_kan37);
+    let target_consumed = replay_consumed_key(action);
+
+    obs._legal_actions
+        .iter()
+        .find(|legal| {
+            if legal.action_type != action.action_type {
+                return false;
+            }
+
+            match action.action_type {
+                ActionType::Discard => {
+                    let Some(target) = target_tile else {
+                        return false;
+                    };
+                    let Some(tile) = legal.tile else {
+                        return false;
+                    };
+                    if replay_tile_kan37(tile) != target {
+                        return false;
+                    }
+                    if let Some(flag) = tsumogiri {
+                        let is_drawn = Some(tile) == obs.drawn_tile;
+                        if is_drawn != flag {
+                            return false;
+                        }
+                    }
+                    true
+                }
+                ActionType::Chi | ActionType::Pon | ActionType::Daiminkan => {
+                    let tile_matches = match (legal.tile, target_tile) {
+                        (Some(tile), Some(target)) => replay_tile_kan37(tile) == target,
+                        _ => false,
+                    };
+                    tile_matches && replay_consumed_key(legal) == target_consumed
+                }
+                ActionType::Ankan | ActionType::Kakan => {
+                    target_consumed.is_empty() || replay_consumed_key(legal) == target_consumed
+                }
+                _ => true,
+            }
+        })
+        .cloned()
+        .unwrap_or_else(|| action.clone())
 }
 
 #[cfg(feature = "python")]
@@ -247,11 +422,16 @@ impl KyokuStepIterator {
                     slf.state.players[pid as usize].riichi_stage = false;
                 }
                 let obs = obs_result?;
+                let current_log_action = &actions[slf.idx];
+                let pending_tsumogiri = match current_log_action {
+                    Action::DiscardTile { tsumogiri, .. } => *tsumogiri,
+                    _ => None,
+                };
+                let action = resolve_replay_action_4p(&obs, &action, pending_tsumogiri);
 
                 let discard_tile_for_pass = action.tile;
                 let discarder_for_pass = pid;
 
-                let current_log_action = &actions[slf.idx];
                 slf.state.apply_log_action(current_log_action);
                 slf.idx += 1;
 
@@ -300,13 +480,20 @@ impl KyokuStepIterator {
                 Action::DiscardTile {
                     seat,
                     tile,
+                    tsumogiri,
                     is_liqi,
                     ..
                 } => {
                     let pid = *seat as u8;
+                    let replay_tile = choose_replay_discard_tile(
+                        &slf.state.players[pid as usize].hand,
+                        slf.state.drawn_tile,
+                        *tile,
+                        *tsumogiri,
+                    );
                     let env_action = EnvAction::new(
                         crate::action::ActionType::Discard,
-                        Some(*tile),
+                        Some(replay_tile),
                         Vec::new(),
                         None,
                     );
@@ -341,12 +528,13 @@ impl KyokuStepIterator {
                             ));
                         }
                     } else {
-                        let discard_tile = *tile;
                         let obs = slf.state.get_observation_for_replay(
                             pid,
                             &env_action,
                             &format!("{:?}", action),
                         )?;
+                        let env_action = resolve_replay_action_4p(&obs, &env_action, *tsumogiri);
+                        let discard_tile = env_action.tile.unwrap_or(replay_tile);
 
                         slf.state.apply_log_action(action);
                         slf.idx += 1;
@@ -390,14 +578,22 @@ impl KyokuStepIterator {
                         _ => crate::action::ActionType::Chi,
                     };
 
-                    let t = tiles.first().copied();
-                    let env_action = EnvAction::new(env_action_type, t, tiles.to_vec(), None);
+                    let t = tiles
+                        .first()
+                        .copied()
+                        .map(|tile| choose_replay_called_tile(slf.state.last_discard, tile));
+                    let consumed = choose_replay_consumed_tiles(
+                        &slf.state.players[pid as usize].hand,
+                        &tiles[1..],
+                    );
+                    let env_action = EnvAction::new(env_action_type, t, consumed, None);
 
                     let obs = slf.state.get_observation_for_replay(
                         pid,
                         &env_action,
                         &format!("{:?}", action),
                     )?;
+                    let env_action = resolve_replay_action_4p(&obs, &env_action, None);
 
                     slf.state.apply_log_action(action);
                     slf.idx += 1;
@@ -461,6 +657,7 @@ impl KyokuStepIterator {
                         &env_action,
                         &format!("{:?}", action),
                     )?;
+                    let env_action = resolve_replay_action_4p(&obs, &env_action, None);
 
                     slf.state.apply_log_action(action);
                     slf.idx += 1;
@@ -755,6 +952,7 @@ impl KyokuStepIterator3P {
                 Action::DiscardTile {
                     seat,
                     tile,
+                    tsumogiri: _,
                     is_liqi,
                     ..
                 } => {
@@ -1353,6 +1551,7 @@ impl LogKyoku {
                 Action::DiscardTile {
                     seat,
                     tile,
+                    tsumogiri: _,
                     is_liqi,
                     is_wliqi,
                     doras,
@@ -1744,6 +1943,7 @@ impl WinResultContextIterator {
                 Action::DiscardTile {
                     seat,
                     tile,
+                    tsumogiri: _,
                     is_liqi,
                     is_wliqi,
                     doras,
