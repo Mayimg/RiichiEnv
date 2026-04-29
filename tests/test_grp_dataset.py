@@ -2,11 +2,10 @@ import json
 
 import numpy as np
 import torch
-
 from riichienv_ml.datasets.grp_dataset import GrpReplayDataset
 from riichienv_ml.features.grp_agari_features import (
-    TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
     TENHOU_4P_AGARI_RANK_GAINS_AND_OVERTAKES_INPUT_FORMAT,
+    TENHOU_4P_AGARI_RANK_GAINS_INPUT_FORMAT,
     encode_agari_rank_gains,
     encode_other_player_overtake_flags,
     get_agari_rank_gain_feature_dim,
@@ -292,13 +291,15 @@ def test_grp_replay_dataset_appends_tenhou_4p_agari_rank_gain_features():
     assert x.shape == (
         20 + get_agari_rank_gain_feature_dim(4, "tenhou") + get_other_player_overtake_feature_dim(4, "tenhou"),
     )
-    np.testing.assert_allclose(x[:12], np.array([1.0, 0.96, 0.96, 0.96, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    np.testing.assert_allclose(
+        x[:12], np.array([1.0, 0.96, 0.96, 0.96, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    )
     np.testing.assert_allclose(x[12:16], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
     np.testing.assert_allclose(x[16:20], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
     assert x[20 + 24] == 1.0
     assert x[20 + 48] == np.float32(2.0 / 3.0)
     np.testing.assert_allclose(
-        x[20 + get_agari_rank_gain_feature_dim(4, "tenhou"):],
+        x[20 + get_agari_rank_gain_feature_dim(4, "tenhou") :],
         np.zeros(get_other_player_overtake_feature_dim(4, "tenhou"), dtype=np.float32),
     )
 

@@ -615,6 +615,9 @@ class TransformerActorCritic(nn.Module):
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, std=0.02)
+                if m.padding_idx is not None:
+                    with torch.no_grad():
+                        m.weight[m.padding_idx].fill_(0)
 
     # ------------------------------------------------------------------
     def _unpack(self, x: torch.Tensor):
