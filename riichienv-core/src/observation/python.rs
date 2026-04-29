@@ -1346,6 +1346,37 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
+    /// Encode owner seats aligned with current visible meld features as N × u16.
+    #[pyo3(name = "encode_seq_sparse_meld_owners")]
+    pub fn encode_seq_sparse_meld_owners_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let owners = self.encode_seq_sparse_meld_owners();
+        let byte_len = owners.len() * std::mem::size_of::<u16>();
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(owners.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
+    /// Encode current visible meld rows plus aligned owner seats as N × 10 u16 rows.
+    ///
+    /// Python side: split columns `[:9]` as meld rows and column `9` as owners.
+    #[pyo3(name = "encode_seq_sparse_meld_features")]
+    pub fn encode_seq_sparse_meld_features_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let features = self.encode_seq_sparse_meld_features();
+        let byte_len = features.len()
+            * std::mem::size_of::<
+                [u16; crate::observation::sequence_features::SPARSE_MELD_FEATURE_WIDTH],
+            >();
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(features.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
     /// Encode hand features as N × 2 u16 tuples.
     ///
     /// Returns raw bytes of flattened row-major `&[[u16; 3]]`.

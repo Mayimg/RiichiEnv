@@ -11,12 +11,13 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | Feature Group | Shape | Type | Description |
 |---------------|-------|------|-------------|
 | **Sparse** | `(9,)` | int64 | Table metadata, tiles remaining, and dora indicators |
-| **Sparse Melds** | `(4, 9)` | int64 | Current player's melds in factorized meld layout |
+| **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
+| **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Progression** | `(256, 5)` | int64 | Action history as 5-tuple sequences |
 | **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
-| **Candidates** | `(32, 2)` | int64 | Legal actions as 2-tuple sets |
+| **Candidates** | `(32, 3)` | int64 | Legal actions as 3-tuple sets |
 | **Candidate Melds** | `(32, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
 
 Each variable-length group is padded to its maximum length, with accompanying boolean masks indicating real vs. padding entries.
@@ -122,7 +123,10 @@ Each observation produces 4-9 sparse tokens. Each token is an index into an embe
 - 1-5 dora indicator tokens
 - Total: typically 5-9 tokens
 
-Current melds are encoded separately by `encode_seq_sparse_melds()` with the shared factorized meld layout.
+Current visible melds are encoded separately by `encode_seq_sparse_melds()` with the shared factorized meld layout.
+For training throughput, the Python wrapper reads the bundled `encode_seq_sparse_meld_features()` API,
+which returns each 9-field meld row plus its owner sidecar as a 10-field row.
+Sparse meld rows include all players' current melds in observer-relative owner order.
 
 ### Rust API
 
@@ -135,11 +139,16 @@ obs.encode_seq_sparse(game_style: u8) -> Vec<u16>
 ```python
 sparse_bytes = obs.encode_seq_sparse(game_style=1)
 sparse = np.frombuffer(sparse_bytes, dtype=np.uint16)  # variable length
+sparse_meld_features = np.frombuffer(
+    obs.encode_seq_sparse_meld_features(), dtype=np.uint16
+).reshape(-1, 10)
+melds = sparse_meld_features[:, :9]
+owners = sparse_meld_features[:, 9]
 ```
 
 ## 1a. Meld Sidecar Features
 
-**Tuple sequence, max 4 current meld entries; aligned sidecars for progression and candidates**
+**Tuple sequence, max 16 current meld entries; aligned sidecars for progression and candidates**
 
 Each meld row has 9 fields:
 
@@ -155,6 +164,17 @@ Each meld row has 9 fields:
 | slot role | 0=called, 1=consumed, 2=added_tile, 3=padding |
 
 **Padding row:** `(5, 37, 3, 37, 3, 37, 3, 37, 3)`
+
+Sparse current meld rows also have an aligned owner sidecar:
+
+| Field | Values |
+|-------|--------|
+| sparse_meld_owner | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding |
+
+Rows are ordered by owner relative to the observing player:
+`self`, `shimocha`, `toimen`, `kamicha`, with each owner contributing up to 4 melds in state order.
+The transformer embeds each row with the shared meld embedding and adds this owner-seat embedding only for sparse current melds.
+Progression and candidate meld sidecars keep the 9-field meld row and do not include an owner sidecar.
 
 Slot order:
 
@@ -353,7 +373,8 @@ enc = SequenceFeatureEncoder(n_players=4, game_style=1)
 for pid, obs in obs_dict.items():
     features = enc.encode(obs)
     # features["sparse"]      -- (9,) int64, padded with 264
-    # features["sparse_melds"]-- (4, 9) int64, padded with (5, 37, 3, ...)
+    # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
+    # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
     # features["numeric"]     -- (6,) float32
     # features["progression"] -- (256, 5) int64, padded with (4, 43, 2, 2, 4)
@@ -371,8 +392,10 @@ for pid, obs in obs_dict.items():
 ```python
 SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 265
 SequenceFeatureEncoder.MAX_SPARSE_LEN     # 9
-SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 4
+SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 16
 SequenceFeatureEncoder.MELD_DIMS           # (6, 38, 4, 38, 4, 38, 4, 38, 4)
+SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10
+SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS  # 5
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)

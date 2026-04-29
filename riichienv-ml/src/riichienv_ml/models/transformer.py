@@ -6,7 +6,8 @@ embeds each group, and processes them through a TransformerEncoder.
 
 Tile-only fields across hand / sparse dora / progression / candidates share
 an attribute-based tile embedding module. Chi/pon/kan melds use a shared
-factorized embedding over meld kind, slot tiles, and slot roles.
+factorized embedding over meld kind, slot tiles, and slot roles. Current
+visible meld tokens additionally receive an owner-seat embedding.
 
 Output: (logits, value) — same interface as ActorCriticNetwork.
 
@@ -441,18 +442,18 @@ class TransformerActorCritic(nn.Module):
         policy_head_type: str = "pointer",
         emit_value: bool = True,
         # Embedding sub-dimensions (asymmetric)
-        d_sub: int | None = None,   # V1 compat: if set, d_type=d_other=d_sub
-        d_type: int = 96,           # type field embedding dim
-        d_other: int = 32,          # other field embedding dim
+        d_sub: int | None = None,  # V1 compat: if set, d_type=d_other=d_sub
+        d_type: int = 96,  # type field embedding dim
+        d_other: int = 32,  # other field embedding dim
         # Sequence length (must match encoder)
         max_prog_len: int = 256,
         max_cand_len: int = 32,
         # Vocab sizes (from SequenceFeatureEncoder)
-        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,   # 265
-        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,            # 264
-        hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,            # (38,3)
-        prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,            # (5,44,3,3,5)
-        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,            # (48,3,5)
+        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,  # 265
+        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 264
+        hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
+        prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,44,3,3,5)
+        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (48,3,5)
         **kwargs,
     ):
         super().__init__()
@@ -470,18 +471,16 @@ class TransformerActorCritic(nn.Module):
         self._S = SequenceFeatureEncoder.MAX_SPARSE_LEN
         self._SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
         self._MW = SequenceFeatureEncoder.MELD_WIDTH
-        self._H = SequenceFeatureEncoder.MAX_HAND_LEN     # 14
-        self._N = SequenceFeatureEncoder.NUM_NUMERIC       # 6
+        self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
+        self._N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
         self._P = max_prog_len
         self._C = max_cand_len
         self._CW = len(cand_dims)
 
         # --- Embedding layers ---
-        self.sparse_embed = nn.Embedding(
-            sparse_vocab, d_model, padding_idx=sparse_pad)
+        self.sparse_embed = nn.Embedding(sparse_vocab, d_model, padding_idx=sparse_pad)
         self.tile_embed = SharedTileEmbedding(out_dim=d_type, attr_dim=d_other)
-        self.tile_action_kind_embed = nn.Embedding(
-            _ACTION_KIND_PAD + 1, d_other, padding_idx=_ACTION_KIND_PAD)
+        self.tile_action_kind_embed = nn.Embedding(_ACTION_KIND_PAD + 1, d_other, padding_idx=_ACTION_KIND_PAD)
         self.tile_action_proj = nn.Sequential(
             nn.Linear(d_type + d_other, d_type),
             nn.LayerNorm(d_type),
@@ -490,6 +489,11 @@ class TransformerActorCritic(nn.Module):
         self.sparse_meld_proj = nn.Sequential(
             nn.Linear(d_type, d_model),
             nn.LayerNorm(d_model),
+        )
+        self.sparse_meld_owner_embed = nn.Embedding(
+            SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS,
+            d_model,
+            padding_idx=SequenceFeatureEncoder.SPARSE_MELD_OWNER_PAD,
         )
 
         # Hand: embed (tile37, draw_state) → concat → project
@@ -508,9 +512,7 @@ class TransformerActorCritic(nn.Module):
         # Progression: embed each of 5 fields → concat → project
         # field[1] is type (vocab=44) -> d_type; others -> d_other
         prog_sub_dims = [d_other if i != 1 else d_type for i in range(len(prog_dims))]
-        self.prog_embeds = nn.ModuleList([
-            nn.Embedding(dim, d_s) for dim, d_s in zip(prog_dims, prog_sub_dims)
-        ])
+        self.prog_embeds = nn.ModuleList([nn.Embedding(dim, d_s) for dim, d_s in zip(prog_dims, prog_sub_dims)])
         prog_cat_dim = sum(prog_sub_dims)
         self.prog_proj = nn.Sequential(
             nn.Linear(prog_cat_dim, d_model),
@@ -520,16 +522,13 @@ class TransformerActorCritic(nn.Module):
         # Candidates: embed each field → concat → project
         # field[0] is type (vocab=45) -> d_type; others -> d_other
         cand_sub_dims = [d_other if i != 0 else d_type for i in range(len(cand_dims))]
-        self.cand_embeds = nn.ModuleList([
-            nn.Embedding(dim, d_s) for dim, d_s in zip(cand_dims, cand_sub_dims)
-        ])
+        self.cand_embeds = nn.ModuleList([nn.Embedding(dim, d_s) for dim, d_s in zip(cand_dims, cand_sub_dims)])
         cand_cat_dim = sum(cand_sub_dims)
         self.cand_proj = nn.Sequential(
             nn.Linear(cand_cat_dim, d_model),
             nn.LayerNorm(d_model),
         )
-        self.dora_slot_embed = nn.Embedding(
-            _DORA_SLOT_PAD + 1, d_other, padding_idx=_DORA_SLOT_PAD)
+        self.dora_slot_embed = nn.Embedding(_DORA_SLOT_PAD + 1, d_other, padding_idx=_DORA_SLOT_PAD)
         self.sparse_dora_proj = nn.Sequential(
             nn.Linear(d_type + d_other, d_model),
             nn.LayerNorm(d_model),
@@ -548,20 +547,23 @@ class TransformerActorCritic(nn.Module):
 
         # --- Transformer encoder (pre-LN for stability) ---
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead,
-            dim_feedforward=dim_feedforward, dropout=dropout,
-            batch_first=True, norm_first=True,
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
         )
         self.transformer = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers,
+            encoder_layer,
+            num_layers=num_layers,
             enable_nested_tensor=False,
         )
         self.final_norm = nn.LayerNorm(d_model)
 
         # --- Cross-attention for fixed policy head (V3) ---
         if self.policy_head_type == "cross_attn":
-            self.cand_cross_attn = nn.MultiheadAttention(
-                d_model, nhead, dropout=dropout, batch_first=True)
+            self.cand_cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
             self.cross_attn_norm = nn.LayerNorm(d_model)
 
         # --- Output heads ---
@@ -601,8 +603,7 @@ class TransformerActorCritic(nn.Module):
     def _sinusoidal_pe(max_len: int, d_model: int) -> torch.Tensor:
         pe = torch.zeros(max_len, d_model)
         pos = torch.arange(max_len).unsqueeze(1).float()
-        div = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(pos * div)
         pe[:, 1::2] = torch.cos(pos * div)
         return pe.unsqueeze(0)  # (1, max_len, d_model)
@@ -623,34 +624,37 @@ class TransformerActorCritic(nn.Module):
     def _unpack(self, x: torch.Tensor):
         """Unpack flat (B, PACKED_SIZE) tensor into components."""
         o = 0
-        sparse = x[:, o:o + self._S].long()
+        sparse = x[:, o : o + self._S].long()
         o += self._S
-        sparse_melds = x[:, o:o + self._SM * self._MW].reshape(-1, self._SM, self._MW).long()
+        sparse_melds = x[:, o : o + self._SM * self._MW].reshape(-1, self._SM, self._MW).long()
         o += self._SM * self._MW
-        hand = x[:, o:o + self._H * 2].reshape(-1, self._H, 2).long()
-        o += self._H * 2
-        numeric = x[:, o:o + self._N]
-        o += self._N
-        prog = x[:, o:o + self._P * 5].reshape(-1, self._P, 5).long()
-        o += self._P * 5
-        prog_melds = x[:, o:o + self._P * self._MW].reshape(-1, self._P, self._MW).long()
-        o += self._P * self._MW
-        cand = x[:, o:o + self._C * self._CW].reshape(-1, self._C, self._CW).long()
-        o += self._C * self._CW
-        cand_melds = x[:, o:o + self._C * self._MW].reshape(-1, self._C, self._MW).long()
-        o += self._C * self._MW
-        sparse_mask = x[:, o:o + self._S].bool()
-        o += self._S
-        sparse_meld_mask = x[:, o:o + self._SM].bool()
+        sparse_meld_owners = x[:, o : o + self._SM].long()
         o += self._SM
-        hand_mask = x[:, o:o + self._H].bool()
+        hand = x[:, o : o + self._H * 2].reshape(-1, self._H, 2).long()
+        o += self._H * 2
+        numeric = x[:, o : o + self._N]
+        o += self._N
+        prog = x[:, o : o + self._P * 5].reshape(-1, self._P, 5).long()
+        o += self._P * 5
+        prog_melds = x[:, o : o + self._P * self._MW].reshape(-1, self._P, self._MW).long()
+        o += self._P * self._MW
+        cand = x[:, o : o + self._C * self._CW].reshape(-1, self._C, self._CW).long()
+        o += self._C * self._CW
+        cand_melds = x[:, o : o + self._C * self._MW].reshape(-1, self._C, self._MW).long()
+        o += self._C * self._MW
+        sparse_mask = x[:, o : o + self._S].bool()
+        o += self._S
+        sparse_meld_mask = x[:, o : o + self._SM].bool()
+        o += self._SM
+        hand_mask = x[:, o : o + self._H].bool()
         o += self._H
-        prog_mask = x[:, o:o + self._P].bool()
+        prog_mask = x[:, o : o + self._P].bool()
         o += self._P
-        cand_mask = x[:, o:o + self._C].bool()
+        cand_mask = x[:, o : o + self._C].bool()
         return (
             sparse,
             sparse_melds,
+            sparse_meld_owners,
             hand,
             numeric,
             prog,
@@ -692,9 +696,13 @@ class TransformerActorCritic(nn.Module):
         melds: torch.Tensor,
         dora_tile34: torch.Tensor,
         tile37_table: torch.Tensor | None = None,
+        owners: torch.Tensor | None = None,
     ) -> torch.Tensor:
         meld_emb = self.meld_embed(melds, dora_tile34, self.tile_embed, tile37_table)
-        return self.sparse_meld_proj(meld_emb)
+        out = self.sparse_meld_proj(meld_emb)
+        if owners is not None:
+            out = out + self.sparse_meld_owner_embed(owners)
+        return out
 
     def _embed_tile_only_action_type(
         self,
@@ -825,6 +833,7 @@ class TransformerActorCritic(nn.Module):
         (
             sparse,
             sparse_melds,
+            sparse_meld_owners,
             hand,
             numeric,
             prog,
@@ -843,8 +852,8 @@ class TransformerActorCritic(nn.Module):
         # Embed sparse tokens: (B, S, d)
         sparse_emb = self._embed_sparse(sparse, dora_tile34, tile37_table)
 
-        # Embed current melds: (B, SM, d)
-        sparse_meld_emb = self._embed_sparse_melds(sparse_melds, dora_tile34, tile37_table)
+        # Embed current visible melds: (B, SM, d)
+        sparse_meld_emb = self._embed_sparse_melds(sparse_melds, dora_tile34, tile37_table, sparse_meld_owners)
 
         # Embed hand tuples: (B, H, d)
         hand_emb = self._embed_hand(hand, dora_tile34, tile37_table)
@@ -868,30 +877,36 @@ class TransformerActorCritic(nn.Module):
         )
 
         # Add segment embeddings
-        seg_ids = torch.cat([
-            torch.zeros(batch_size, 1 + self._S + self._SM, dtype=torch.long, device=x.device),
-            torch.ones(batch_size, self._H, dtype=torch.long, device=x.device),
-            torch.full((batch_size, 1), 2, dtype=torch.long, device=x.device),
-            torch.full((batch_size, self._P), 3, dtype=torch.long, device=x.device),
-            torch.full((batch_size, self._C), 4, dtype=torch.long, device=x.device),
-        ], dim=1)
+        seg_ids = torch.cat(
+            [
+                torch.zeros(batch_size, 1 + self._S + self._SM, dtype=torch.long, device=x.device),
+                torch.ones(batch_size, self._H, dtype=torch.long, device=x.device),
+                torch.full((batch_size, 1), 2, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._P), 3, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._C), 4, dtype=torch.long, device=x.device),
+            ],
+            dim=1,
+        )
         tokens = tokens + self.segment_embed(seg_ids)
 
         # Add positional encoding
-        tokens = tokens + self.pos_enc[:, :tokens.shape[1]]
+        tokens = tokens + self.pos_enc[:, : tokens.shape[1]]
 
         # Build padding mask: True = ignore (PyTorch convention)
         cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
         numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        pad_mask = torch.cat([
-            cls_valid,         # CLS is always valid
-            ~sparse_mask,      # True where sparse is padding
-            ~sparse_meld_mask, # True where current meld is padding
-            ~hand_mask,        # True where hand is padding
-            numeric_valid,     # numeric is always valid
-            ~prog_mask,        # True where prog is padding
-            ~cand_mask,        # True where cand is padding
-        ], dim=1)
+        pad_mask = torch.cat(
+            [
+                cls_valid,  # CLS is always valid
+                ~sparse_mask,  # True where sparse is padding
+                ~sparse_meld_mask,  # True where current visible meld is padding
+                ~hand_mask,  # True where hand is padding
+                numeric_valid,  # numeric is always valid
+                ~prog_mask,  # True where prog is padding
+                ~cand_mask,  # True where cand is padding
+            ],
+            dim=1,
+        )
 
         # Transformer
         output = self.transformer(tokens, src_key_padding_mask=pad_mask)
@@ -901,23 +916,21 @@ class TransformerActorCritic(nn.Module):
         cls_out = output[:, 0]
 
         cand_offset = 1 + self._S + self._SM + self._H + 1 + self._P
-        cand_out = output[:, cand_offset:cand_offset + self._C]  # (B, C, d_model)
+        cand_out = output[:, cand_offset : cand_offset + self._C]  # (B, C, d_model)
 
         # Policy head
         if self.policy_head_type == "cross_attn":
             # Cross-attention: CLS queries candidate token outputs
             cls_q = cls_out.unsqueeze(1)  # (B, 1, d_model)
-            cand_attn_mask = ~cand_mask   # True = padding (PyTorch convention)
+            cand_attn_mask = ~cand_mask  # True = padding (PyTorch convention)
             attn_out, _ = self.cand_cross_attn(
-                cls_q, cand_out, cand_out,
-                key_padding_mask=cand_attn_mask)  # (B, 1, d_model)
+                cls_q, cand_out, cand_out, key_padding_mask=cand_attn_mask
+            )  # (B, 1, d_model)
             policy_input = self.cross_attn_norm(cls_out + attn_out.squeeze(1))
             logits = self.policy_head(policy_input)
         elif self.policy_head_type == "pointer":
             cls_expanded = cls_out.unsqueeze(1).expand(-1, self._C, -1)
-            logits = self.candidate_scorer(
-                torch.cat([cand_out, cls_expanded], dim=-1)
-            ).squeeze(-1)
+            logits = self.candidate_scorer(torch.cat([cand_out, cls_expanded], dim=-1)).squeeze(-1)
         else:
             policy_input = cls_out
             logits = self.policy_head(policy_input)

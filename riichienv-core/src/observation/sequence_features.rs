@@ -49,13 +49,19 @@ pub const MELD_FEATURE_WIDTH: usize = 9;
 #[allow(dead_code)]
 pub const CANDIDATE_FEATURE_WIDTH: usize = 3 + MELD_FEATURE_WIDTH;
 #[allow(dead_code)]
+pub const SPARSE_MELD_FEATURE_WIDTH: usize = MELD_FEATURE_WIDTH + 1;
+#[allow(dead_code)]
 pub const MELD_KIND_DIMS: u16 = 6;
 #[allow(dead_code)]
 pub const MELD_ROLE_DIMS: u16 = 4;
 #[allow(dead_code)]
-pub const MAX_SPARSE_MELDS: usize = 4;
+pub const MAX_SPARSE_MELDS: usize = 16;
 #[allow(dead_code)]
 pub const MELD_PAD: [u16; MELD_FEATURE_WIDTH] = [5, 37, 3, 37, 3, 37, 3, 37, 3];
+#[allow(dead_code)]
+pub const SPARSE_MELD_OWNER_DIMS: u16 = 5;
+#[allow(dead_code)]
+pub const SPARSE_MELD_OWNER_PAD: u16 = 4;
 
 pub const NUM_NUMERIC: usize = 6;
 
@@ -424,12 +430,52 @@ impl Observation {
         tokens
     }
 
-    /// Encode the current player's melds with the shared factorized layout.
+    fn encode_sparse_meld_entries(&self) -> Vec<([u16; MELD_FEATURE_WIDTH], u16)> {
+        let mut out: Vec<([u16; MELD_FEATURE_WIDTH], u16)> = Vec::with_capacity(MAX_SPARSE_MELDS);
+
+        for (owner_rel, &abs_idx) in self.rel_order().iter().enumerate() {
+            for meld in self.melds[abs_idx].iter().take(4) {
+                if out.len() >= MAX_SPARSE_MELDS {
+                    return out;
+                }
+                out.push((encode_meld_feature(meld), owner_rel as u16));
+            }
+        }
+
+        out
+    }
+
+    /// Encode all players' current melds with the shared factorized layout.
+    ///
+    /// Melds are ordered by observer-relative owner seat:
+    /// self, shimocha, toimen, kamicha; each owner contributes up to 4 melds.
     pub fn encode_seq_sparse_melds(&self) -> Vec<[u16; MELD_FEATURE_WIDTH]> {
-        self.melds[self.player_id as usize]
-            .iter()
-            .take(MAX_SPARSE_MELDS)
-            .map(encode_meld_feature)
+        self.encode_sparse_meld_entries()
+            .into_iter()
+            .map(|(meld, _owner)| meld)
+            .collect()
+    }
+
+    /// Encode owner seats aligned with `encode_seq_sparse_melds()`.
+    ///
+    /// Values: 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding.
+    pub fn encode_seq_sparse_meld_owners(&self) -> Vec<u16> {
+        self.encode_sparse_meld_entries()
+            .into_iter()
+            .map(|(_meld, owner)| owner)
+            .collect()
+    }
+
+    /// Encode current meld rows and aligned owner seats in one pass.
+    pub fn encode_seq_sparse_meld_features(&self) -> Vec<[u16; SPARSE_MELD_FEATURE_WIDTH]> {
+        self.encode_sparse_meld_entries()
+            .into_iter()
+            .map(|(meld, owner)| {
+                let mut row = [0u16; SPARSE_MELD_FEATURE_WIDTH];
+                row[..MELD_FEATURE_WIDTH].copy_from_slice(&meld);
+                row[MELD_FEATURE_WIDTH] = owner;
+                row
+            })
             .collect()
     }
 
@@ -1134,7 +1180,13 @@ mod tests {
                     Meld::new(MeldType::Pon, vec![108, 109, 110], true, 1, Some(108)),
                     Meld::new(MeldType::Chi, vec![36, 40, 44], true, 1, Some(36)),
                 ],
-                vec![],
+                vec![Meld::new(
+                    MeldType::Pon,
+                    vec![112, 113, 114],
+                    true,
+                    0,
+                    Some(112),
+                )],
                 vec![],
                 vec![],
             ],
@@ -1162,9 +1214,12 @@ mod tests {
         assert!(sparse.iter().all(|&t| t < SPARSE_PAD));
 
         let melds = obs.encode_seq_sparse_melds();
-        assert_eq!(melds.len(), 2);
+        let owners = obs.encode_seq_sparse_meld_owners();
+        assert_eq!(melds.len(), 3);
+        assert_eq!(owners, vec![0, 0, 1]);
         assert_eq!(melds[0][0], MELD_KIND_PON);
         assert_eq!(melds[1][0], MELD_KIND_CHI);
+        assert_eq!(melds[2][0], MELD_KIND_PON);
     }
 
     #[test]
