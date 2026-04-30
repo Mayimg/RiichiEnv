@@ -16,10 +16,14 @@ use super::Observation;
 // ── Constants ────────────────────────────────────────────────────────────────
 // These constants are `pub` for Python-side consumption (see riichienv-ml).
 #[allow(dead_code)]
-pub const SPARSE_VOCAB_SIZE: usize = 265;
+pub const SPARSE_VOCAB_SIZE: usize = 261;
 #[allow(dead_code)]
-pub const SPARSE_PAD: u16 = 264;
-pub const MAX_SPARSE_LEN: usize = 9;
+pub const SPARSE_PAD: u16 = 260;
+pub const MAX_SPARSE_LEN: usize = 8;
+
+/// Dealer relative seat dimension: 0=self, 1=shimocha, 2=toimen, 3=kamicha.
+#[allow(dead_code)]
+pub const DEALER_DIMS: u16 = 4;
 
 /// Hand tuple dimensions: (tile37, draw_state)
 #[allow(dead_code)]
@@ -68,7 +72,7 @@ pub const NUM_NUMERIC: usize = 6;
 const SCORE_NORM_BASE: f32 = 25000.0;
 const SCORE_NORM_SCALE: f32 = 10000.0;
 
-const SPARSE_DORA_OFFSET: u16 = 79;
+const SPARSE_DORA_OFFSET: u16 = 75;
 const MELD_KIND_CHI: u16 = 0;
 const MELD_KIND_PON: u16 = 1;
 const MELD_KIND_DAIMINKAN: u16 = 2;
@@ -388,15 +392,14 @@ pub fn process_single_event_progression_with_meld(
 // ── Sparse features ──────────────────────────────────────────────────────────
 
 impl Observation {
-    /// Encode sparse features: variable-length u16 indices (max 9).
+    /// Encode sparse features: variable-length u16 indices (max 8).
     ///
     /// Offsets:
     /// - 0-1: game style (0=tonpuusen, 1=hanchan)
     /// - 2-4: chang / round wind (E/S/W)
-    /// - 5-8: dealer relative to observer (0=self, 1=shimocha, 2=toimen, 3=kamicha)
-    /// - 9-78: tiles remaining (0-69)
-    /// - 79-263: dora indicators (5 slots × 37 tiles)
-    /// - 264: padding
+    /// - 5-74: tiles remaining (0-69)
+    /// - 75-259: dora indicators (5 slots × 37 tiles)
+    /// - 260: padding
     pub fn encode_seq_sparse(&self, game_style: u8) -> Vec<u16> {
         let mut tokens: Vec<u16> = Vec::with_capacity(MAX_SPARSE_LEN);
 
@@ -406,15 +409,11 @@ impl Observation {
         // 2. Chang / round wind (offset 2-4)
         tokens.push(2 + self.round_wind.min(2) as u16);
 
-        // 3. Dealer relative to the observing player (offset 5-8)
-        let dealer_rel = relative_seat(self.player_id.min(3), self.oya.min(3));
-        tokens.push(5 + dealer_rel as u16);
-
-        // 4. Tiles remaining (offset 9-78)
+        // 3. Tiles remaining (offset 5-74)
         let tiles_remaining = self.count_tiles_remaining();
-        tokens.push(9 + tiles_remaining.min(69));
+        tokens.push(5 + tiles_remaining.min(69));
 
-        // 5. Dora indicators (offset 79-263, 5 slots × 37)
+        // 4. Dora indicators (offset 75-259, 5 slots × 37)
         for (i, &dora_tid) in self.dora_indicators.iter().enumerate() {
             if i >= 5 {
                 break;
@@ -428,6 +427,13 @@ impl Observation {
         }
 
         tokens
+    }
+
+    /// Encode dealer seat relative to the observing player.
+    ///
+    /// Values: 0=self, 1=shimocha, 2=toimen, 3=kamicha.
+    pub fn encode_seq_dealer(&self) -> u16 {
+        relative_seat(self.player_id.min(3), self.oya.min(3)) as u16
     }
 
     fn encode_sparse_meld_entries(&self) -> Vec<([u16; MELD_FEATURE_WIDTH], u16)> {
@@ -969,7 +975,7 @@ mod tests {
         // Verify all sparse offsets are within vocab
         assert!(SPARSE_PAD < SPARSE_VOCAB_SIZE as u16);
 
-        // Dora max: 79 + 4*37 + 36 = 79 + 148 + 36 = 263
+        // Dora max: 75 + 4*37 + 36 = 75 + 148 + 36 = 259
         assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
 
         assert_eq!(SPARSE_PAD as usize + 1, SPARSE_VOCAB_SIZE);
@@ -1223,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sparse_uses_relative_dealer_and_no_absolute_seat() {
+    fn test_dealer_feature_uses_relative_seat_and_sparse_excludes_dealer() {
         let obs = Observation::new(
             2,
             [vec![], vec![], vec![], vec![]],
@@ -1249,10 +1255,13 @@ mod tests {
         );
 
         let sparse = obs.encode_seq_sparse(1);
+        let dealer = obs.encode_seq_dealer();
 
         assert_eq!(sparse[0], 1); // game style
         assert_eq!(sparse[1], 3); // round wind S: 2 + 1
-        assert_eq!(sparse[2], 8); // dealer seat 1 from observer seat 2: kamicha -> 5 + 3
+        assert_eq!(sparse[2], 74); // max-clamped tiles remaining: 5 + 69
+        assert_eq!(dealer, 3); // dealer seat 1 from observer seat 2: kamicha
+        assert!(dealer < DEALER_DIMS);
         assert!(sparse.iter().all(|&t| t < SPARSE_PAD));
     }
 
