@@ -46,11 +46,16 @@ with the following attributes:
 | `red_flag` | `normal / red / padding` |
 | `tile_class` | `simple / terminal / wind / dragon / padding` |
 | `dora_flag` | `dora / none / padding` |
+| `wind_owner_relative_seat` | shared relative-seat embedding for whose seat wind the wind tile is; zero for non-winds/padding |
+| `round_wind_flag` | `round wind / non-round wind / padding`; non-winds and padding use zero |
 
 Notes:
 - `tile34` collapses red fives onto their non-red 5 tile type.
 - `dora_flag` is computed from the **current observation state**, not from the historical state at each progression event.
 - Red fives are treated as `dora` for `dora_flag`.
+- Wind tile ownership is computed as `(dealer_relative_seat + wind_index) % 4`, where `wind_index` is
+  `0=East, 1=South, 2=West, 3=North`.
+- `round_wind_flag` is computed only for wind tiles from the current round-wind sparse token.
 - Meld slots use `tile37`, so red fives can be represented inside chi/pon/kan structures.
 
 ### Where the shared tile embedding is used
@@ -70,7 +75,7 @@ For sparse dora-indicator tokens, the model keeps the existing dora-slot distinc
 
 ### Shared relative-seat embedding
 
-All real relative-seat values (`0=self`, `1=shimocha`, `2=toimen`, `3=kamicha`) share one base embedding table. Role-specific context is added for dealer, progression actor, progression from, candidate from, and sparse meld owner before projection to the required sub-dimension. Value `4` is treated as padding/N/A/marker and maps to zero in the seat module; the aligned type field or padding mask carries the special meaning.
+All real relative-seat values (`0=self`, `1=shimocha`, `2=toimen`, `3=kamicha`) share one base embedding table. Role-specific context is added for dealer, progression actor, progression from, candidate from, sparse meld owner, and wind-tile owner before projection to the required sub-dimension. Value `4` is treated as padding/N/A/marker and maps to zero in the seat module; the aligned type field or padding mask carries the special meaning.
 
 ## Tile Encodings
 
