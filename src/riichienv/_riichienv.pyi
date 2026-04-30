@@ -452,9 +452,24 @@ class Observation:
         """
         ...
     def encode_seq_sparse_melds(self) -> bytes:
-        """Encode current meld features.
+        """Encode current visible meld features for all relative seats.
 
-        Shape: ``(M, 9)`` / dtype: ``uint16``.
+        Shape: ``(M, 9)`` / dtype: ``uint16``. Rows are aligned with
+        ``encode_seq_sparse_meld_owners()``.
+        """
+        ...
+    def encode_seq_sparse_meld_owners(self) -> bytes:
+        """Encode owner seats aligned with current visible meld features.
+
+        Shape: ``(M,)`` / dtype: ``uint16``. Values are relative seats:
+        0=self, 1=shimocha, 2=toimen, 3=kamicha.
+        """
+        ...
+    def encode_seq_sparse_meld_features(self) -> bytes:
+        """Encode current visible meld rows plus aligned owner seats.
+
+        Shape: ``(M, 10)`` / dtype: ``uint16``. Columns ``0:9`` are the meld
+        row; column ``9`` is the owner relative seat.
         """
         ...
     def encode_seq_hand(self) -> bytes:

@@ -24,7 +24,7 @@ from riichienv_ml.models.transformer import (
 )
 from riichienv_ml.utils import build_encoder
 
-from riichienv import Action, ActionType, MjaiReplay, Observation
+from riichienv import Action, ActionType, Meld, MeldType, MjaiReplay, Observation
 
 
 class DummyEncoder:
@@ -461,6 +461,46 @@ def test_transformer_factorized_meld_embedding_uses_slot_padding():
     assert emb.shape == (1, 2, 64)
     assert torch.count_nonzero(emb[:, 0]) > 0
     assert torch.allclose(emb[:, 1], torch.zeros_like(emb[:, 1]))
+
+
+def test_sequence_sparse_melds_include_relative_owner_sidecar():
+    obs = Observation(
+        2,
+        [[], [], [], []],
+        [
+            [Meld(MeldType.Pon, [108, 109, 110], True, 1, 108)],
+            [],
+            [Meld(MeldType.Chi, [36, 40, 44], True, 1, 36)],
+            [Meld(MeldType.Pon, [112, 113, 114], True, 2, 112)],
+        ],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+
+    assert features["sparse_melds"].shape == (16, 9)
+    assert features["sparse_meld_owners"].shape == (16,)
+    assert features["sparse_meld_mask"][:3].tolist() == [True, True, True]
+    assert features["sparse_meld_mask"][3:].any().item() is False
+    assert features["sparse_meld_owners"][:4].tolist() == [0, 1, 2, 4]
+    assert features["sparse_melds"][:3, 0].tolist() == [_MELD_KIND_CHI, _MELD_KIND_PON, _MELD_KIND_PON]
 
 
 def test_transformer_shared_tile_embedding_marks_red_and_tile34_unknown_red():
