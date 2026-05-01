@@ -18,6 +18,7 @@ from riichienv_ml.models.transformer import (
     _MELD_ROLE_CONSUMED,
     _RED_FLAG_PAD,
     _RED_FLAG_RED,
+    _SEAT_ROLE_AGARI_WINNER,
     _SEAT_ROLE_MELD_OWNER,
     _SEAT_ROLE_PROG_ACTOR,
     _SPARSE_DORA_OFFSET,
@@ -587,6 +588,29 @@ def test_transformer_relative_seat_embedding_shares_base_and_zeroes_special_valu
     assert torch.count_nonzero(owner_emb[:, :2]).item() > 0
     assert torch.allclose(actor_emb[:, 2], torch.zeros_like(actor_emb[:, 2]))
     assert torch.allclose(owner_emb[:, 2], torch.zeros_like(owner_emb[:, 2]))
+
+
+def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        d_sub=8,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    agari = torch.zeros(2, SequenceFeatureEncoder.AGARI_OVERTAKE_DIM, dtype=torch.float32)
+    emb = model._embed_agari_overtakes(agari)
+
+    assert emb.shape == (2, SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS, 64)
+    assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
+    expected_seq_len = 1 + model._S + model._D + model._SM + model._H + 1 + model._AT + model._P + model._C
+    assert model.pos_enc.shape[1] == expected_seq_len
+
+    winner_seats = torch.arange(SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS).unsqueeze(0).expand(2, -1)
+    seat_emb = model.relative_seat_embed(winner_seats, _SEAT_ROLE_AGARI_WINNER, out="model")
+    torch.testing.assert_close(emb, seat_emb)
 
 
 def test_transformer_factorized_meld_embedding_uses_slot_padding():

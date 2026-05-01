@@ -21,7 +21,8 @@ class SequenceFeatureEncoder:
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
         numeric:     (NUM_NUMERIC,)      float32
-        agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags
+        agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
+                         reshapeable to (AGARI_OVERTAKE_TOKENS, AGARI_OVERTAKE_TOKEN_DIM)
         progression: (MAX_PROG_LEN, 5)   int64   padded action/dora-reveal history 5-tuples
         prog_melds:  (MAX_PROG_LEN, 9)   int64   padded progression meld rows
         candidates:  (MAX_CAND_LEN, 3)   int64   padded legal-action 3-tuples
@@ -62,7 +63,9 @@ class SequenceFeatureEncoder:
 
     NUM_NUMERIC = 6
     AGARI_OVERTAKE_DIMS = (4, 96, 4)
-    AGARI_OVERTAKE_DIM = 4 * 96 * 4
+    AGARI_OVERTAKE_TOKENS = AGARI_OVERTAKE_DIMS[0]
+    AGARI_OVERTAKE_TOKEN_DIM = AGARI_OVERTAKE_DIMS[1] * AGARI_OVERTAKE_DIMS[2]
+    AGARI_OVERTAKE_DIM = AGARI_OVERTAKE_TOKENS * AGARI_OVERTAKE_TOKEN_DIM
 
     def __init__(self, n_players: int = 4, game_style: int = 1, max_prog_len: int = 256, max_cand_len: int = 32):
         self.n_players = n_players

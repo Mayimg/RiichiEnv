@@ -26,7 +26,7 @@ Each variable-length group is padded to its maximum length, with accompanying bo
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, and projects the dense agari-overtake vector as its own global token.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, and reshapes agari-overtake features into four winner-relative-seat tokens.
 
 ### Shared tile attributes
 
@@ -295,6 +295,16 @@ Pattern ordering matches `riichienv-core/src/grp.rs`:
 
 External MJAI logs are unchanged. This is an internal observation feature
 derived from current scores, dealer, honba, and riichi deposits.
+
+In the transformer, the flat 1536-float vector is reshaped to four tokens:
+
+```text
+(winner_relative_seat=0..3, 96 patterns x 4 targets)
+```
+
+Each winner token uses a shared `Linear(384 -> d_model)` projection plus the
+shared relative-seat embedding for that winner seat. The packed feature layout
+is still flat for Ray worker compatibility.
 
 ### Rust API
 

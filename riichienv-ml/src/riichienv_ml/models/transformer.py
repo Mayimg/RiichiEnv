@@ -9,6 +9,8 @@ an attribute-based tile embedding module. Chi/pon/kan melds use a shared
 factorized embedding over meld kind, slot tiles, and slot roles. Dealer,
 progression actor/from, candidate from, and sparse meld owner fields share an
 observer-relative seat base embedding with role-specific context.
+Agari-overtake features are reshaped into four winner-relative-seat tokens
+with a shared projection and the shared relative-seat embedding.
 
 Output: (logits, value) — same interface as ActorCriticNetwork.
 
@@ -89,7 +91,8 @@ _SEAT_ROLE_PROG_FROM = 2
 _SEAT_ROLE_CAND_FROM = 3
 _SEAT_ROLE_MELD_OWNER = 4
 _SEAT_ROLE_TILE_WIND_OWNER = 5
-_SEAT_NUM_ROLES = 6
+_SEAT_ROLE_AGARI_WINNER = 6
+_SEAT_NUM_ROLES = 7
 _SEAT_PAD_OR_NA = 4
 
 _ROUND_WIND_FLAG_YES = 0
@@ -617,6 +620,8 @@ class TransformerActorCritic(nn.Module):
         self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
         self._N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
         self._A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
+        self._AT = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS
+        self._AW = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
         self._P = max_prog_len
         self._C = max_cand_len
         self._CW = len(cand_dims)
@@ -649,7 +654,7 @@ class TransformerActorCritic(nn.Module):
             nn.LayerNorm(d_model),
         )
         self.agari_overtake_proj = nn.Sequential(
-            nn.Linear(self._A, d_model),
+            nn.Linear(self._AW, d_model),
             nn.LayerNorm(d_model),
         )
 
@@ -689,7 +694,7 @@ class TransformerActorCritic(nn.Module):
         self.segment_embed = nn.Embedding(6, d_model)
 
         # --- Positional encoding (sinusoidal) ---
-        max_seq = 1 + self._S + self._D + self._SM + self._H + 1 + 1 + self._P + self._C
+        max_seq = 1 + self._S + self._D + self._SM + self._H + 1 + self._AT + self._P + self._C
         self.register_buffer("pos_enc", self._sinusoidal_pe(max_seq, d_model))
 
         # --- Transformer encoder (pre-LN for stability) ---
@@ -1046,6 +1051,16 @@ class TransformerActorCritic(nn.Module):
         ]
         return self.cand_proj(torch.cat(cand_parts, dim=-1))
 
+    def _embed_agari_overtakes(self, agari_overtakes: torch.Tensor) -> torch.Tensor:
+        agari_by_winner = agari_overtakes.reshape(-1, self._AT, self._AW)
+        winner_seats = torch.arange(self._AT, dtype=torch.long, device=agari_overtakes.device)
+        winner_seats = winner_seats.unsqueeze(0).expand(agari_by_winner.shape[0], -1)
+        return self.agari_overtake_proj(agari_by_winner) + self.relative_seat_embed(
+            winner_seats,
+            _SEAT_ROLE_AGARI_WINNER,
+            out="model",
+        )
+
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         batch_size = x.shape[0]
@@ -1098,8 +1113,8 @@ class TransformerActorCritic(nn.Module):
         # Project numeric: (B, 1, d)
         numeric_emb = self.numeric_proj(numeric).unsqueeze(1)
 
-        # Project pairwise agari-rank-overtake flags: (B, 1, d)
-        agari_overtake_emb = self.agari_overtake_proj(agari_overtakes).unsqueeze(1)
+        # Project pairwise agari-rank-overtake flags by winner seat: (B, 4, d)
+        agari_overtake_emb = self._embed_agari_overtakes(agari_overtakes)
 
         # Embed progression 5-tuples: (B, P, d)
         prog_emb = self._embed_progression(
@@ -1127,7 +1142,7 @@ class TransformerActorCritic(nn.Module):
         cls = self.cls_token.expand(batch_size, -1, -1)
 
         # Concatenate: [CLS, sparse(S), dealer(1), sparse_meld(SM), hand(H),
-        # numeric(1), agari_overtake(1), prog(P), cand(C)]
+        # numeric(1), agari_overtake(4), prog(P), cand(C)]
         tokens = torch.cat(
             [
                 cls,
@@ -1149,7 +1164,7 @@ class TransformerActorCritic(nn.Module):
                 torch.zeros(batch_size, 1 + self._S + self._D + self._SM, dtype=torch.long, device=x.device),
                 torch.ones(batch_size, self._H, dtype=torch.long, device=x.device),
                 torch.full((batch_size, 1), 2, dtype=torch.long, device=x.device),
-                torch.full((batch_size, 1), 3, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._AT), 3, dtype=torch.long, device=x.device),
                 torch.full((batch_size, self._P), 4, dtype=torch.long, device=x.device),
                 torch.full((batch_size, self._C), 5, dtype=torch.long, device=x.device),
             ],
@@ -1164,7 +1179,7 @@ class TransformerActorCritic(nn.Module):
         cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
         dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
         numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        agari_overtake_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
+        agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=x.device)
         pad_mask = torch.cat(
             [
                 cls_valid,  # CLS is always valid
@@ -1187,7 +1202,7 @@ class TransformerActorCritic(nn.Module):
         # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
 
-        cand_offset = 1 + self._S + self._D + self._SM + self._H + 1 + 1 + self._P
+        cand_offset = 1 + self._S + self._D + self._SM + self._H + 1 + self._AT + self._P
         cand_out = output[:, cand_offset : cand_offset + self._C]  # (B, C, d_model)
 
         # Policy head
