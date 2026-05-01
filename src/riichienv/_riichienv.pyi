@@ -498,7 +498,7 @@ class Observation:
 
         Shape: ``(N, 5)`` / dtype: ``uint16``.
 
-        Each row represents one action-history step with 5 token values.
+        Each row represents one action-history or dora-reveal step with 5 token values.
         """
         ...
     def encode_seq_progression_melds(self) -> bytes:

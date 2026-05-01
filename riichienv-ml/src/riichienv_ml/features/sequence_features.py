@@ -21,7 +21,7 @@ class SequenceFeatureEncoder:
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
         numeric:     (NUM_NUMERIC,)      float32
-        progression: (MAX_PROG_LEN, 5)   int64   padded action-history 5-tuples
+        progression: (MAX_PROG_LEN, 5)   int64   padded action/dora-reveal history 5-tuples
         prog_melds:  (MAX_PROG_LEN, 9)   int64   padded progression meld rows
         candidates:  (MAX_CAND_LEN, 3)   int64   padded legal-action 3-tuples
         cand_melds:  (MAX_CAND_LEN, 9)   int64   padded candidate meld rows
@@ -50,8 +50,8 @@ class SequenceFeatureEncoder:
     HAND_PAD = (37, 2)
     MAX_HAND_LEN = 14
 
-    PROG_DIMS = (5, 44, 3, 3, 5)
-    PROG_PAD = (4, 43, 2, 2, 4)
+    PROG_DIMS = (5, 81, 3, 3, 5)
+    PROG_PAD = (4, 80, 2, 2, 4)
     MAX_PROG_LEN = 256
 
     CAND_DIMS = (48, 3, 5)
@@ -231,7 +231,7 @@ class SequenceFeaturePackedEncoder:
         sparse_meld_owners(16) int relative owner seats stored as float
         hand        (14 * 2)   int tuples stored as float
         numeric     (6)        continuous values
-        progression (P * 5)    int tuples stored as float
+        progression (P * 5)    int action/dora-reveal tuples stored as float
         prog_melds  (P * 9)    int meld rows stored as float
         candidates  (C * 3)    int tuples stored as float
         cand_melds  (C * 9)    int meld rows stored as float

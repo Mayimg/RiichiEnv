@@ -60,10 +60,11 @@ _DORA_FLAG_NONE = 1
 _DORA_FLAG_PAD = 2
 
 _ACTION_KIND_DISCARD = 0
-_ACTION_KIND_DAIMINKAN = 1
-_ACTION_KIND_ANKAN = 2
-_ACTION_KIND_KAKAN = 3
-_ACTION_KIND_PAD = 4
+_ACTION_KIND_DORA = 1
+_ACTION_KIND_DAIMINKAN = 2
+_ACTION_KIND_ANKAN = 3
+_ACTION_KIND_KAKAN = 4
+_ACTION_KIND_PAD = 5
 
 _MELD_KIND_CHI = 0
 _MELD_KIND_PON = 1
@@ -251,10 +252,15 @@ def _build_prog_type_lookups(vocab_size: int) -> dict[str, torch.Tensor]:
     tile34 = [_TILE34_PAD] * vocab_size
 
     for k37 in range(_TILE37_PAD):
-        idx = 1 + k37
-        if idx < vocab_size:
-            action_kind[idx] = _ACTION_KIND_DISCARD
-            tile37[idx] = k37
+        discard_idx = 1 + k37
+        if discard_idx < vocab_size:
+            action_kind[discard_idx] = _ACTION_KIND_DISCARD
+            tile37[discard_idx] = k37
+
+        dora_idx = 43 + k37
+        if dora_idx < vocab_size:
+            action_kind[dora_idx] = _ACTION_KIND_DORA
+            tile37[dora_idx] = k37
 
     return {
         "action_kind": torch.tensor(action_kind, dtype=torch.long),
@@ -588,7 +594,7 @@ class TransformerActorCritic(nn.Module):
         sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,  # 261
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 260
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
-        prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,44,3,3,5)
+        prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,81,3,3,5)
         cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (48,3,5)
         **kwargs,
     ):
@@ -642,8 +648,8 @@ class TransformerActorCritic(nn.Module):
             nn.LayerNorm(d_model),
         )
 
-        # Progression: shared seat fields + type/moqie/liqi embeddings → concat → project
-        # field[1] is type (vocab=44) -> d_type; others -> d_other
+        # Progression: shared seat fields + type/moqie/liqi embeddings -> concat -> project
+        # field[1] is type (vocab=81) -> d_type; others -> d_other
         prog_sub_dims = [d_other if i != 1 else d_type for i in range(len(prog_dims))]
         self.prog_type_embed = nn.Embedding(prog_dims[1], d_type)
         self.prog_moqie_embed = nn.Embedding(prog_dims[2], d_other)

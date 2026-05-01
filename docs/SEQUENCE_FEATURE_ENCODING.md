@@ -16,7 +16,7 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
-| **Progression** | `(256, 5)` | int64 | Action history as 5-tuple sequences |
+| **Progression** | `(256, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
 | **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
 | **Candidates** | `(32, 3)` | int64 | Legal actions as 3-tuple sets |
 | **Candidate Melds** | `(32, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
@@ -53,6 +53,7 @@ Notes:
 - `tile34` collapses red fives onto their non-red 5 tile type.
 - `dora_flag` is computed from the **current observation state**, not from the historical state at each progression event.
 - Red fives are treated as `dora` for `dora_flag`.
+- Progression includes explicit dora-reveal rows so the transformer can recover when each dora marker became visible while still using the current-state `dora_flag`.
 - Wind tile ownership is computed as `(dealer_relative_seat + wind_index) % 4`, where `wind_index` is
   `0=East, 1=South, 2=West, 3=North`.
 - `round_wind_flag` is computed only for wind tiles from the current round-wind sparse token.
@@ -66,7 +67,7 @@ The shared tile embedding is applied to single-tile fields and to the tile slots
 |---------------|---------------------|----------------------------|
 | Hand | `tile37` | Yes |
 | Sparse | dora-indicator tokens (`75-259`) | Yes, with an extra dora-slot embedding |
-| Progression | discard type range | Yes |
+| Progression | discard and dora-reveal type ranges | Yes |
 | Candidates | discard type range | Yes |
 | Sparse / progression / candidate meld sidecars | 4 tile slots per meld | Yes, via shared meld embedding |
 | Progression / candidates | pass / ron / tsumo / markers | No |
@@ -269,21 +270,21 @@ numeric = np.frombuffer(numeric_bytes, dtype=np.float32)  # shape (6,)
 
 **5-tuple sequence, max 256 entries (default)**
 
-Each action from the kyoku start to the current decision point is encoded as a 5-tuple `(actor, type, moqie, liqi, from)`.
+Each action or dora reveal from the kyoku start to the current decision point is encoded as a 5-tuple `(actor, type, moqie, liqi, from)`.
 
 ### Tuple Fields
 
 | Field | Vocab | Values |
 |-------|-------|--------|
 | actor | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding/marker |
-| type | 44 | see table below |
+| type | 81 | see table below |
 | moqie | 3 | 0=tedashi (hand tile), 1=tsumogiri (drawn tile), 2=N/A |
 | liqi | 3 | 0=no riichi, 1=with riichi declaration, 2=N/A |
 | from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=N/A |
 
-**Padding tuple:** `(4, 43, 2, 2, 4)`
+**Padding tuple:** `(4, 80, 2, 2, 4)`
 
-### Type Encoding (44 values)
+### Type Encoding (81 values)
 
 | Range | Count | Action | Encoding |
 |-------|-------|--------|----------|
@@ -294,23 +295,26 @@ Each action from the kyoku start to the current decision point is encoded as a 5
 | 40 | 1 | Daiminkan | Details in aligned progression meld row |
 | 41 | 1 | Ankan | Details in aligned progression meld row |
 | 42 | 1 | Kakan | Details in aligned progression meld row |
-| 43 | 1 | Padding | - |
+| 43-79 | 37 | Dora reveal | `43 + kan37(dora_marker)` |
+| 80 | 1 | Padding | - |
 
 ### MJAI Event to Tuple Mapping
 
 | Event | Tuple |
 |-------|-------|
-| `start_kyoku` | `(4, 0, 2, 2, 4)` |
+| `start_kyoku` | `(4, 0, 2, 2, 4)`, then `(4, 43+kan37(dora_marker), 2, 2, 4)` when `dora_marker` is present |
 | `dahai` | `(actor_rel, 1+kan37, moqie, liqi, 4)` |
 | `chi` | `(actor_rel, 38, 2, 2, target_rel)` |
 | `pon` | `(actor_rel, 39, 2, 2, target_rel)` |
 | `daiminkan` | `(actor_rel, 40, 2, 2, target_rel)` |
 | `ankan` | `(actor_rel, 41, 2, 2, 4)` |
 | `kakan` | `(actor_rel, 42, 2, 2, 4)` |
+| `dora` | `(4, 43+kan37(dora_marker), 2, 2, 4)` |
 
 - For `dahai`: `liqi=1` if preceded by a `reach` event from the same actor
-- `tsumo`, `dora`, `reach_accepted` events are **not** included in progression
+- `tsumo`, `reach_accepted` events are **not** included in progression
 - `actor_rel` and `target_rel` are relative to the observing player, not to the event actor.
+- Dora reveal rows use the external MJAI `dora_marker` tile. They do not change the MJAI log format; this is only an internal sequence-feature expansion.
 
 ### Rust API
 
@@ -397,7 +401,7 @@ for pid, obs in obs_dict.items():
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
     # features["numeric"]     -- (6,) float32
-    # features["progression"] -- (256, 5) int64, padded with (4, 43, 2, 2, 4)
+    # features["progression"] -- (256, 5) int64, padded with (4, 80, 2, 2, 4)
     # features["prog_melds"]  -- (256, 9) int64, aligned with progression
     # features["candidates"]  -- (32, 3) int64, padded with (47, 2, 4)
     # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
@@ -422,7 +426,7 @@ SequenceFeatureEncoder.MAX_HAND_LEN       # 14
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
-SequenceFeatureEncoder.PROG_DIMS           # (5, 44, 3, 3, 5)
+SequenceFeatureEncoder.PROG_DIMS           # (5, 81, 3, 3, 5)
 SequenceFeatureEncoder.CAND_DIMS           # (48, 3, 5)
 ```
 

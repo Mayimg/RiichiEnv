@@ -387,13 +387,13 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression_with_meld;
+                    use crate::observation::sequence_features::process_event_progression_entries_with_melds;
                     use crate::parser::tid_to_mjai;
                     use std::sync::Arc;
 
                     if *is_liqi || *is_wliqi {
                         let ev = serde_json::json!({"type": "reach", "actor": s});
-                        if let Some((entry, meld)) = process_single_event_progression_with_meld(
+                        for (entry, meld) in process_event_progression_entries_with_melds(
                             &ev,
                             &mut self.round_seq_prog_pending_reach,
                         ) {
@@ -408,7 +408,7 @@ impl GameStateEventHandler for GameState {
                         "pai": pai,
                         "tsumogiri": is_tsumogiri,
                     });
-                    if let Some((entry, meld)) = process_single_event_progression_with_meld(
+                    for (entry, meld) in process_event_progression_entries_with_melds(
                         &ev,
                         &mut self.round_seq_prog_pending_reach,
                     ) {
@@ -483,7 +483,7 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression_with_meld;
+                    use crate::observation::sequence_features::process_event_progression_entries_with_melds;
                     use crate::parser::tid_to_mjai;
                     use std::sync::Arc;
 
@@ -516,7 +516,7 @@ impl GameStateEventHandler for GameState {
                             "pai": pai_str,
                             "consumed": consumed_strs,
                         });
-                        if let Some((entry, meld)) = process_single_event_progression_with_meld(
+                        for (entry, meld) in process_event_progression_entries_with_melds(
                             &ev,
                             &mut self.round_seq_prog_pending_reach,
                         ) {
@@ -615,7 +615,7 @@ impl GameStateEventHandler for GameState {
                 // Update progression cache (replay mode).
                 #[cfg(feature = "python")]
                 if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression_with_meld;
+                    use crate::observation::sequence_features::process_event_progression_entries_with_melds;
                     use crate::parser::tid_to_mjai;
                     use std::sync::Arc;
 
@@ -648,7 +648,7 @@ impl GameStateEventHandler for GameState {
                             "consumed": consumed_strs,
                         })
                     };
-                    if let Some((entry, meld)) = process_single_event_progression_with_meld(
+                    for (entry, meld) in process_event_progression_entries_with_melds(
                         &ev,
                         &mut self.round_seq_prog_pending_reach,
                     ) {
@@ -716,6 +716,24 @@ impl GameStateEventHandler for GameState {
                 }
             }
             LogAction::Dora { dora_marker } => {
+                #[cfg(feature = "python")]
+                if self.enable_seq_caching {
+                    use crate::observation::sequence_features::process_event_progression_entries_with_melds;
+                    use crate::parser::tid_to_mjai;
+                    use std::sync::Arc;
+
+                    let ev = serde_json::json!({
+                        "type": "dora",
+                        "dora_marker": tid_to_mjai(*dora_marker),
+                    });
+                    for (entry, meld) in process_event_progression_entries_with_melds(
+                        &ev,
+                        &mut self.round_seq_prog_pending_reach,
+                    ) {
+                        Arc::make_mut(&mut self.round_seq_progression).push(entry);
+                        Arc::make_mut(&mut self.round_seq_progression_melds).push(meld);
+                    }
+                }
                 self.wall.dora_indicators.push(*dora_marker);
             }
             LogAction::Hule { hules } => {

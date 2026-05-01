@@ -9,6 +9,7 @@ from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
 from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, SequenceFeaturePackedEncoder
 from riichienv_ml.models.transformer import (
     _ACTION_KIND_DISCARD,
+    _ACTION_KIND_DORA,
     _ACTION_KIND_PAD,
     _MELD_KIND_CHI,
     _MELD_KIND_PAD,
@@ -84,6 +85,23 @@ def test_behavior_cloning_dataset_yields_legal_action_labels(tmp_path):
         assert isinstance(features, torch.Tensor)
         assert 0 <= action_id < len(mask)
         assert mask[action_id] == 1
+
+
+def test_replay_sequence_progression_starts_with_initial_dora(tmp_path):
+    file_path = tmp_path / "bc_policy_sample.jsonl"
+    _write_simple_4p_log(file_path)
+
+    replay = MjaiReplay.from_jsonl(str(file_path), rule="tenhou")
+    kyoku = next(iter(replay.take_kyokus()))
+    obs, _action = next(iter(kyoku.steps(0)))
+
+    features = SequenceFeatureEncoder().encode(obs)
+    progression = features["progression"][features["prog_mask"]]
+
+    assert progression[:2].tolist() == [
+        [4, 0, 2, 2, 4],
+        [4, 44, 2, 2, 4],
+    ]
 
 
 def test_transformer_policy_network_returns_logits_only():
@@ -242,6 +260,44 @@ def test_sequence_feature_encoder_separates_dealer_from_sparse_vocab():
     assert features["dealer"].item() == 3
     assert features["sparse"].shape == (SequenceFeatureEncoder.MAX_SPARSE_LEN,)
     assert valid_sparse.tolist() == [1, 3, 74]
+
+
+def test_sequence_progression_includes_dora_reveals():
+    obs = Observation(
+        0,
+        [[], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [
+            '{"type":"start_kyoku","dora_marker":"5m"}',
+            '{"type":"dora","dora_marker":"E"}',
+        ],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+    progression = features["progression"][features["prog_mask"]]
+
+    assert progression.tolist() == [
+        [4, 0, 2, 2, 4],
+        [4, 48, 2, 2, 4],
+        [4, 73, 2, 2, 4],
+    ]
 
 
 def test_sequence_candidates_distinguish_red_and_moqie_discards():
@@ -436,6 +492,11 @@ def test_transformer_tile_only_action_type_lookups_ignore_meld_patterns():
     assert model.prog_type_action_kind[40].item() == _ACTION_KIND_PAD
     assert model.prog_type_action_kind[41].item() == _ACTION_KIND_PAD
     assert model.prog_type_action_kind[42].item() == _ACTION_KIND_PAD
+    assert model.prog_type_action_kind[43].item() == _ACTION_KIND_DORA
+    assert model.prog_type_tile37[43].item() == 0
+    assert model.prog_type_action_kind[79].item() == _ACTION_KIND_DORA
+    assert model.prog_type_tile37[79].item() == 36
+    assert model.prog_type_action_kind[80].item() == _ACTION_KIND_PAD
 
     assert model.cand_type_action_kind[0].item() == _ACTION_KIND_DISCARD
     assert model.cand_type_tile37[0].item() == 0
