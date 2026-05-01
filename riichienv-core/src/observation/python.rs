@@ -1329,6 +1329,12 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
+    /// Encode dealer relative seat as a single u16.
+    #[pyo3(name = "encode_seq_dealer")]
+    pub fn encode_seq_dealer_py(&self) -> u16 {
+        self.encode_seq_dealer()
+    }
+
     /// Encode current meld features as N × 9 u16 rows.
     ///
     /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 9)`.

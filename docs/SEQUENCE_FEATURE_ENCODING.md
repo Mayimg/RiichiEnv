@@ -10,7 +10,8 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 
 | Feature Group | Shape | Type | Description |
 |---------------|-------|------|-------------|
-| **Sparse** | `(9,)` | int64 | Table metadata, tiles remaining, and dora indicators |
+| **Sparse** | `(8,)` | int64 | Table metadata, tiles remaining, and dora indicators |
+| **Dealer** | `()` | int64 | Dealer seat relative to the observing player |
 | **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
@@ -24,7 +25,7 @@ Each variable-length group is padded to its maximum length, with accompanying bo
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module** and factorizes all melds with a **shared meld embedding module**.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, and routes all real relative-seat fields through a **shared relative-seat embedding module**.
 
 ### Shared tile attributes
 
@@ -45,11 +46,16 @@ with the following attributes:
 | `red_flag` | `normal / red / padding` |
 | `tile_class` | `simple / terminal / wind / dragon / padding` |
 | `dora_flag` | `dora / none / padding` |
+| `wind_owner_relative_seat` | shared relative-seat embedding for whose seat wind the wind tile is; zero for non-winds/padding |
+| `round_wind_flag` | `round wind / non-round wind / padding`; non-winds and padding use zero |
 
 Notes:
 - `tile34` collapses red fives onto their non-red 5 tile type.
 - `dora_flag` is computed from the **current observation state**, not from the historical state at each progression event.
 - Red fives are treated as `dora` for `dora_flag`.
+- Wind tile ownership is computed as `(dealer_relative_seat + wind_index) % 4`, where `wind_index` is
+  `0=East, 1=South, 2=West, 3=North`.
+- `round_wind_flag` is computed only for wind tiles from the current round-wind sparse token.
 - Meld slots use `tile37`, so red fives can be represented inside chi/pon/kan structures.
 
 ### Where the shared tile embedding is used
@@ -59,13 +65,17 @@ The shared tile embedding is applied to single-tile fields and to the tile slots
 | Feature group | Field / token range | Uses shared tile embedding |
 |---------------|---------------------|----------------------------|
 | Hand | `tile37` | Yes |
-| Sparse | dora-indicator tokens (`79-263`) | Yes, with an extra dora-slot embedding |
+| Sparse | dora-indicator tokens (`75-259`) | Yes, with an extra dora-slot embedding |
 | Progression | discard type range | Yes |
 | Candidates | discard type range | Yes |
 | Sparse / progression / candidate meld sidecars | 4 tile slots per meld | Yes, via shared meld embedding |
 | Progression / candidates | pass / ron / tsumo / markers | No |
 
 For sparse dora-indicator tokens, the model keeps the existing dora-slot distinction (`1st` indicator, `2nd` indicator, etc.) as a separate embedding and combines it with the shared tile embedding for the indicator tile itself.
+
+### Shared relative-seat embedding
+
+All real relative-seat values (`0=self`, `1=shimocha`, `2=toimen`, `3=kamicha`) share one base embedding table. Role-specific context is added for dealer, progression actor, progression from, candidate from, sparse meld owner, and wind-tile owner before projection to the required sub-dimension. Value `4` is treated as padding/N/A/marker and maps to zero in the seat module; the aligned type field or padding mask carries the special meaning.
 
 ## Tile Encodings
 
@@ -104,24 +114,31 @@ External MJAI logs still use absolute seats. The conversion to observer-relative
 
 ## 1. Sparse Features
 
-**Vocabulary size: 265, max tokens: 9, padding index: 264**
+**Vocabulary size: 261, max tokens: 8, padding index: 260**
 
-Each observation produces 4-9 sparse tokens. Each token is an index into an embedding table.
+Each observation produces 3-8 sparse tokens. Each token is an index into an embedding table. Dealer is encoded separately as a relative-seat scalar so it can share the relative-seat embedding with other seat fields.
 
 | Offset | Count | Feature | Source |
 |--------|-------|---------|--------|
 | 0-1 | 2 | Game style (0=tonpuusen, 1=hanchan) | parameter |
 | 2-4 | 3 | Chang / round wind (E/S/W) | `obs.round_wind` |
-| 5-8 | 4 | Dealer relative to observer | `relative_seat(obs.player_id, obs.oya)` |
-| 9-78 | 70 | Tiles remaining (0-69) | derived from visible tiles |
-| 79-263 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
-| 264 | 1 | Padding | - |
+| 5-74 | 70 | Tiles remaining (0-69) | derived from visible tiles |
+| 75-259 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
+| 260 | 1 | Padding | - |
 
 **Token composition per observation:**
-- 3 fixed tokens (game style + round wind + dealer-relative)
+- 2 fixed tokens (game style + round wind)
 - 1 tiles-remaining token
 - 1-5 dora indicator tokens
-- Total: typically 5-9 tokens
+- Total: typically 4-8 tokens
+
+### Dealer Feature
+
+Dealer is encoded as one scalar:
+
+| Field | Values | Source |
+|-------|--------|--------|
+| dealer | 0=self, 1=shimocha, 2=toimen, 3=kamicha | `relative_seat(obs.player_id, obs.oya)` |
 
 Current visible melds are encoded separately by `encode_seq_sparse_melds()` with the shared factorized meld layout.
 For training throughput, the Python wrapper reads the bundled `encode_seq_sparse_meld_features()` API,
@@ -132,6 +149,7 @@ Sparse meld rows include all players' current melds in observer-relative owner o
 
 ```rust
 obs.encode_seq_sparse(game_style: u8) -> Vec<u16>
+obs.encode_seq_dealer() -> u16
 ```
 
 ### Python API (raw)
@@ -139,6 +157,7 @@ obs.encode_seq_sparse(game_style: u8) -> Vec<u16>
 ```python
 sparse_bytes = obs.encode_seq_sparse(game_style=1)
 sparse = np.frombuffer(sparse_bytes, dtype=np.uint16)  # variable length
+dealer = obs.encode_seq_dealer()
 sparse_meld_features = np.frombuffer(
     obs.encode_seq_sparse_meld_features(), dtype=np.uint16
 ).reshape(-1, 10)
@@ -173,7 +192,7 @@ Sparse current meld rows also have an aligned owner sidecar:
 
 Rows are ordered by owner relative to the observing player:
 `self`, `shimocha`, `toimen`, `kamicha`, with each owner contributing up to 4 melds in state order.
-The transformer embeds each row with the shared meld embedding and adds this owner-seat embedding only for sparse current melds.
+The transformer embeds each row with the shared meld embedding and adds the shared relative-seat embedding with the `meld_owner` role only for sparse current melds.
 Progression and candidate meld sidecars keep the 9-field meld row and do not include an owner sidecar.
 
 Slot order:
@@ -372,7 +391,8 @@ enc = SequenceFeatureEncoder(n_players=4, game_style=1)
 
 for pid, obs in obs_dict.items():
     features = enc.encode(obs)
-    # features["sparse"]      -- (9,) int64, padded with 264
+    # features["sparse"]      -- (8,) int64, padded with 260
+    # features["dealer"]      -- () int64, relative dealer seat
     # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
@@ -381,7 +401,7 @@ for pid, obs in obs_dict.items():
     # features["prog_melds"]  -- (256, 9) int64, aligned with progression
     # features["candidates"]  -- (32, 3) int64, padded with (47, 2, 4)
     # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
-    # features["sparse_mask"] -- (9,) bool, True for real tokens
+    # features["sparse_mask"] -- (8,) bool, True for real tokens
     # features["hand_mask"]   -- (14,) bool, True for real entries
     # features["prog_mask"]   -- (256,) bool, True for real entries
     # features["cand_mask"]   -- (32,) bool, True for real entries
@@ -390,8 +410,9 @@ for pid, obs in obs_dict.items():
 ### Constants
 
 ```python
-SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 265
-SequenceFeatureEncoder.MAX_SPARSE_LEN     # 9
+SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 261
+SequenceFeatureEncoder.MAX_SPARSE_LEN     # 8
+SequenceFeatureEncoder.DEALER_DIMS         # 4
 SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 16
 SequenceFeatureEncoder.MELD_DIMS           # (6, 38, 4, 38, 4, 38, 4, 38, 4)
 SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10

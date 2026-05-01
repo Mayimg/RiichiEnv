@@ -17,6 +17,8 @@ from riichienv_ml.models.transformer import (
     _MELD_ROLE_CONSUMED,
     _RED_FLAG_PAD,
     _RED_FLAG_RED,
+    _SEAT_ROLE_MELD_OWNER,
+    _SEAT_ROLE_PROG_ACTOR,
     _SPARSE_DORA_OFFSET,
     _TILE34_PAD,
     TransformerActorCritic,
@@ -207,6 +209,39 @@ def test_sequence_numeric_features_use_current_normalized_scores_only():
 
     assert features["numeric"].shape == (6,)
     assert torch.allclose(features["numeric"], torch.tensor([3.0, 2.0, 0.0, 1.7, 1.0, -1.0]))
+
+
+def test_sequence_feature_encoder_separates_dealer_from_sparse_vocab():
+    obs = Observation(
+        2,
+        [[], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        1,
+        1,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+    valid_sparse = features["sparse"][features["sparse_mask"]]
+
+    assert features["dealer"].item() == 3
+    assert features["sparse"].shape == (SequenceFeatureEncoder.MAX_SPARSE_LEN,)
+    assert valid_sparse.tolist() == [1, 3, 74]
 
 
 def test_sequence_candidates_distinguish_red_and_moqie_discards():
@@ -435,6 +470,30 @@ def test_transformer_embedding_padding_rows_remain_zero_after_custom_init():
     assert checked
 
 
+def test_transformer_relative_seat_embedding_shares_base_and_zeroes_special_values():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        d_sub=8,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    seats = torch.tensor([[0, 1, 4]], dtype=torch.long)
+
+    actor_emb = model.relative_seat_embed(seats, _SEAT_ROLE_PROG_ACTOR, out="other")
+    owner_emb = model.relative_seat_embed(seats, _SEAT_ROLE_MELD_OWNER, out="model")
+
+    assert actor_emb.shape == (1, 3, 8)
+    assert owner_emb.shape == (1, 3, 64)
+    assert model.relative_seat_embed.base_embed.weight.shape[0] == 4
+    assert torch.count_nonzero(actor_emb[:, :2]).item() > 0
+    assert torch.count_nonzero(owner_emb[:, :2]).item() > 0
+    assert torch.allclose(actor_emb[:, 2], torch.zeros_like(actor_emb[:, 2]))
+    assert torch.allclose(owner_emb[:, 2], torch.zeros_like(owner_emb[:, 2]))
+
+
 def test_transformer_factorized_meld_embedding_uses_slot_padding():
     model = TransformerPolicyNetwork(
         d_model=64,
@@ -532,19 +591,74 @@ def test_transformer_tile_embedding_tables_match_direct_embedding():
         dtype=torch.long,
     )
     dora_tile34 = model._decode_current_dora_tiles(sparse)
-    tile37_table, tile34_table = model.tile_embed.build_tables(dora_tile34)
+    dealer = torch.tensor([3], dtype=torch.long)
+    round_wind = torch.tensor([1], dtype=torch.long)
+    tile37_table, tile34_table = model.tile_embed.build_tables(
+        dora_tile34,
+        dealer,
+        round_wind,
+        model.relative_seat_embed,
+    )
 
     tile37 = torch.tensor([[0, 5, 37]], dtype=torch.long)
     tile34 = torch.tensor([[4, 31, 34]], dtype=torch.long)
 
     torch.testing.assert_close(
         model.tile_embed.embed_tile37_from_table(tile37, tile37_table),
-        model.tile_embed.embed_tile37(tile37, dora_tile34),
+        model.tile_embed.embed_tile37(tile37, dora_tile34, dealer, round_wind, model.relative_seat_embed),
     )
     torch.testing.assert_close(
         model.tile_embed.embed_tile34_from_table(tile34, tile34_table),
-        model.tile_embed.embed_tile34(tile34, dora_tile34),
+        model.tile_embed.embed_tile34(tile34, dora_tile34, dealer, round_wind, model.relative_seat_embed),
     )
+
+
+def test_transformer_shared_tile_embedding_marks_wind_owner_and_round_wind():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        d_sub=8,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    sparse = torch.tensor([[_SPARSE_DORA_OFFSET + 4, SequenceFeatureEncoder.SPARSE_PAD]], dtype=torch.long)
+    dora_tile34 = model._decode_current_dora_tiles(sparse)
+    round_wind = torch.tensor([1], dtype=torch.long)
+
+    _, dealer_self_table = model.tile_embed.build_tables(
+        dora_tile34,
+        torch.tensor([0], dtype=torch.long),
+        round_wind,
+        model.relative_seat_embed,
+    )
+    _, dealer_shimo_table = model.tile_embed.build_tables(
+        dora_tile34,
+        torch.tensor([1], dtype=torch.long),
+        round_wind,
+        model.relative_seat_embed,
+    )
+
+    torch.testing.assert_close(dealer_self_table[:, 0], dealer_shimo_table[:, 0])
+    assert not torch.allclose(dealer_self_table[:, 27:31], dealer_shimo_table[:, 27:31])
+
+    _, east_round_table = model.tile_embed.build_tables(
+        dora_tile34,
+        torch.tensor([0], dtype=torch.long),
+        torch.tensor([0], dtype=torch.long),
+        model.relative_seat_embed,
+    )
+    _, south_round_table = model.tile_embed.build_tables(
+        dora_tile34,
+        torch.tensor([0], dtype=torch.long),
+        torch.tensor([1], dtype=torch.long),
+        model.relative_seat_embed,
+    )
+
+    torch.testing.assert_close(east_round_table[:, 0], south_round_table[:, 0])
+    assert not torch.allclose(east_round_table[:, 27], south_round_table[:, 27])
+    assert not torch.allclose(east_round_table[:, 28], south_round_table[:, 28])
 
 
 def test_transformer_sparse_meld_action_embedding_matches_full_where():

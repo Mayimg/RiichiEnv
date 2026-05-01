@@ -16,6 +16,7 @@ class SequenceFeatureEncoder:
 
     Produces:
         sparse:      (MAX_SPARSE_LEN,)   int64   padded sparse embedding indices
+        dealer:      ()                  int64   dealer relative seat
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
@@ -31,9 +32,11 @@ class SequenceFeatureEncoder:
         cand_mask:   (MAX_CAND_LEN,)     bool    True for real entries
     """
 
-    SPARSE_VOCAB_SIZE = 265
-    SPARSE_PAD = 264
-    MAX_SPARSE_LEN = 9
+    SPARSE_VOCAB_SIZE = 261
+    SPARSE_PAD = 260
+    MAX_SPARSE_LEN = 8
+
+    DEALER_DIMS = 4
 
     MELD_DIMS = (6, 38, 4, 38, 4, 38, 4, 38, 4)
     MELD_PAD = (5, 37, 3, 37, 3, 37, 3, 37, 3)
@@ -80,6 +83,12 @@ class SequenceFeatureEncoder:
         sparse[:n_sparse] = raw[:n_sparse]
         sparse_mask = np.zeros(self.MAX_SPARSE_LEN, dtype=np.bool_)
         sparse_mask[:n_sparse] = True
+
+        # Dealer relative seat
+        if hasattr(obs, "encode_seq_dealer"):
+            dealer = np.int64(obs.encode_seq_dealer())
+        else:
+            dealer = np.int64((obs.oya - obs.player_id + self.n_players) % self.n_players)
 
         # Current visible melds
         sparse_meld_feature_bytes = obs.encode_seq_sparse_meld_features()
@@ -190,6 +199,7 @@ class SequenceFeatureEncoder:
 
         return {
             "sparse": torch.from_numpy(sparse),
+            "dealer": torch.tensor(dealer, dtype=torch.long),
             "sparse_melds": torch.from_numpy(sparse_melds),
             "sparse_meld_owners": torch.from_numpy(sparse_meld_owners),
             "hand": torch.from_numpy(hand),
@@ -215,7 +225,8 @@ class SequenceFeaturePackedEncoder:
     internally.
 
     Layout (all float32, P=max_prog_len, C=max_cand_len):
-        sparse      (9)        int indices stored as float
+        sparse      (8)        int indices stored as float
+        dealer      (1)        int relative dealer seat stored as float
         sparse_melds(16 * 9)   int meld rows stored as float
         sparse_meld_owners(16) int relative owner seats stored as float
         hand        (14 * 2)   int tuples stored as float
@@ -224,7 +235,7 @@ class SequenceFeaturePackedEncoder:
         prog_melds  (P * 9)    int meld rows stored as float
         candidates  (C * 3)    int tuples stored as float
         cand_melds  (C * 9)    int meld rows stored as float
-        sparse_mask (9)        bool stored as float
+        sparse_mask (8)        bool stored as float
         sparse_meld_mask (16)  bool stored as float
         hand_mask   (14)       bool stored as float
         prog_mask   (P)        bool stored as float
@@ -256,6 +267,7 @@ class SequenceFeaturePackedEncoder:
         self._C = max_cand_len
         self.PACKED_SIZE = (
             self._S
+            + 1
             + self._SM * self._MW
             + self._SM
             + self._H * 2
@@ -279,6 +291,8 @@ class SequenceFeaturePackedEncoder:
 
         packed[o : o + self._S] = d["sparse"].float()
         o += self._S
+        packed[o] = d["dealer"].float()
+        o += 1
         packed[o : o + self._SM * self._MW] = d["sparse_melds"].reshape(-1).float()
         o += self._SM * self._MW
         packed[o : o + self._SM] = d["sparse_meld_owners"].float()
