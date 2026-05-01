@@ -16,6 +16,7 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
+| **Agari Overtakes** | `(4, 96, 4)` | float32 | Pairwise rank-overtake flags for standard 4P win patterns |
 | **Progression** | `(256, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
 | **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
 | **Candidates** | `(32, 3)` | int64 | Legal actions as 3-tuple sets |
@@ -25,7 +26,7 @@ Each variable-length group is padded to its maximum length, with accompanying bo
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, and routes all real relative-seat fields through a **shared relative-seat embedding module**.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, and projects the dense agari-overtake vector as its own global token.
 
 ### Shared tile attributes
 
@@ -266,6 +267,48 @@ numeric_bytes = obs.encode_seq_numeric()
 numeric = np.frombuffer(numeric_bytes, dtype=np.float32)  # shape (6,)
 ```
 
+## 3a. Agari Overtake Features
+
+**Fixed: 4 x 96 x 4 floats**
+
+These features summarize the current score situation as pairwise rank-overtake
+flags under the same standard Tenhou 4P non-PAO settlement patterns used by the
+GRP rank-prediction model.
+
+| Axis | Size | Meaning |
+|------|------|---------|
+| winner_relative_seat | 4 | 0=self, 1=shimocha, 2=toimen, 3=kamicha |
+| standard_agari_pattern | 96 | 24 tsumo patterns, then 3 ron-target blocks x 24 ron patterns |
+| target_relative_seat | 4 | 0=self, 1=shimocha, 2=toimen, 3=kamicha |
+
+A feature is `1.0` when the winner starts below the target in current rank and
+finishes above the target after that settlement pattern. It is otherwise `0.0`.
+The diagonal `winner_relative_seat == target_relative_seat` is always `0.0`.
+Ranks use the engine's stable seat-order tie-break rule. Dealer/non-dealer
+payments, honba, and riichi deposits are included in the settlement simulation.
+
+Pattern ordering matches `riichienv-core/src/grp.rs`:
+
+- indices `0-23`: tsumo patterns
+- indices `24-95`: ron patterns, grouped by absolute target seat order while
+  skipping the winner
+
+External MJAI logs are unchanged. This is an internal observation feature
+derived from current scores, dealer, honba, and riichi deposits.
+
+### Rust API
+
+```rust
+obs.encode_seq_agari_overtakes() -> Vec<f32>  // length 1536
+```
+
+### Python API (raw)
+
+```python
+agari_bytes = obs.encode_seq_agari_overtakes()
+agari = np.frombuffer(agari_bytes, dtype=np.float32).reshape(4, 96, 4)
+```
+
 ## 4. Progression Features (Action History)
 
 **5-tuple sequence, max 256 entries (default)**
@@ -401,6 +444,7 @@ for pid, obs in obs_dict.items():
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
     # features["numeric"]     -- (6,) float32
+    # features["agari_overtakes"] -- (1536,) float32, reshapeable to (4, 96, 4)
     # features["progression"] -- (256, 5) int64, padded with (4, 80, 2, 2, 4)
     # features["prog_melds"]  -- (256, 9) int64, aligned with progression
     # features["candidates"]  -- (32, 3) int64, padded with (47, 2, 4)
@@ -426,6 +470,8 @@ SequenceFeatureEncoder.MAX_HAND_LEN       # 14
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
+SequenceFeatureEncoder.AGARI_OVERTAKE_DIMS # (4, 96, 4)
+SequenceFeatureEncoder.AGARI_OVERTAKE_DIM  # 1536
 SequenceFeatureEncoder.PROG_DIMS           # (5, 81, 3, 3, 5)
 SequenceFeatureEncoder.CAND_DIMS           # (48, 3, 5)
 ```

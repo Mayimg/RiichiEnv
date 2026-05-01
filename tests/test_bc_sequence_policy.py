@@ -229,6 +229,40 @@ def test_sequence_numeric_features_use_current_normalized_scores_only():
     assert torch.allclose(features["numeric"], torch.tensor([3.0, 2.0, 0.0, 1.7, 1.0, -1.0]))
 
 
+def test_sequence_feature_encoder_includes_pairwise_agari_overtake_flags():
+    obs = Observation(
+        2,
+        [[], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 24000, 24000, 24000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+    overtakes = features["agari_overtakes"].reshape(4, 96, 4)
+
+    assert features["agari_overtakes"].shape == (SequenceFeatureEncoder.AGARI_OVERTAKE_DIM,)
+    assert overtakes.shape == SequenceFeatureEncoder.AGARI_OVERTAKE_DIMS
+    assert overtakes[1, 24, 2].item() == 1.0
+    assert overtakes[1, 24, 1].item() == 0.0
+
+
 def test_sequence_feature_encoder_separates_dealer_from_sparse_vocab():
     obs = Observation(
         2,

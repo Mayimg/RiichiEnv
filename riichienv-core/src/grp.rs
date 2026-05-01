@@ -7,6 +7,7 @@ const N_PLAYERS: usize = 4;
 pub const TENHOU_4P_SELF_AGARI_DIM: usize = 96;
 pub const TENHOU_4P_OTHER_OVERTAKE_DIM: usize = 288;
 pub const TENHOU_4P_GRP_INPUT_DIM: usize = 404;
+pub const TENHOU_4P_PAIRWISE_OVERTAKE_DIM: usize = N_PLAYERS * TENHOU_4P_SELF_AGARI_DIM * N_PLAYERS;
 const TENHOU_4P_TSUMO_PATTERN_COUNT: usize = 24;
 const TENHOU_4P_RON_PATTERN_COUNT: usize = 24;
 
@@ -88,7 +89,8 @@ pub fn encode_tenhou_4p_rows(
 ) -> Vec<f32> {
     let current_ranks = stable_ranks(&start_scores);
     let oya = (ju as usize) % N_PLAYERS;
-    let winner_next_ranks = compute_all_winner_next_ranks(&start_scores, oya, ben, liqibang);
+    let winner_next_ranks =
+        compute_all_winner_next_ranks(&start_scores, oya, ben as u32, liqibang as u32);
 
     let mut out = vec![0.0f32; N_PLAYERS * TENHOU_4P_GRP_INPUT_DIM];
     for focus in 0..N_PLAYERS {
@@ -143,6 +145,45 @@ pub fn encode_tenhou_4p_rows(
     out
 }
 
+/// Encode pairwise rank-overtake flags for every winner, win pattern, and target.
+///
+/// Layout is observer-relative:
+/// `winner_rel * 96 * 4 + pattern_index * 4 + target_rel`.
+/// `target_rel == winner_rel` is always 0.0. A flag is 1.0 when the winner
+/// starts below the target and finishes above the target under that settlement
+/// pattern, using the same stable seat-order tie-break as the GRP model.
+pub fn encode_tenhou_4p_pairwise_overtakes(
+    start_scores: [i32; N_PLAYERS],
+    oya: usize,
+    ben: u32,
+    liqibang: u32,
+    observer: usize,
+) -> Vec<f32> {
+    let current_ranks = stable_ranks(&start_scores);
+    let winner_next_ranks =
+        compute_all_winner_next_ranks(&start_scores, oya % N_PLAYERS, ben, liqibang);
+    let observer = observer % N_PLAYERS;
+
+    let mut out = vec![0.0f32; TENHOU_4P_PAIRWISE_OVERTAKE_DIM];
+    let mut idx = 0;
+    for winner_rel in 0..N_PLAYERS {
+        let winner = (observer + winner_rel) % N_PLAYERS;
+        for next_ranks in &winner_next_ranks[winner] {
+            for target_rel in 0..N_PLAYERS {
+                let target = (observer + target_rel) % N_PLAYERS;
+                let overtook = winner != target
+                    && current_ranks[winner] > current_ranks[target]
+                    && next_ranks[winner] < next_ranks[target];
+                out[idx] = if overtook { 1.0 } else { 0.0 };
+                idx += 1;
+            }
+        }
+    }
+
+    debug_assert_eq!(idx, TENHOU_4P_PAIRWISE_OVERTAKE_DIM);
+    out
+}
+
 pub fn stable_ranks(scores: &[i32; N_PLAYERS]) -> [u8; N_PLAYERS] {
     let mut indexed = [(0usize, 0i32); N_PLAYERS];
     for (seat, score) in scores.iter().copied().enumerate() {
@@ -160,8 +201,8 @@ pub fn stable_ranks(scores: &[i32; N_PLAYERS]) -> [u8; N_PLAYERS] {
 fn compute_all_winner_next_ranks(
     start_scores: &[i32; N_PLAYERS],
     oya: usize,
-    ben: u8,
-    liqibang: u8,
+    ben: u32,
+    liqibang: u32,
 ) -> [[[u8; N_PLAYERS]; TENHOU_4P_SELF_AGARI_DIM]; N_PLAYERS] {
     let mut out = [[[0u8; N_PLAYERS]; TENHOU_4P_SELF_AGARI_DIM]; N_PLAYERS];
     for (winner, winner_out) in out.iter_mut().enumerate() {
@@ -173,8 +214,8 @@ fn compute_all_winner_next_ranks(
 fn compute_winner_next_ranks(
     start_scores: &[i32; N_PLAYERS],
     oya: usize,
-    ben: u8,
-    liqibang: u8,
+    ben: u32,
+    liqibang: u32,
     winner: usize,
 ) -> [[u8; N_PLAYERS]; TENHOU_4P_SELF_AGARI_DIM] {
     let patterns = tenhou_4p_base_agari_patterns(winner == oya);
@@ -283,8 +324,9 @@ fn build_pattern_tables(is_oya: bool) -> PatternTables {
 #[cfg(test)]
 mod tests {
     use super::{
-        TENHOU_4P_GRP_INPUT_DIM, TENHOU_4P_OTHER_OVERTAKE_DIM, TENHOU_4P_SELF_AGARI_DIM,
-        encode_tenhou_4p_rows, stable_ranks,
+        TENHOU_4P_GRP_INPUT_DIM, TENHOU_4P_OTHER_OVERTAKE_DIM, TENHOU_4P_PAIRWISE_OVERTAKE_DIM,
+        TENHOU_4P_SELF_AGARI_DIM, encode_tenhou_4p_pairwise_overtakes, encode_tenhou_4p_rows,
+        stable_ranks,
     };
 
     #[test]
@@ -310,5 +352,23 @@ mod tests {
         assert_eq!(focus_p0[overtake_start + 96], 1.0);
         assert_eq!(focus_p0[overtake_start + 192], 1.0);
         assert_eq!(TENHOU_4P_OTHER_OVERTAKE_DIM, 288);
+    }
+
+    #[test]
+    fn encode_tenhou_4p_pairwise_overtakes_uses_relative_winner_and_target_axes() {
+        let features =
+            encode_tenhou_4p_pairwise_overtakes([25000, 24000, 24000, 24000], 0, 0, 0, 2);
+        assert_eq!(features.len(), TENHOU_4P_PAIRWISE_OVERTAKE_DIM);
+
+        let winner_p3_rel = 1;
+        let first_ron_p0_pattern = 24;
+        let target_p0_rel = 2;
+        let idx =
+            winner_p3_rel * TENHOU_4P_SELF_AGARI_DIM * 4 + first_ron_p0_pattern * 4 + target_p0_rel;
+        assert_eq!(features[idx], 1.0);
+
+        let self_target_idx =
+            winner_p3_rel * TENHOU_4P_SELF_AGARI_DIM * 4 + first_ron_p0_pattern * 4 + winner_p3_rel;
+        assert_eq!(features[self_target_idx], 0.0);
     }
 }
