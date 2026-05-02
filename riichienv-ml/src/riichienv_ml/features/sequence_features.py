@@ -21,6 +21,8 @@ class SequenceFeatureEncoder:
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
         numeric:     (NUM_NUMERIC,)      float32
+        agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
+                         reshapeable to (AGARI_OVERTAKE_TOKENS, AGARI_OVERTAKE_TOKEN_DIM)
         progression: (MAX_PROG_LEN, 5)   int64   padded action/dora-reveal history 5-tuples
         prog_melds:  (MAX_PROG_LEN, 9)   int64   padded progression meld rows
         candidates:  (MAX_CAND_LEN, 3)   int64   padded legal-action 3-tuples
@@ -60,6 +62,10 @@ class SequenceFeatureEncoder:
     MAX_CAND_LEN = 32
 
     NUM_NUMERIC = 6
+    AGARI_OVERTAKE_DIMS = (4, 96, 4)
+    AGARI_OVERTAKE_TOKENS = AGARI_OVERTAKE_DIMS[0]
+    AGARI_OVERTAKE_TOKEN_DIM = AGARI_OVERTAKE_DIMS[1] * AGARI_OVERTAKE_DIMS[2]
+    AGARI_OVERTAKE_DIM = AGARI_OVERTAKE_TOKENS * AGARI_OVERTAKE_TOKEN_DIM
 
     def __init__(self, n_players: int = 4, game_style: int = 1, max_prog_len: int = 256, max_cand_len: int = 32):
         self.n_players = n_players
@@ -128,6 +134,14 @@ class SequenceFeatureEncoder:
 
         # Numeric
         numeric = np.frombuffer(obs.encode_seq_numeric(), dtype=np.float32).copy()
+
+        # Pairwise agari-rank-overtake flags
+        agari_overtakes = np.frombuffer(obs.encode_seq_agari_overtakes(), dtype=np.float32).copy()
+        if agari_overtakes.shape[0] != self.AGARI_OVERTAKE_DIM:
+            raise ValueError(
+                f"encode_seq_agari_overtakes returned {agari_overtakes.shape[0]} floats; "
+                f"expected {self.AGARI_OVERTAKE_DIM}"
+            )
 
         # Progression
         prog_bytes = obs.encode_seq_progression()
@@ -204,6 +218,7 @@ class SequenceFeatureEncoder:
             "sparse_meld_owners": torch.from_numpy(sparse_meld_owners),
             "hand": torch.from_numpy(hand),
             "numeric": torch.from_numpy(numeric),
+            "agari_overtakes": torch.from_numpy(agari_overtakes),
             "progression": torch.from_numpy(prog),
             "prog_melds": torch.from_numpy(prog_melds),
             "candidates": torch.from_numpy(cand),
@@ -231,6 +246,7 @@ class SequenceFeaturePackedEncoder:
         sparse_meld_owners(16) int relative owner seats stored as float
         hand        (14 * 2)   int tuples stored as float
         numeric     (6)        continuous values
+        agari_overtakes (4 * 96 * 4) pairwise agari-rank-overtake flags
         progression (P * 5)    int action/dora-reveal tuples stored as float
         prog_melds  (P * 9)    int meld rows stored as float
         candidates  (C * 3)    int tuples stored as float
@@ -248,6 +264,7 @@ class SequenceFeaturePackedEncoder:
     _CW = SequenceFeatureEncoder.CAND_WIDTH
     _H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
     _N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
+    _A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
 
     def __init__(
         self,
@@ -272,6 +289,7 @@ class SequenceFeaturePackedEncoder:
             + self._SM
             + self._H * 2
             + self._N
+            + self._A
             + self._P * 5
             + self._P * self._MW
             + self._C * self._CW
@@ -301,6 +319,8 @@ class SequenceFeaturePackedEncoder:
         o += self._H * 2
         packed[o : o + self._N] = d["numeric"]
         o += self._N
+        packed[o : o + self._A] = d["agari_overtakes"]
+        o += self._A
         packed[o : o + self._P * 5] = d["progression"].reshape(-1).float()
         o += self._P * 5
         packed[o : o + self._P * self._MW] = d["prog_melds"].reshape(-1).float()

@@ -68,6 +68,8 @@ pub const SPARSE_MELD_OWNER_DIMS: u16 = 5;
 pub const SPARSE_MELD_OWNER_PAD: u16 = 4;
 
 pub const NUM_NUMERIC: usize = 6;
+#[allow(dead_code)]
+pub const AGARI_OVERTAKE_FEATURE_DIM: usize = crate::grp::TENHOU_4P_PAIRWISE_OVERTAKE_DIM;
 
 const SCORE_NORM_BASE: f32 = 25000.0;
 const SCORE_NORM_SCALE: f32 = 10000.0;
@@ -651,6 +653,21 @@ impl Observation {
         }
 
         out
+    }
+
+    /// Encode pairwise agari-rank-overtake features as 4 * 96 * 4 floats.
+    ///
+    /// Layout: `winner_rel * 96 * 4 + pattern_index * 4 + target_rel`.
+    /// Winner and target axes are observer-relative. The settlement patterns
+    /// match the Tenhou 4P standard non-PAO patterns used by the GRP model.
+    pub fn encode_seq_agari_overtakes(&self) -> Vec<f32> {
+        crate::grp::encode_tenhou_4p_pairwise_overtakes(
+            self.scores,
+            self.oya as usize,
+            self.honba as u32,
+            self.riichi_sticks,
+            self.player_id.min(3) as usize,
+        )
     }
 
     // ── Progression features ─────────────────────────────────────────────

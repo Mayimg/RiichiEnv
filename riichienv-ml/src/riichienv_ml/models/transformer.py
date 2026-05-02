@@ -1,7 +1,7 @@
 """Transformer Actor-Critic for sequence feature encoding.
 
 Accepts the packed flat tensor produced by SequenceFeaturePackedEncoder,
-unpacks it into sparse / hand / numeric / progression / candidate groups,
+unpacks it into sparse / hand / numeric / agari-overtake / progression / candidate groups,
 embeds each group, and processes them through a TransformerEncoder.
 
 Tile-only fields across hand / sparse dora / progression / candidates share
@@ -9,6 +9,8 @@ an attribute-based tile embedding module. Chi/pon/kan melds use a shared
 factorized embedding over meld kind, slot tiles, and slot roles. Dealer,
 progression actor/from, candidate from, and sparse meld owner fields share an
 observer-relative seat base embedding with role-specific context.
+Agari-overtake features are reshaped into four winner-relative-seat tokens
+with a shared projection and the shared relative-seat embedding.
 
 Output: (logits, value) — same interface as ActorCriticNetwork.
 
@@ -89,7 +91,8 @@ _SEAT_ROLE_PROG_FROM = 2
 _SEAT_ROLE_CAND_FROM = 3
 _SEAT_ROLE_MELD_OWNER = 4
 _SEAT_ROLE_TILE_WIND_OWNER = 5
-_SEAT_NUM_ROLES = 6
+_SEAT_ROLE_AGARI_WINNER = 6
+_SEAT_NUM_ROLES = 7
 _SEAT_PAD_OR_NA = 4
 
 _ROUND_WIND_FLAG_YES = 0
@@ -616,6 +619,9 @@ class TransformerActorCritic(nn.Module):
         self._MW = SequenceFeatureEncoder.MELD_WIDTH
         self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
         self._N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
+        self._A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
+        self._AT = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS
+        self._AW = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
         self._P = max_prog_len
         self._C = max_cand_len
         self._CW = len(cand_dims)
@@ -645,6 +651,10 @@ class TransformerActorCritic(nn.Module):
 
         self.numeric_proj = nn.Sequential(
             nn.Linear(self._N, d_model),
+            nn.LayerNorm(d_model),
+        )
+        self.agari_overtake_proj = nn.Sequential(
+            nn.Linear(self._AW, d_model),
             nn.LayerNorm(d_model),
         )
 
@@ -680,11 +690,11 @@ class TransformerActorCritic(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.normal_(self.cls_token, std=0.02)
 
-        # --- Segment embeddings (5 groups: sparse / hand / numeric / prog / cand) ---
-        self.segment_embed = nn.Embedding(5, d_model)
+        # --- Segment embeddings (6 groups: sparse / hand / numeric / agari / prog / cand) ---
+        self.segment_embed = nn.Embedding(6, d_model)
 
         # --- Positional encoding (sinusoidal) ---
-        max_seq = 1 + self._S + self._D + self._SM + self._H + 1 + self._P + self._C
+        max_seq = 1 + self._S + self._D + self._SM + self._H + 1 + self._AT + self._P + self._C
         self.register_buffer("pos_enc", self._sinusoidal_pe(max_seq, d_model))
 
         # --- Transformer encoder (pre-LN for stability) ---
@@ -778,6 +788,8 @@ class TransformerActorCritic(nn.Module):
         o += self._H * 2
         numeric = x[:, o : o + self._N]
         o += self._N
+        agari_overtakes = x[:, o : o + self._A]
+        o += self._A
         prog = x[:, o : o + self._P * 5].reshape(-1, self._P, 5).long()
         o += self._P * 5
         prog_melds = x[:, o : o + self._P * self._MW].reshape(-1, self._P, self._MW).long()
@@ -802,6 +814,7 @@ class TransformerActorCritic(nn.Module):
             sparse_meld_owners,
             hand,
             numeric,
+            agari_overtakes,
             prog,
             prog_melds,
             cand,
@@ -1038,6 +1051,16 @@ class TransformerActorCritic(nn.Module):
         ]
         return self.cand_proj(torch.cat(cand_parts, dim=-1))
 
+    def _embed_agari_overtakes(self, agari_overtakes: torch.Tensor) -> torch.Tensor:
+        agari_by_winner = agari_overtakes.reshape(-1, self._AT, self._AW)
+        winner_seats = torch.arange(self._AT, dtype=torch.long, device=agari_overtakes.device)
+        winner_seats = winner_seats.unsqueeze(0).expand(agari_by_winner.shape[0], -1)
+        return self.agari_overtake_proj(agari_by_winner) + self.relative_seat_embed(
+            winner_seats,
+            _SEAT_ROLE_AGARI_WINNER,
+            out="model",
+        )
+
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         batch_size = x.shape[0]
@@ -1048,6 +1071,7 @@ class TransformerActorCritic(nn.Module):
             sparse_meld_owners,
             hand,
             numeric,
+            agari_overtakes,
             prog,
             prog_melds,
             cand,
@@ -1089,6 +1113,9 @@ class TransformerActorCritic(nn.Module):
         # Project numeric: (B, 1, d)
         numeric_emb = self.numeric_proj(numeric).unsqueeze(1)
 
+        # Project pairwise agari-rank-overtake flags by winner seat: (B, 4, d)
+        agari_overtake_emb = self._embed_agari_overtakes(agari_overtakes)
+
         # Embed progression 5-tuples: (B, P, d)
         prog_emb = self._embed_progression(
             prog,
@@ -1114,9 +1141,20 @@ class TransformerActorCritic(nn.Module):
         # CLS token: (B, 1, d)
         cls = self.cls_token.expand(batch_size, -1, -1)
 
-        # Concatenate: [CLS, sparse(S), dealer(1), sparse_meld(SM), hand(H), numeric(1), prog(P), cand(C)]
+        # Concatenate: [CLS, sparse(S), dealer(1), sparse_meld(SM), hand(H),
+        # numeric(1), agari_overtake(4), prog(P), cand(C)]
         tokens = torch.cat(
-            [cls, sparse_emb, dealer_emb, sparse_meld_emb, hand_emb, numeric_emb, prog_emb, cand_emb],
+            [
+                cls,
+                sparse_emb,
+                dealer_emb,
+                sparse_meld_emb,
+                hand_emb,
+                numeric_emb,
+                agari_overtake_emb,
+                prog_emb,
+                cand_emb,
+            ],
             dim=1,
         )
 
@@ -1126,8 +1164,9 @@ class TransformerActorCritic(nn.Module):
                 torch.zeros(batch_size, 1 + self._S + self._D + self._SM, dtype=torch.long, device=x.device),
                 torch.ones(batch_size, self._H, dtype=torch.long, device=x.device),
                 torch.full((batch_size, 1), 2, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._P), 3, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._C), 4, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._AT), 3, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._P), 4, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._C), 5, dtype=torch.long, device=x.device),
             ],
             dim=1,
         )
@@ -1140,6 +1179,7 @@ class TransformerActorCritic(nn.Module):
         cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
         dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
         numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
+        agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=x.device)
         pad_mask = torch.cat(
             [
                 cls_valid,  # CLS is always valid
@@ -1148,6 +1188,7 @@ class TransformerActorCritic(nn.Module):
                 ~sparse_meld_mask,  # True where current visible meld is padding
                 ~hand_mask,  # True where hand is padding
                 numeric_valid,  # numeric is always valid
+                agari_overtake_valid,  # agari-overtake token is always valid
                 ~prog_mask,  # True where prog is padding
                 ~cand_mask,  # True where cand is padding
             ],
@@ -1161,7 +1202,7 @@ class TransformerActorCritic(nn.Module):
         # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
 
-        cand_offset = 1 + self._S + self._D + self._SM + self._H + 1 + self._P
+        cand_offset = 1 + self._S + self._D + self._SM + self._H + 1 + self._AT + self._P
         cand_out = output[:, cand_offset : cand_offset + self._C]  # (B, C, d_model)
 
         # Policy head

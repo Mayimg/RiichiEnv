@@ -493,6 +493,13 @@ class Observation:
         Shape: ``(6,)`` / dtype: ``float32``.
         """
         ...
+    def encode_seq_agari_overtakes(self) -> bytes:
+        """Encode pairwise agari-rank-overtake features.
+
+        Shape: ``(4, 96, 4)`` / dtype: ``float32``. Axes are
+        ``winner_relative_seat, standard_agari_pattern, target_relative_seat``.
+        """
+        ...
     def encode_seq_progression(self) -> bytes:
         """Encode sequence progression features.
 
