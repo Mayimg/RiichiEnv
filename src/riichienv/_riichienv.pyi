@@ -493,12 +493,19 @@ class Observation:
         Shape: ``(6,)`` / dtype: ``float32``.
         """
         ...
+    def encode_seq_agari_overtakes(self) -> bytes:
+        """Encode pairwise agari-rank-overtake features.
+
+        Shape: ``(4, 96, 4)`` / dtype: ``float32``. Axes are
+        ``winner_relative_seat, standard_agari_pattern, target_relative_seat``.
+        """
+        ...
     def encode_seq_progression(self) -> bytes:
         """Encode sequence progression features.
 
         Shape: ``(N, 5)`` / dtype: ``uint16``.
 
-        Each row represents one action-history step with 5 token values.
+        Each row represents one action-history or dora-reveal step with 5 token values.
         """
         ...
     def encode_seq_progression_melds(self) -> bytes:

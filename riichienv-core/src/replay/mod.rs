@@ -1385,7 +1385,9 @@ impl LogKyoku {
             for p in state.players.iter_mut() {
                 p.hand.sort();
             }
-            state.wall.dora_indicators = doras;
+            if let Some(&initial_dora) = doras.first() {
+                state.wall.dora_indicators = vec![initial_dora];
+            }
 
             // Note: 3P GameState3P does not support seq caching yet
             let iter = KyokuStepIterator3P {
@@ -1464,7 +1466,9 @@ impl LogKyoku {
             for p in state.players.iter_mut() {
                 p.hand.sort();
             }
-            state.wall.dora_indicators = doras;
+            if let Some(&initial_dora) = doras.first() {
+                state.wall.dora_indicators = vec![initial_dora];
+            }
 
             if state.wall.tiles.len() == 136 {
                 let total_hand_tiles: usize = state.players.iter().map(|p| p.hand.len()).sum();
@@ -1476,6 +1480,26 @@ impl LogKyoku {
             }
 
             state.enable_seq_caching = true;
+            #[cfg(feature = "python")]
+            if let Some(&initial_dora) = state.wall.dora_indicators.first() {
+                use crate::observation::sequence_features::process_event_progression_entries_with_melds;
+
+                Arc::make_mut(&mut state.round_seq_progression).clear();
+                Arc::make_mut(&mut state.round_seq_progression_melds).clear();
+                state.round_seq_prog_pending_reach = None;
+
+                let ev = serde_json::json!({
+                    "type": "start_kyoku",
+                    "dora_marker": TileConverter::to_string(initial_dora),
+                });
+                for (entry, meld) in process_event_progression_entries_with_melds(
+                    &ev,
+                    &mut state.round_seq_prog_pending_reach,
+                ) {
+                    Arc::make_mut(&mut state.round_seq_progression).push(entry);
+                    Arc::make_mut(&mut state.round_seq_progression_melds).push(meld);
+                }
+            }
             let iter = KyokuStepIterator {
                 state,
                 actions: self.actions.clone(),

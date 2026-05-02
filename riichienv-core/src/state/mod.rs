@@ -2178,15 +2178,16 @@ impl GameState {
         // Uses the original (unmasked) event Value directly; callers may pass an
         // internal sequence-feature event that is not exposed in public MJAI logs.
         #[cfg(feature = "python")]
-        if self.enable_seq_caching
-            && let Some((entry, meld)) =
-                crate::observation::sequence_features::process_single_event_progression_with_meld(
+        if self.enable_seq_caching {
+            let entries =
+                crate::observation::sequence_features::process_event_progression_entries_with_melds(
                     _seq_event.as_ref().unwrap_or(&event),
                     &mut self.round_seq_prog_pending_reach,
-                )
-        {
-            Arc::make_mut(&mut self.round_seq_progression).push(entry);
-            Arc::make_mut(&mut self.round_seq_progression_melds).push(meld);
+                );
+            for (entry, meld) in entries {
+                Arc::make_mut(&mut self.round_seq_progression).push(entry);
+                Arc::make_mut(&mut self.round_seq_progression_melds).push(meld);
+            }
         }
     }
 }

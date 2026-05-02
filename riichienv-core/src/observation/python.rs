@@ -1414,6 +1414,21 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
+    /// Encode agari-rank-overtake features as 4 × 96 × 4 f32.
+    ///
+    /// Returns raw bytes of a flat f32 vector.
+    /// Python side: `np.frombuffer(bytes, dtype=np.float32).reshape(4, 96, 4)`.
+    #[pyo3(name = "encode_seq_agari_overtakes")]
+    pub fn encode_seq_agari_overtakes_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let arr = self.encode_seq_agari_overtakes();
+        let byte_len = arr.len() * std::mem::size_of::<f32>();
+        let byte_slice = unsafe { std::slice::from_raw_parts(arr.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
     /// Encode progression (action history) as N × 5 u16 tuples.
     ///
     /// Returns raw bytes of flattened row-major `&[[u16; 5]]`.

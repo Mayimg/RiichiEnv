@@ -9,6 +9,7 @@ from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
 from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, SequenceFeaturePackedEncoder
 from riichienv_ml.models.transformer import (
     _ACTION_KIND_DISCARD,
+    _ACTION_KIND_DORA,
     _ACTION_KIND_PAD,
     _MELD_KIND_CHI,
     _MELD_KIND_PAD,
@@ -17,6 +18,7 @@ from riichienv_ml.models.transformer import (
     _MELD_ROLE_CONSUMED,
     _RED_FLAG_PAD,
     _RED_FLAG_RED,
+    _SEAT_ROLE_AGARI_WINNER,
     _SEAT_ROLE_MELD_OWNER,
     _SEAT_ROLE_PROG_ACTOR,
     _SPARSE_DORA_OFFSET,
@@ -84,6 +86,23 @@ def test_behavior_cloning_dataset_yields_legal_action_labels(tmp_path):
         assert isinstance(features, torch.Tensor)
         assert 0 <= action_id < len(mask)
         assert mask[action_id] == 1
+
+
+def test_replay_sequence_progression_starts_with_initial_dora(tmp_path):
+    file_path = tmp_path / "bc_policy_sample.jsonl"
+    _write_simple_4p_log(file_path)
+
+    replay = MjaiReplay.from_jsonl(str(file_path), rule="tenhou")
+    kyoku = next(iter(replay.take_kyokus()))
+    obs, _action = next(iter(kyoku.steps(0)))
+
+    features = SequenceFeatureEncoder().encode(obs)
+    progression = features["progression"][features["prog_mask"]]
+
+    assert progression[:2].tolist() == [
+        [4, 0, 2, 2, 4],
+        [4, 44, 2, 2, 4],
+    ]
 
 
 def test_transformer_policy_network_returns_logits_only():
@@ -211,6 +230,40 @@ def test_sequence_numeric_features_use_current_normalized_scores_only():
     assert torch.allclose(features["numeric"], torch.tensor([3.0, 2.0, 0.0, 1.7, 1.0, -1.0]))
 
 
+def test_sequence_feature_encoder_includes_pairwise_agari_overtake_flags():
+    obs = Observation(
+        2,
+        [[], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 24000, 24000, 24000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+    overtakes = features["agari_overtakes"].reshape(4, 96, 4)
+
+    assert features["agari_overtakes"].shape == (SequenceFeatureEncoder.AGARI_OVERTAKE_DIM,)
+    assert overtakes.shape == SequenceFeatureEncoder.AGARI_OVERTAKE_DIMS
+    assert overtakes[1, 24, 2].item() == 1.0
+    assert overtakes[1, 24, 1].item() == 0.0
+
+
 def test_sequence_feature_encoder_separates_dealer_from_sparse_vocab():
     obs = Observation(
         2,
@@ -242,6 +295,44 @@ def test_sequence_feature_encoder_separates_dealer_from_sparse_vocab():
     assert features["dealer"].item() == 3
     assert features["sparse"].shape == (SequenceFeatureEncoder.MAX_SPARSE_LEN,)
     assert valid_sparse.tolist() == [1, 3, 74]
+
+
+def test_sequence_progression_includes_dora_reveals():
+    obs = Observation(
+        0,
+        [[], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [
+            '{"type":"start_kyoku","dora_marker":"5m"}',
+            '{"type":"dora","dora_marker":"E"}',
+        ],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+    progression = features["progression"][features["prog_mask"]]
+
+    assert progression.tolist() == [
+        [4, 0, 2, 2, 4],
+        [4, 48, 2, 2, 4],
+        [4, 73, 2, 2, 4],
+    ]
 
 
 def test_sequence_candidates_distinguish_red_and_moqie_discards():
@@ -436,6 +527,11 @@ def test_transformer_tile_only_action_type_lookups_ignore_meld_patterns():
     assert model.prog_type_action_kind[40].item() == _ACTION_KIND_PAD
     assert model.prog_type_action_kind[41].item() == _ACTION_KIND_PAD
     assert model.prog_type_action_kind[42].item() == _ACTION_KIND_PAD
+    assert model.prog_type_action_kind[43].item() == _ACTION_KIND_DORA
+    assert model.prog_type_tile37[43].item() == 0
+    assert model.prog_type_action_kind[79].item() == _ACTION_KIND_DORA
+    assert model.prog_type_tile37[79].item() == 36
+    assert model.prog_type_action_kind[80].item() == _ACTION_KIND_PAD
 
     assert model.cand_type_action_kind[0].item() == _ACTION_KIND_DISCARD
     assert model.cand_type_tile37[0].item() == 0
@@ -492,6 +588,29 @@ def test_transformer_relative_seat_embedding_shares_base_and_zeroes_special_valu
     assert torch.count_nonzero(owner_emb[:, :2]).item() > 0
     assert torch.allclose(actor_emb[:, 2], torch.zeros_like(actor_emb[:, 2]))
     assert torch.allclose(owner_emb[:, 2], torch.zeros_like(owner_emb[:, 2]))
+
+
+def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        d_sub=8,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    agari = torch.zeros(2, SequenceFeatureEncoder.AGARI_OVERTAKE_DIM, dtype=torch.float32)
+    emb = model._embed_agari_overtakes(agari)
+
+    assert emb.shape == (2, SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS, 64)
+    assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
+    expected_seq_len = 1 + model._S + model._D + model._SM + model._H + 1 + model._AT + model._P + model._C
+    assert model.pos_enc.shape[1] == expected_seq_len
+
+    winner_seats = torch.arange(SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS).unsqueeze(0).expand(2, -1)
+    seat_emb = model.relative_seat_embed(winner_seats, _SEAT_ROLE_AGARI_WINNER, out="model")
+    torch.testing.assert_close(emb, seat_emb)
 
 
 def test_transformer_factorized_meld_embedding_uses_slot_padding():

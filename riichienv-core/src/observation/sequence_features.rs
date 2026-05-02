@@ -1,6 +1,6 @@
 //! Sequence feature encoding for transformer models.
 //!
-//! Produces sparse tokens, numeric features, progression (action history),
+//! Produces sparse tokens, numeric features, progression (action and dora-reveal history),
 //! and candidate (legal action) features suitable for embedding-based
 //! transformer architectures.
 //!
@@ -34,10 +34,10 @@ pub const HAND_PAD: [u16; 2] = [37, 2];
 
 /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
 #[allow(dead_code)]
-pub const PROG_DIMS: [u16; 5] = [5, 44, 3, 3, 5];
+pub const PROG_DIMS: [u16; 5] = [5, 81, 3, 3, 5];
 pub const MAX_PROG_LEN: usize = 512;
 #[allow(dead_code)]
-pub const PROG_PAD: [u16; 5] = [4, 43, 2, 2, 4];
+pub const PROG_PAD: [u16; 5] = [4, 80, 2, 2, 4];
 
 /// Candidate tuple dimensions: (type, moqie, from)
 #[allow(dead_code)]
@@ -68,6 +68,8 @@ pub const SPARSE_MELD_OWNER_DIMS: u16 = 5;
 pub const SPARSE_MELD_OWNER_PAD: u16 = 4;
 
 pub const NUM_NUMERIC: usize = 6;
+#[allow(dead_code)]
+pub const AGARI_OVERTAKE_FEATURE_DIM: usize = crate::grp::TENHOU_4P_PAIRWISE_OVERTAKE_DIM;
 
 const SCORE_NORM_BASE: f32 = 25000.0;
 const SCORE_NORM_SCALE: f32 = 10000.0;
@@ -97,6 +99,15 @@ const CAND_TYPE_RON: u16 = 46;
 const CAND_MOQIE_TEDASHI: u16 = 0;
 const CAND_MOQIE_TSUMOGIRI: u16 = 1;
 const CAND_MOQIE_NA: u16 = 2;
+
+const PROG_TYPE_START: u16 = 0;
+const PROG_TYPE_DISCARD_OFFSET: u16 = 1;
+const PROG_TYPE_CHI: u16 = 38;
+const PROG_TYPE_PON: u16 = 39;
+const PROG_TYPE_DAIMINKAN: u16 = 40;
+const PROG_TYPE_ANKAN: u16 = 41;
+const PROG_TYPE_KAKAN: u16 = 42;
+const PROG_TYPE_DORA_OFFSET: u16 = 43;
 
 fn normalize_score(score: i32) -> f32 {
     (score as f32 - SCORE_NORM_BASE) / SCORE_NORM_SCALE
@@ -280,6 +291,11 @@ fn parse_consumed_tids_from_value(v: &serde_json::Value) -> Vec<u8> {
     tids
 }
 
+fn encode_dora_progression_row(dora_marker: &str) -> Option<[u16; 5]> {
+    let k37 = mjai_tile_to_kan37(dora_marker)?;
+    Some([4, PROG_TYPE_DORA_OFFSET + k37 as u16, 2, 2, 4])
+}
+
 /// Process a single MJAI event for canonical progression and aligned meld sidecar caches.
 ///
 /// Seat fields in the returned progression row are absolute MJAI seats. They are
@@ -291,7 +307,7 @@ pub fn process_single_event_progression_with_meld(
     let event_type = event["type"].as_str()?;
 
     match event_type {
-        "start_kyoku" => Some(([4, 0, 2, 2, 4], meld_pad())),
+        "start_kyoku" => Some(([4, PROG_TYPE_START, 2, 2, 4], meld_pad())),
         "reach" => {
             if let Some(actor) = event["actor"].as_u64() {
                 *pending_reach_actor = Some(actor as u8);
@@ -305,7 +321,7 @@ pub fn process_single_event_progression_with_meld(
                 return None;
             }
             let k37 = mjai_tile_to_kan37(pai)?;
-            let type_idx = 1 + k37 as u16;
+            let type_idx = PROG_TYPE_DISCARD_OFFSET + k37 as u16;
             let moqie = if event["tsumogiri"].as_bool().unwrap_or(false) {
                 1
             } else {
@@ -332,7 +348,7 @@ pub fn process_single_event_progression_with_meld(
                 return None;
             }
             let meld = encode_called_consumed_meld(MELD_KIND_CHI, called_tid, consumed);
-            Some(([actor as u16, 38, 2, 2, target as u16], meld))
+            Some(([actor as u16, PROG_TYPE_CHI, 2, 2, target as u16], meld))
         }
         "pon" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -347,7 +363,7 @@ pub fn process_single_event_progression_with_meld(
                 return None;
             }
             let meld = encode_called_consumed_meld(MELD_KIND_PON, called_tid, consumed);
-            Some(([actor as u16, 39, 2, 2, target as u16], meld))
+            Some(([actor as u16, PROG_TYPE_PON, 2, 2, target as u16], meld))
         }
         "daiminkan" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -362,7 +378,10 @@ pub fn process_single_event_progression_with_meld(
                 return None;
             }
             let meld = encode_called_consumed_meld(MELD_KIND_DAIMINKAN, called_tid, consumed);
-            Some(([actor as u16, 40, 2, 2, target as u16], meld))
+            Some((
+                [actor as u16, PROG_TYPE_DAIMINKAN, 2, 2, target as u16],
+                meld,
+            ))
         }
         "ankan" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -371,7 +390,7 @@ pub fn process_single_event_progression_with_meld(
                 return None;
             }
             let meld = encode_consumed_meld(MELD_KIND_ANKAN, consumed);
-            Some(([actor as u16, 41, 2, 2, 4], meld))
+            Some(([actor as u16, PROG_TYPE_ANKAN, 2, 2, 4], meld))
         }
         "kakan" => {
             let actor = event["actor"].as_u64().unwrap_or(0) as u8;
@@ -383,10 +402,46 @@ pub fn process_single_event_progression_with_meld(
             let called = parse_optional_mjai_tid(event, "called");
             let existing_tiles = parse_consumed_tids_from_value(event);
             let meld = encode_kakan_meld(added, called, existing_tiles);
-            Some(([actor as u16, 42, 2, 2, 4], meld))
+            Some(([actor as u16, PROG_TYPE_KAKAN, 2, 2, 4], meld))
+        }
+        "dora" => {
+            let dora_marker = event["dora_marker"].as_str().unwrap_or("?");
+            if dora_marker == "?" {
+                return None;
+            }
+            encode_dora_progression_row(dora_marker).map(|row| (row, meld_pad()))
         }
         _ => None,
     }
+}
+
+/// Process one MJAI event into zero or more progression rows.
+///
+/// `start_kyoku` yields both the beginning-of-round marker and, when present,
+/// the initial dora reveal row. External MJAI logs stay unchanged; this only
+/// expands the internal sequence representation.
+pub fn process_event_progression_entries_with_melds(
+    event: &serde_json::Value,
+    pending_reach_actor: &mut Option<u8>,
+) -> Vec<([u16; 5], [u16; MELD_FEATURE_WIDTH])> {
+    let Some(event_type) = event["type"].as_str() else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::with_capacity(2);
+    if let Some(entry) = process_single_event_progression_with_meld(event, pending_reach_actor) {
+        out.push(entry);
+    }
+
+    if event_type == "start_kyoku"
+        && let Some(dora_marker) = event["dora_marker"].as_str()
+        && dora_marker != "?"
+        && let Some(row) = encode_dora_progression_row(dora_marker)
+    {
+        out.push((row, meld_pad()));
+    }
+
+    out
 }
 
 // ── Sparse features ──────────────────────────────────────────────────────────
@@ -600,6 +655,21 @@ impl Observation {
         out
     }
 
+    /// Encode pairwise agari-rank-overtake features as 4 * 96 * 4 floats.
+    ///
+    /// Layout: `winner_rel * 96 * 4 + pattern_index * 4 + target_rel`.
+    /// Winner and target axes are observer-relative. The settlement patterns
+    /// match the Tenhou 4P standard non-PAO patterns used by the GRP model.
+    pub fn encode_seq_agari_overtakes(&self) -> Vec<f32> {
+        crate::grp::encode_tenhou_4p_pairwise_overtakes(
+            self.scores,
+            self.oya as usize,
+            self.honba as u32,
+            self.riichi_sticks,
+            self.player_id.min(3) as usize,
+        )
+    }
+
     // ── Progression features ─────────────────────────────────────────────
 
     /// Encode progression (action history) as variable-length 5-tuples.
@@ -607,7 +677,7 @@ impl Observation {
     /// Each tuple: (actor, type, moqie, liqi, from)
     /// - actor: 0-3 (seats), 4 (marker/padding)
     /// - type: 0=start, 1-37=discard, 38=chi, 39=pon, 40=daiminkan,
-    ///   41=ankan, 42=kakan, 43=padding
+    ///   41=ankan, 42=kakan, 43-79=dora reveal, 80=padding
     /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
     /// - liqi: 0=no riichi, 1=with riichi, 2=N/A
     /// - from: 0-3 (observer-relative seat), 4=N/A
@@ -625,10 +695,13 @@ impl Observation {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(event_str) else {
                 continue;
             };
-            if let Some((entry, _meld)) =
-                process_single_event_progression_with_meld(&v, &mut pending_reach_actor)
+            for (entry, _meld) in
+                process_event_progression_entries_with_melds(&v, &mut pending_reach_actor)
             {
                 prog.push(entry);
+                if prog.len() >= MAX_PROG_LEN {
+                    break;
+                }
             }
 
             if prog.len() >= MAX_PROG_LEN {
@@ -666,10 +739,13 @@ impl Observation {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(event_str) else {
                 continue;
             };
-            if let Some((_entry, meld)) =
-                process_single_event_progression_with_meld(&v, &mut pending_reach_actor)
+            for (_entry, meld) in
+                process_event_progression_entries_with_melds(&v, &mut pending_reach_actor)
             {
                 melds.push(meld);
+                if melds.len() >= MAX_PROG_LEN {
+                    break;
+                }
             }
 
             if melds.len() >= MAX_PROG_LEN {
@@ -1306,6 +1382,45 @@ mod tests {
     }
 
     #[test]
+    fn test_progression_includes_initial_and_kan_dora_reveals() {
+        let obs = Observation::new(
+            0,
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![],
+            vec![
+                r#"{"type":"start_kyoku","dora_marker":"5m"}"#.to_string(),
+                r#"{"type":"dora","dora_marker":"E"}"#.to_string(),
+            ],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+            None,
+            None,
+        );
+
+        let progression = obs.encode_seq_progression();
+        let prog_melds = obs.encode_seq_progression_melds();
+
+        assert_eq!(progression[0], [4, PROG_TYPE_START, 2, 2, 4]);
+        assert_eq!(progression[1], [4, PROG_TYPE_DORA_OFFSET + 5, 2, 2, 4]);
+        assert_eq!(progression[2], [4, PROG_TYPE_DORA_OFFSET + 30, 2, 2, 4]);
+        assert_eq!(prog_melds.len(), progression.len());
+        assert!(prog_melds.iter().all(|row| *row == MELD_PAD));
+    }
+
+    #[test]
     fn test_candidate_features_bundle_matches_separate_encoders() {
         let obs = Observation::new(
             1,
@@ -1349,7 +1464,8 @@ mod tests {
     #[test]
     fn test_progression_type_bounds() {
         let prog_type_max = PROG_DIMS[1];
-        assert!(43 < prog_type_max); // padding
+        assert!(80 < prog_type_max); // padding
+        assert!(79 < prog_type_max); // dora reveal max
         assert!(42 < prog_type_max); // kakan
     }
 
