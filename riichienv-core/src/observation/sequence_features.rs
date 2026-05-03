@@ -25,6 +25,15 @@ pub const MAX_SPARSE_LEN: usize = 8;
 #[allow(dead_code)]
 pub const DEALER_DIMS: u16 = 4;
 
+/// Player summary tuple dimensions:
+/// (relative_seat, riichi_active, meld_count, discard_count, tedashi_count).
+#[allow(dead_code)]
+pub const PLAYER_INFO_DIMS: [u16; 5] = [4, 2, 5, 13, 13];
+#[allow(dead_code)]
+pub const PLAYER_INFO_TOKENS: usize = 4;
+#[allow(dead_code)]
+pub const PLAYER_INFO_WIDTH: usize = 5;
+
 /// Hand tuple dimensions: (tile37, draw_state)
 #[allow(dead_code)]
 pub const HAND_DIMS: [u16; 2] = [38, 3];
@@ -108,6 +117,8 @@ const PROG_TYPE_DAIMINKAN: u16 = 40;
 const PROG_TYPE_ANKAN: u16 = 41;
 const PROG_TYPE_KAKAN: u16 = 42;
 const PROG_TYPE_DORA_OFFSET: u16 = 43;
+const PLAYER_MELD_COUNT_CAP: u16 = 4;
+const PLAYER_DISCARD_COUNT_CAP: u16 = 12;
 
 fn normalize_score(score: i32) -> f32 {
     (score as f32 - SCORE_NORM_BASE) / SCORE_NORM_SCALE
@@ -489,6 +500,58 @@ impl Observation {
     /// Values: 0=self, 1=shimocha, 2=toimen, 3=kamicha.
     pub fn encode_seq_dealer(&self) -> u16 {
         relative_seat(self.player_id.min(3), self.oya.min(3)) as u16
+    }
+
+    /// Encode per-player public summary rows in observer-relative seat order.
+    ///
+    /// Each row is `(relative_seat, riichi_active, meld_count, discard_count, tedashi_count)`.
+    /// Counts are clipped to the embedding vocabularies: meld count 0-4, discard
+    /// and tedashi counts 0-12. `riichi_active` includes the transient reach
+    /// stage between a `reach` event and the committing discard.
+    pub fn encode_seq_player_stats(&self) -> Vec<[u16; PLAYER_INFO_WIDTH]> {
+        let mut out = Vec::with_capacity(PLAYER_INFO_TOKENS);
+
+        for (owner_rel, &abs_idx) in self.rel_order().iter().enumerate() {
+            let riichi_active = self.riichi_declared[abs_idx] || self.riichi_stage[abs_idx];
+            let meld_count = (self.melds[abs_idx].len() as u16).min(PLAYER_MELD_COUNT_CAP);
+            let discard_count = (self.discards[abs_idx].len() as u16).min(PLAYER_DISCARD_COUNT_CAP);
+            let tedashi_count = self
+                .count_tedashi_discards(abs_idx)
+                .min(PLAYER_DISCARD_COUNT_CAP);
+
+            out.push([
+                owner_rel as u16,
+                if riichi_active { 1 } else { 0 },
+                meld_count,
+                discard_count,
+                tedashi_count,
+            ]);
+        }
+
+        out
+    }
+
+    fn count_tedashi_discards(&self, abs_idx: usize) -> u16 {
+        let discards_len = self.discards[abs_idx].len();
+        let from_hand = &self.discard_from_hand[abs_idx];
+        if from_hand.len() == discards_len {
+            return from_hand.iter().filter(|&&v| v).count() as u16;
+        }
+
+        let tsumogiri = &self.tsumogiri_flags[abs_idx];
+        if tsumogiri.len() == discards_len {
+            return tsumogiri.iter().filter(|&&v| !v).count() as u16;
+        }
+
+        self.events
+            .iter()
+            .filter_map(|event_str| serde_json::from_str::<serde_json::Value>(event_str).ok())
+            .filter(|v| {
+                v["type"].as_str() == Some("dahai")
+                    && v["actor"].as_u64() == Some(abs_idx as u64)
+                    && !v["tsumogiri"].as_bool().unwrap_or(false)
+            })
+            .count() as u16
     }
 
     fn encode_sparse_meld_entries(&self) -> Vec<([u16; MELD_FEATURE_WIDTH], u16)> {
@@ -1214,6 +1277,70 @@ mod tests {
 
         let hand = obs.encode_seq_hand();
         assert_eq!(hand, vec![[1, 0], [2, 0], [3, 0]]);
+    }
+
+    #[test]
+    fn test_encode_seq_player_stats_uses_relative_order_and_clipped_counts() {
+        let mut obs = Observation::new(
+            2,
+            [vec![], vec![], vec![], vec![]],
+            [
+                vec![Meld::new(
+                    MeldType::Pon,
+                    vec![108, 109, 110],
+                    true,
+                    1,
+                    Some(108),
+                )],
+                vec![],
+                vec![],
+                vec![
+                    Meld::new(MeldType::Pon, vec![112, 113, 114], true, 2, Some(112)),
+                    Meld::new(
+                        MeldType::Kakan,
+                        vec![116, 117, 118, 119],
+                        true,
+                        1,
+                        Some(116),
+                    ),
+                ],
+            ],
+            [vec![0, 4, 8], vec![12, 16], vec![], (0..13).collect()],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false, true, false, false],
+            vec![],
+            vec![],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+            None,
+            None,
+        );
+        obs.riichi_stage = [false, false, false, true];
+        obs.discard_from_hand = [
+            vec![true, false, true],
+            vec![true, true],
+            vec![],
+            vec![true; 13],
+        ];
+
+        assert_eq!(
+            obs.encode_seq_player_stats(),
+            vec![
+                [0, 0, 0, 0, 0],
+                [1, 1, 2, 12, 12],
+                [2, 0, 1, 3, 2],
+                [3, 1, 0, 2, 2],
+            ]
+        );
     }
 
     #[test]

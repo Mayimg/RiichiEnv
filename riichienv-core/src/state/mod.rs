@@ -259,6 +259,15 @@ impl GameState {
             self.last_discard.map(|(pid, _)| pid),
             self.drawn_tile,
         );
+        obs.riichi_stage = std::array::from_fn(|i| self.players[i].riichi_stage);
+        obs.discard_from_hand = std::array::from_fn(|i| self.players[i].discard_from_hand.clone());
+        obs.tsumogiri_flags = std::array::from_fn(|i| {
+            self.players[i]
+                .discard_from_hand
+                .iter()
+                .map(|&from_hand| !from_hand)
+                .collect()
+        });
 
         // Attach pre-computed progression snapshot.
         #[cfg(feature = "python")]

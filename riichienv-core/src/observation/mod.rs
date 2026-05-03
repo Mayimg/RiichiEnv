@@ -31,6 +31,8 @@ pub struct Observation {
     pub dora_indicators: Vec<u32>,
     pub scores: [i32; 4],
     pub riichi_declared: [bool; 4],
+    #[serde(default)]
+    pub riichi_stage: [bool; 4],
 
     pub(crate) _legal_actions: Vec<Action>,
 
@@ -53,6 +55,8 @@ pub struct Observation {
     pub waits: Vec<u8>,
     pub is_tenpai: bool,
     pub tsumogiri_flags: [Vec<bool>; 4],
+    #[serde(default)]
+    pub discard_from_hand: [Vec<bool>; 4],
     pub riichi_sutehais: [Option<u8>; 4],
     pub last_tedashis: [Option<u8>; 4],
     pub last_discard: Option<u32>,
@@ -100,6 +104,7 @@ impl Observation {
             dora_indicators: dora_u32,
             scores,
             riichi_declared,
+            riichi_stage: [false; 4],
             _legal_actions: legal_actions,
             events,
             cached_progression: None,
@@ -113,6 +118,7 @@ impl Observation {
             waits,
             is_tenpai,
             tsumogiri_flags: Default::default(),
+            discard_from_hand: Default::default(),
             riichi_sutehais,
             last_tedashis,
             last_discard,

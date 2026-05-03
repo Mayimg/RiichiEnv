@@ -7,8 +7,8 @@ embeds each group, and processes them through a TransformerEncoder.
 Tile-only fields across hand / sparse dora / progression / candidates share
 an attribute-based tile embedding module. Chi/pon/kan melds use a shared
 factorized embedding over meld kind, slot tiles, and slot roles. Dealer,
-progression actor/from, candidate from, and sparse meld owner fields share an
-observer-relative seat base embedding with role-specific context.
+player summary, progression actor/from, candidate from, and sparse meld owner
+fields share an observer-relative seat base embedding with role-specific context.
 Agari-overtake features are reshaped into four winner-relative-seat tokens
 with a shared projection and the shared relative-seat embedding.
 
@@ -92,7 +92,8 @@ _SEAT_ROLE_CAND_FROM = 3
 _SEAT_ROLE_MELD_OWNER = 4
 _SEAT_ROLE_TILE_WIND_OWNER = 5
 _SEAT_ROLE_AGARI_WINNER = 6
-_SEAT_NUM_ROLES = 7
+_SEAT_ROLE_PLAYER_INFO = 7
+_SEAT_NUM_ROLES = 8
 _SEAT_PAD_OR_NA = 4
 
 _ROUND_WIND_FLAG_YES = 0
@@ -596,6 +597,7 @@ class TransformerActorCritic(nn.Module):
         # Vocab sizes (from SequenceFeatureEncoder)
         sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,  # 261
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 260
+        player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,13,13)
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,81,3,3,5)
         cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (48,3,5)
@@ -615,6 +617,8 @@ class TransformerActorCritic(nn.Module):
         # Packed layout constants (must match SequenceFeaturePackedEncoder)
         self._S = SequenceFeatureEncoder.MAX_SPARSE_LEN
         self._D = 1
+        self._PI = SequenceFeatureEncoder.PLAYER_INFO_TOKENS
+        self._PIW = SequenceFeatureEncoder.PLAYER_INFO_WIDTH
         self._SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
         self._MW = SequenceFeatureEncoder.MELD_WIDTH
         self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
@@ -625,10 +629,21 @@ class TransformerActorCritic(nn.Module):
         self._P = max_prog_len
         self._C = max_cand_len
         self._CW = len(cand_dims)
+        if len(player_info_dims) != self._PIW:
+            raise ValueError(f"player_info_dims must have {self._PIW} entries")
+        self.player_info_dims = tuple(int(v) for v in player_info_dims)
 
         # --- Embedding layers ---
         self.sparse_embed = nn.Embedding(sparse_vocab, d_model, padding_idx=sparse_pad)
         self.relative_seat_embed = RelativeSeatEmbedding(base_dim=d_other, d_model=d_model)
+        self.player_riichi_embed = nn.Embedding(self.player_info_dims[1], d_other)
+        self.player_meld_count_embed = nn.Embedding(self.player_info_dims[2], d_other)
+        self.player_discard_count_embed = nn.Embedding(self.player_info_dims[3], d_other)
+        self.player_tedashi_count_embed = nn.Embedding(self.player_info_dims[4], d_other)
+        self.player_info_proj = nn.Sequential(
+            nn.Linear(d_other * self._PIW, d_model),
+            nn.LayerNorm(d_model),
+        )
         self.tile_embed = SharedTileEmbedding(out_dim=d_type, attr_dim=d_other)
         self.tile_action_kind_embed = nn.Embedding(_ACTION_KIND_PAD + 1, d_other, padding_idx=_ACTION_KIND_PAD)
         self.tile_action_proj = nn.Sequential(
@@ -690,11 +705,11 @@ class TransformerActorCritic(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.normal_(self.cls_token, std=0.02)
 
-        # --- Segment embeddings (6 groups: sparse / hand / numeric / agari / prog / cand) ---
-        self.segment_embed = nn.Embedding(6, d_model)
+        # --- Segment embeddings (7 groups: sparse / player / hand / numeric / agari / prog / cand) ---
+        self.segment_embed = nn.Embedding(7, d_model)
 
         # --- Positional encoding (sinusoidal) ---
-        max_seq = 1 + self._S + self._D + self._SM + self._H + 1 + self._AT + self._P + self._C
+        max_seq = 1 + self._S + self._D + self._PI + self._SM + self._H + 1 + self._AT + self._P + self._C
         self.register_buffer("pos_enc", self._sinusoidal_pe(max_seq, d_model))
 
         # --- Transformer encoder (pre-LN for stability) ---
@@ -780,6 +795,8 @@ class TransformerActorCritic(nn.Module):
         o += self._S
         dealer = x[:, o].long()
         o += 1
+        player_stats = x[:, o : o + self._PI * self._PIW].reshape(-1, self._PI, self._PIW).long()
+        o += self._PI * self._PIW
         sparse_melds = x[:, o : o + self._SM * self._MW].reshape(-1, self._SM, self._MW).long()
         o += self._SM * self._MW
         sparse_meld_owners = x[:, o : o + self._SM].long()
@@ -810,6 +827,7 @@ class TransformerActorCritic(nn.Module):
         return (
             sparse,
             dealer,
+            player_stats,
             sparse_melds,
             sparse_meld_owners,
             hand,
@@ -853,6 +871,21 @@ class TransformerActorCritic(nn.Module):
         slot_emb = self.dora_slot_embed(dora_slot)
         dora_emb = self.sparse_dora_proj(torch.cat([tile_emb, slot_emb], dim=-1))
         return torch.where(dora_mask.unsqueeze(-1), dora_emb, sparse_emb)
+
+    def _embed_player_info(self, player_stats: torch.Tensor) -> torch.Tensor:
+        seats = player_stats[:, :, 0].clamp(min=0, max=3)
+        riichi = player_stats[:, :, 1].clamp(min=0, max=self.player_info_dims[1] - 1)
+        meld_count = player_stats[:, :, 2].clamp(min=0, max=self.player_info_dims[2] - 1)
+        discard_count = player_stats[:, :, 3].clamp(min=0, max=self.player_info_dims[3] - 1)
+        tedashi_count = player_stats[:, :, 4].clamp(min=0, max=self.player_info_dims[4] - 1)
+        parts = [
+            self.relative_seat_embed(seats, _SEAT_ROLE_PLAYER_INFO, out="other"),
+            self.player_riichi_embed(riichi),
+            self.player_meld_count_embed(meld_count),
+            self.player_discard_count_embed(discard_count),
+            self.player_tedashi_count_embed(tedashi_count),
+        ]
+        return self.player_info_proj(torch.cat(parts, dim=-1))
 
     def _embed_sparse_melds(
         self,
@@ -1067,6 +1100,7 @@ class TransformerActorCritic(nn.Module):
         (
             sparse,
             dealer,
+            player_stats,
             sparse_melds,
             sparse_meld_owners,
             hand,
@@ -1096,6 +1130,9 @@ class TransformerActorCritic(nn.Module):
 
         # Embed dealer relative seat: (B, 1, d)
         dealer_emb = self.relative_seat_embed(dealer, _SEAT_ROLE_DEALER, out="model").unsqueeze(1)
+
+        # Embed per-player public summaries: (B, 4, d)
+        player_info_emb = self._embed_player_info(player_stats)
 
         # Embed current visible melds: (B, SM, d)
         sparse_meld_emb = self._embed_sparse_melds(
@@ -1141,13 +1178,14 @@ class TransformerActorCritic(nn.Module):
         # CLS token: (B, 1, d)
         cls = self.cls_token.expand(batch_size, -1, -1)
 
-        # Concatenate: [CLS, sparse(S), dealer(1), sparse_meld(SM), hand(H),
+        # Concatenate: [CLS, sparse(S), dealer(1), player_info(4), sparse_meld(SM), hand(H),
         # numeric(1), agari_overtake(4), prog(P), cand(C)]
         tokens = torch.cat(
             [
                 cls,
                 sparse_emb,
                 dealer_emb,
+                player_info_emb,
                 sparse_meld_emb,
                 hand_emb,
                 numeric_emb,
@@ -1161,12 +1199,14 @@ class TransformerActorCritic(nn.Module):
         # Add segment embeddings
         seg_ids = torch.cat(
             [
-                torch.zeros(batch_size, 1 + self._S + self._D + self._SM, dtype=torch.long, device=x.device),
-                torch.ones(batch_size, self._H, dtype=torch.long, device=x.device),
-                torch.full((batch_size, 1), 2, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._AT), 3, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._P), 4, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._C), 5, dtype=torch.long, device=x.device),
+                torch.zeros(batch_size, 1 + self._S + self._D, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._PI), 1, dtype=torch.long, device=x.device),
+                torch.zeros(batch_size, self._SM, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._H), 2, dtype=torch.long, device=x.device),
+                torch.full((batch_size, 1), 3, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._AT), 4, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._P), 5, dtype=torch.long, device=x.device),
+                torch.full((batch_size, self._C), 6, dtype=torch.long, device=x.device),
             ],
             dim=1,
         )
@@ -1178,6 +1218,7 @@ class TransformerActorCritic(nn.Module):
         # Build padding mask: True = ignore (PyTorch convention)
         cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
         dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
+        player_info_valid = torch.zeros(batch_size, self._PI, dtype=torch.bool, device=x.device)
         numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
         agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=x.device)
         pad_mask = torch.cat(
@@ -1185,6 +1226,7 @@ class TransformerActorCritic(nn.Module):
                 cls_valid,  # CLS is always valid
                 ~sparse_mask,  # True where sparse is padding
                 dealer_valid,  # dealer is always valid
+                player_info_valid,  # player summaries are always valid
                 ~sparse_meld_mask,  # True where current visible meld is padding
                 ~hand_mask,  # True where hand is padding
                 numeric_valid,  # numeric is always valid
@@ -1202,7 +1244,7 @@ class TransformerActorCritic(nn.Module):
         # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
 
-        cand_offset = 1 + self._S + self._D + self._SM + self._H + 1 + self._AT + self._P
+        cand_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + 1 + self._AT + self._P
         cand_out = output[:, cand_offset : cand_offset + self._C]  # (B, C, d_model)
 
         # Policy head

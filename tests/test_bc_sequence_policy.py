@@ -20,6 +20,7 @@ from riichienv_ml.models.transformer import (
     _RED_FLAG_RED,
     _SEAT_ROLE_AGARI_WINNER,
     _SEAT_ROLE_MELD_OWNER,
+    _SEAT_ROLE_PLAYER_INFO,
     _SEAT_ROLE_PROG_ACTOR,
     _SPARSE_DORA_OFFSET,
     _TILE34_PAD,
@@ -295,6 +296,59 @@ def test_sequence_feature_encoder_separates_dealer_from_sparse_vocab():
     assert features["dealer"].item() == 3
     assert features["sparse"].shape == (SequenceFeatureEncoder.MAX_SPARSE_LEN,)
     assert valid_sparse.tolist() == [1, 3, 74]
+
+
+def test_sequence_feature_encoder_includes_player_stats():
+    events = []
+    events.extend({"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": False} for _ in range(2))
+    events.append({"type": "dahai", "actor": 0, "pai": "2m", "tsumogiri": True})
+    events.extend({"type": "dahai", "actor": 1, "pai": "3m", "tsumogiri": False} for _ in range(2))
+    events.extend({"type": "dahai", "actor": 3, "pai": "4m", "tsumogiri": False} for _ in range(13))
+
+    obs = Observation(
+        2,
+        [[], [], [], []],
+        [
+            [Meld(MeldType.Pon, [108, 109, 110], True, 1, 108)],
+            [],
+            [],
+            [
+                Meld(MeldType.Pon, [112, 113, 114], True, 2, 112),
+                Meld(MeldType.Kakan, [116, 117, 118, 119], True, 1, 116),
+            ],
+        ],
+        [[0, 4, 8], [12, 16], [], list(range(13))],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, True, False, False],
+        [],
+        [json.dumps(event) for event in events],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+
+    assert features["player_stats"].shape == (
+        SequenceFeatureEncoder.PLAYER_INFO_TOKENS,
+        SequenceFeatureEncoder.PLAYER_INFO_WIDTH,
+    )
+    assert features["player_stats"].tolist() == [
+        [0, 0, 0, 0, 0],
+        [1, 0, 2, 12, 12],
+        [2, 0, 1, 3, 2],
+        [3, 1, 0, 2, 2],
+    ]
 
 
 def test_sequence_progression_includes_dora_reveals():
@@ -580,14 +634,18 @@ def test_transformer_relative_seat_embedding_shares_base_and_zeroes_special_valu
 
     actor_emb = model.relative_seat_embed(seats, _SEAT_ROLE_PROG_ACTOR, out="other")
     owner_emb = model.relative_seat_embed(seats, _SEAT_ROLE_MELD_OWNER, out="model")
+    player_emb = model.relative_seat_embed(seats, _SEAT_ROLE_PLAYER_INFO, out="other")
 
     assert actor_emb.shape == (1, 3, 8)
     assert owner_emb.shape == (1, 3, 64)
+    assert player_emb.shape == (1, 3, 8)
     assert model.relative_seat_embed.base_embed.weight.shape[0] == 4
     assert torch.count_nonzero(actor_emb[:, :2]).item() > 0
     assert torch.count_nonzero(owner_emb[:, :2]).item() > 0
+    assert torch.count_nonzero(player_emb[:, :2]).item() > 0
     assert torch.allclose(actor_emb[:, 2], torch.zeros_like(actor_emb[:, 2]))
     assert torch.allclose(owner_emb[:, 2], torch.zeros_like(owner_emb[:, 2]))
+    assert torch.allclose(player_emb[:, 2], torch.zeros_like(player_emb[:, 2]))
 
 
 def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
@@ -605,7 +663,9 @@ def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
 
     assert emb.shape == (2, SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS, 64)
     assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
-    expected_seq_len = 1 + model._S + model._D + model._SM + model._H + 1 + model._AT + model._P + model._C
+    expected_seq_len = (
+        1 + model._S + model._D + model._PI + model._SM + model._H + 1 + model._AT + model._P + model._C
+    )
     assert model.pos_enc.shape[1] == expected_seq_len
 
     winner_seats = torch.arange(SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS).unsqueeze(0).expand(2, -1)
