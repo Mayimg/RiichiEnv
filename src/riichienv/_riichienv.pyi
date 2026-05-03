@@ -497,6 +497,13 @@ class Observation:
         optional drawn tile last.
         """
         ...
+    def encode_seq_current_shanten(self) -> bytes:
+        """Encode current self shanten by hand form.
+
+        Shape: ``(3,)`` / dtype: ``uint16``. Order is standard, seven pairs,
+        thirteen orphans. Values are ``shanten + 1``; ``15`` means N/A.
+        """
+        ...
     def encode_seq_numeric(self) -> bytes:
         """Encode sequence features as numeric values.
 
@@ -527,9 +534,10 @@ class Observation:
     def encode_seq_candidates(self) -> bytes:
         """Encode sequence candidate features.
 
-        Shape: ``(M, 3)`` / dtype: ``uint16``.
+        Shape: ``(M, 6)`` / dtype: ``uint16``.
 
-        Each row represents one legal action candidate with 3 token values.
+        Each row represents one legal action candidate with
+        ``(type, moqie, from, standard_delta, chitoi_delta, kokushi_delta)``.
         """
         ...
     def encode_seq_candidate_melds(self) -> bytes:
@@ -541,7 +549,7 @@ class Observation:
     def encode_seq_candidate_features(self) -> bytes:
         """Encode sequence candidate and aligned meld features.
 
-        Shape: ``(M, 12)`` / dtype: ``uint16``.
+        Shape: ``(M, 15)`` / dtype: ``uint16``.
         """
         ...
     def __init__(self, *args: Any, **kwargs: Any): ...

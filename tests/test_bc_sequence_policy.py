@@ -231,6 +231,38 @@ def test_sequence_numeric_features_use_current_normalized_scores_only():
     assert torch.allclose(features["numeric"], torch.tensor([3.0, 2.0, 0.0, 1.7, 1.0, -1.0]))
 
 
+def test_sequence_feature_encoder_includes_current_shanten_token():
+    obs = Observation(
+        0,
+        [[0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25], [], [], []],
+        [[Meld(MeldType.Pon, [108, 109, 110], True, 1, 108)], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+
+    assert features["current_shanten"].shape == (SequenceFeatureEncoder.SHANTEN_FORM_COUNT,)
+    assert features["current_shanten"][0].item() < SequenceFeatureEncoder.SHANTEN_VALUE_NA
+    assert features["current_shanten"][1:].tolist() == [SequenceFeatureEncoder.SHANTEN_VALUE_NA] * 2
+
+
 def test_sequence_feature_encoder_includes_pairwise_agari_overtake_flags():
     obs = Observation(
         2,
@@ -425,7 +457,9 @@ def test_sequence_candidates_distinguish_red_and_moqie_discards():
 
     features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
     valid = features["candidates"][features["cand_mask"]]
-    assert valid.tolist() == [[0, 0, 0], [5, 1, 0], [37, 2, 0]]
+    assert valid.shape[1] == SequenceFeatureEncoder.CAND_WIDTH
+    assert valid[:, :3].tolist() == [[0, 0, 0], [5, 1, 0], [37, 2, 0]]
+    assert valid[2, 3:].tolist() == [SequenceFeatureEncoder.SHANTEN_DELTA_NA] * 3
 
 
 def test_sequence_candidates_distinguish_red_consumed_melds():
@@ -461,7 +495,8 @@ def test_sequence_candidates_distinguish_red_consumed_melds():
 
     features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
     valid = features["candidates"][features["cand_mask"]]
-    assert valid.tolist() == [[44, 2, 3], [44, 2, 3]]
+    assert valid.shape[1] == SequenceFeatureEncoder.CAND_WIDTH
+    assert valid[:, :3].tolist() == [[44, 2, 3], [44, 2, 3]]
     valid_melds = features["cand_melds"][features["cand_mask"]]
     assert valid_melds.tolist() == [
         [_MELD_KIND_PON, 5, _MELD_ROLE_CALLED, 5, _MELD_ROLE_CONSUMED, 5, _MELD_ROLE_CONSUMED, 37, 3],
@@ -502,7 +537,42 @@ def test_sequence_response_candidates_use_last_discard_actor_without_events():
     assert [a.action_type for a in candidates] == [ActionType.PON, ActionType.RON, ActionType.PASS]
     features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
     valid = features["candidates"][features["cand_mask"]]
-    assert valid.tolist() == [[44, 2, 3], [46, 2, 3], [42, 2, 0]]
+    assert valid.shape[1] == SequenceFeatureEncoder.CAND_WIDTH
+    assert valid[:, :3].tolist() == [[44, 2, 3], [46, 2, 3], [42, 2, 0]]
+    assert valid[1, 3:].tolist() == [SequenceFeatureEncoder.SHANTEN_DELTA_NA] * 3
+    assert valid[2, 3:].tolist() == [SequenceFeatureEncoder.SHANTEN_DELTA_NA] * 3
+
+
+def test_sequence_call_candidate_marks_special_forms_regressed():
+    obs = Observation(
+        1,
+        [[], [0, 4, 8, 12, 16, 17, 20, 24, 28, 32, 36, 40, 44], [], []],
+        [[], [], [], []],
+        [[19], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [Action(ActionType.PON, 19, [16, 17])],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        19,
+        None,
+        0,
+    )
+
+    features = SequenceFeatureEncoder(max_cand_len=4).encode(obs)
+    valid = features["candidates"][features["cand_mask"]]
+
+    assert valid[:, :3].tolist() == [[44, 2, 3]]
+    assert valid[0, 4:].tolist() == [SequenceFeatureEncoder.SHANTEN_DELTA_REGRESS] * 2
 
 
 def test_mjai_replay_claim_labels_remain_strict_candidate_actions(tmp_path):
@@ -664,7 +734,7 @@ def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
     assert emb.shape == (2, SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS, 64)
     assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
     expected_seq_len = (
-        1 + model._S + model._D + model._PI + model._SM + model._H + 1 + model._AT + model._P + model._C
+        1 + model._S + model._D + model._PI + model._SM + model._H + 1 + 1 + model._AT + model._P + model._C
     )
     assert model.pos_enc.shape[1] == expected_seq_len
 

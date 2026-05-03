@@ -238,6 +238,52 @@ pub fn calc_shanten_from_counts(tehai: &[u8; TILE_MAX], tehai_len_div3: u8) -> i
     }
 }
 
+pub const SHANTEN_FORM_COUNT: usize = 3;
+
+/// Calculate form-specific shanten from 34-tile counts.
+///
+/// The returned order is:
+/// 0. standard 4 melds + 1 pair
+/// 1. seven pairs
+/// 2. thirteen orphans
+///
+/// Seven pairs and thirteen orphans are only valid for closed hands with enough
+/// tiles to evaluate those shapes. Any declared meld, including a closed kan,
+/// makes those forms unavailable and they are returned as `None`.
+pub fn calc_shanten_forms_from_counts(
+    tehai: &[u8; TILE_MAX],
+    tehai_len_div3: u8,
+    has_declared_meld: bool,
+) -> [Option<i8>; SHANTEN_FORM_COUNT] {
+    let normal = calc_normal(tehai, tehai_len_div3);
+    if has_declared_meld || tehai_len_div3 < 4 {
+        return [Some(normal), None, None];
+    }
+
+    [
+        Some(normal),
+        Some(calc_chitoi(tehai)),
+        Some(calc_kokushi(tehai)),
+    ]
+}
+
+/// Calculate form-specific shanten from 136-tile ID hand tiles.
+pub fn calculate_shanten_forms(
+    hand_tiles: &[u32],
+    has_declared_meld: bool,
+) -> [Option<i8>; SHANTEN_FORM_COUNT] {
+    let mut tile_counts = [0u8; TILE_MAX];
+    for &tile in hand_tiles {
+        let tile_type = (tile / 4) as usize;
+        if tile_type < TILE_MAX {
+            tile_counts[tile_type] += 1;
+        }
+    }
+    let num_tiles: u8 = tile_counts.iter().sum();
+    let len_div3 = num_tiles / 3;
+    calc_shanten_forms_from_counts(&tile_counts, len_div3, has_declared_meld)
+}
+
 /// Valid tile types for 3-player mahjong (sanma): 1m, 9m, 1-9p, 1-9s, 7 honor tiles.
 /// Excludes 2m-8m (tile types 1-7) which don't exist in sanma.
 #[cfg(feature = "python")]

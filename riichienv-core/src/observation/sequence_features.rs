@@ -9,6 +9,7 @@
 
 use crate::action::{Action, ActionType};
 use crate::parser::mjai_to_tid;
+use crate::shanten::{self, SHANTEN_FORM_COUNT};
 use crate::types::{Meld, MeldType};
 
 use super::Observation;
@@ -48,19 +49,61 @@ pub const MAX_PROG_LEN: usize = 512;
 #[allow(dead_code)]
 pub const PROG_PAD: [u16; 5] = [4, 80, 2, 2, 4];
 
-/// Candidate tuple dimensions: (type, moqie, from)
+/// Current shanten tuple dimensions:
+/// (standard, seven_pairs, thirteen_orphans), each encoded as shanten + 1.
+/// Values: 0=agari(-1), 1=tenpai(0), ..., 14=13-shanten, 15=N/A.
 #[allow(dead_code)]
-pub const CAND_DIMS: [u16; 3] = [48, 3, 5];
+pub const SHANTEN_VALUE_DIMS: u16 = 16;
+#[allow(dead_code)]
+pub const SHANTEN_VALUE_NA: u16 = 15;
+#[allow(dead_code)]
+pub const CURRENT_SHANTEN_WIDTH: usize = SHANTEN_FORM_COUNT;
+#[allow(dead_code)]
+pub const SHANTEN_FORM_DIMS: [u16; CURRENT_SHANTEN_WIDTH] =
+    [SHANTEN_VALUE_DIMS; CURRENT_SHANTEN_WIDTH];
+
+/// Candidate shanten-delta dimensions:
+/// 0=advance, 1=same, 2=regress, 3=N/A.
+#[allow(dead_code)]
+pub const SHANTEN_DELTA_DIMS: u16 = 4;
+#[allow(dead_code)]
+pub const SHANTEN_DELTA_NA: u16 = 3;
+#[allow(dead_code)]
+pub const SHANTEN_DELTA_ADVANCE: u16 = 0;
+#[allow(dead_code)]
+pub const SHANTEN_DELTA_SAME: u16 = 1;
+#[allow(dead_code)]
+pub const SHANTEN_DELTA_REGRESS: u16 = 2;
+
+/// Candidate tuple dimensions: (type, moqie, from, standard_delta, chitoi_delta, kokushi_delta)
+#[allow(dead_code)]
+pub const CAND_WIDTH: usize = 3 + SHANTEN_FORM_COUNT;
+#[allow(dead_code)]
+pub const CAND_DIMS: [u16; CAND_WIDTH] = [
+    48,
+    3,
+    5,
+    SHANTEN_DELTA_DIMS,
+    SHANTEN_DELTA_DIMS,
+    SHANTEN_DELTA_DIMS,
+];
 #[allow(dead_code)]
 pub const MAX_CAND_LEN: usize = 64;
 #[allow(dead_code)]
-pub const CAND_PAD: [u16; 3] = [47, 2, 4];
+pub const CAND_PAD: [u16; CAND_WIDTH] = [
+    47,
+    2,
+    4,
+    SHANTEN_DELTA_NA,
+    SHANTEN_DELTA_NA,
+    SHANTEN_DELTA_NA,
+];
 
 /// Meld feature row: (kind, slot0_tile37, slot0_role, ..., slot3_tile37, slot3_role)
 #[allow(dead_code)]
 pub const MELD_FEATURE_WIDTH: usize = 9;
 #[allow(dead_code)]
-pub const CANDIDATE_FEATURE_WIDTH: usize = 3 + MELD_FEATURE_WIDTH;
+pub const CANDIDATE_FEATURE_WIDTH: usize = CAND_WIDTH + MELD_FEATURE_WIDTH;
 #[allow(dead_code)]
 pub const SPARSE_MELD_FEATURE_WIDTH: usize = MELD_FEATURE_WIDTH + 1;
 #[allow(dead_code)]
@@ -122,6 +165,38 @@ const PLAYER_DISCARD_COUNT_CAP: u16 = 12;
 
 fn normalize_score(score: i32) -> f32 {
     (score as f32 - SCORE_NORM_BASE) / SCORE_NORM_SCALE
+}
+
+fn encode_shanten_value(value: Option<i8>) -> u16 {
+    value
+        .map(|v| (v.clamp(-1, 13) + 1) as u16)
+        .unwrap_or(SHANTEN_VALUE_NA)
+}
+
+fn shanten_delta_category(current: Option<i8>, next: Option<i8>) -> u16 {
+    match (current, next) {
+        (None, _) => SHANTEN_DELTA_NA,
+        (Some(_), None) => SHANTEN_DELTA_REGRESS,
+        (Some(current), Some(next)) if next < current => SHANTEN_DELTA_ADVANCE,
+        (Some(current), Some(next)) if next == current => SHANTEN_DELTA_SAME,
+        (Some(_), Some(_)) => SHANTEN_DELTA_REGRESS,
+    }
+}
+
+fn shanten_delta_na() -> [u16; SHANTEN_FORM_COUNT] {
+    [SHANTEN_DELTA_NA; SHANTEN_FORM_COUNT]
+}
+
+fn remove_tile_for_shanten(hand: &mut Vec<u32>, tile: u8) -> bool {
+    if let Some(idx) = hand.iter().position(|&t| t == tile as u32) {
+        hand.remove(idx);
+        return true;
+    }
+    if let Some(idx) = hand.iter().position(|&t| t / 4 == (tile / 4) as u32) {
+        hand.remove(idx);
+        return true;
+    }
+    false
 }
 
 // ── Tile conversions ─────────────────────────────────────────────────────────
@@ -819,6 +894,20 @@ impl Observation {
         melds
     }
 
+    // ── Current shanten features ─────────────────────────────────────────
+
+    /// Encode current self hand shanten for three forms:
+    /// standard / seven pairs / thirteen orphans.
+    pub fn encode_seq_current_shanten(&self) -> [u16; CURRENT_SHANTEN_WIDTH] {
+        let pid = self.player_id as usize;
+        let forms = shanten::calculate_shanten_forms(&self.hands[pid], !self.melds[pid].is_empty());
+        [
+            encode_shanten_value(forms[0]),
+            encode_shanten_value(forms[1]),
+            encode_shanten_value(forms[2]),
+        ]
+    }
+
     // ── Candidate features ───────────────────────────────────────────────
 
     /// Return pointer-policy candidate actions in one-to-one correspondence
@@ -866,18 +955,19 @@ impl Observation {
         })
     }
 
-    /// Encode candidate (legal action) features as variable-length 3-tuples.
+    /// Encode candidate (legal action) features as variable-length tuples.
     ///
-    /// Each tuple: (type, moqie, from)
+    /// Each tuple: (type, moqie, from, standard_delta, chitoi_delta, kokushi_delta)
     /// - type: 0-36=discard tile37, 37-46=special/call, 47=padding
     /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
     /// - from: 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding
-    pub fn encode_seq_candidates(&self) -> Vec<[u16; 3]> {
-        let mut cands: Vec<[u16; 3]> = Vec::with_capacity(64);
+    /// - shanten deltas: 0=advance, 1=same, 2=regress, 3=N/A
+    pub fn encode_seq_candidates(&self) -> Vec<[u16; CAND_WIDTH]> {
+        let mut cands: Vec<[u16; CAND_WIDTH]> = Vec::with_capacity(64);
         let pid = self.player_id;
 
         for action in self.candidate_actions() {
-            let tuple = self.encode_candidate_action(&action, pid);
+            let tuple = self.encode_candidate_action_with_shanten(&action, pid);
             if let Some(t) = tuple {
                 cands.push(t);
             }
@@ -892,7 +982,10 @@ impl Observation {
         let pid = self.player_id;
 
         for action in self.candidate_actions() {
-            if self.encode_candidate_action(&action, pid).is_some() {
+            if self
+                .encode_candidate_action_with_shanten(&action, pid)
+                .is_some()
+            {
                 melds.push(self.encode_candidate_action_meld(&action, pid));
             }
         }
@@ -906,19 +999,20 @@ impl Observation {
             .into_iter()
             .map(|(candidate, meld)| {
                 let mut row = [0u16; CANDIDATE_FEATURE_WIDTH];
-                row[..3].copy_from_slice(&candidate);
-                row[3..].copy_from_slice(&meld);
+                row[..CAND_WIDTH].copy_from_slice(&candidate);
+                row[CAND_WIDTH..].copy_from_slice(&meld);
                 row
             })
             .collect()
     }
 
-    fn candidate_action_features(&self) -> Vec<([u16; 3], [u16; MELD_FEATURE_WIDTH])> {
-        let mut features: Vec<([u16; 3], [u16; MELD_FEATURE_WIDTH])> = Vec::with_capacity(64);
+    fn candidate_action_features(&self) -> Vec<([u16; CAND_WIDTH], [u16; MELD_FEATURE_WIDTH])> {
+        let mut features: Vec<([u16; CAND_WIDTH], [u16; MELD_FEATURE_WIDTH])> =
+            Vec::with_capacity(64);
         let pid = self.player_id;
 
         for action in self.candidate_actions() {
-            if let Some(candidate) = self.encode_candidate_action(&action, pid) {
+            if let Some(candidate) = self.encode_candidate_action_with_shanten(&action, pid) {
                 features.push((candidate, self.encode_candidate_action_meld(&action, pid)));
             }
         }
@@ -926,7 +1020,93 @@ impl Observation {
         features
     }
 
-    /// Encode a single legal action as a candidate 3-tuple.
+    fn encode_candidate_action_with_shanten(
+        &self,
+        action: &Action,
+        pid: u8,
+    ) -> Option<[u16; CAND_WIDTH]> {
+        let base = self.encode_candidate_action(action, pid)?;
+        let delta = self.encode_candidate_shanten_delta(action, pid as usize);
+        Some([base[0], base[1], base[2], delta[0], delta[1], delta[2]])
+    }
+
+    fn encode_candidate_shanten_delta(
+        &self,
+        action: &Action,
+        pid: usize,
+    ) -> [u16; SHANTEN_FORM_COUNT] {
+        let Some(post_forms) = self.post_action_shanten_forms(action, pid) else {
+            return shanten_delta_na();
+        };
+        let current_forms =
+            shanten::calculate_shanten_forms(&self.hands[pid], !self.melds[pid].is_empty());
+        [
+            shanten_delta_category(current_forms[0], post_forms[0]),
+            shanten_delta_category(current_forms[1], post_forms[1]),
+            shanten_delta_category(current_forms[2], post_forms[2]),
+        ]
+    }
+
+    fn post_action_shanten_forms(
+        &self,
+        action: &Action,
+        pid: usize,
+    ) -> Option<[Option<i8>; SHANTEN_FORM_COUNT]> {
+        let mut hand = self.hands[pid].clone();
+        let mut has_declared_meld = !self.melds[pid].is_empty();
+
+        match action.action_type {
+            ActionType::Discard => {
+                if !remove_tile_for_shanten(&mut hand, action.tile?) {
+                    return None;
+                }
+            }
+            ActionType::Chi | ActionType::Pon => {
+                if action.consume_tiles.len() < 2 {
+                    return None;
+                }
+                for &tile in &action.consume_tiles {
+                    if !remove_tile_for_shanten(&mut hand, tile) {
+                        return None;
+                    }
+                }
+                has_declared_meld = true;
+            }
+            ActionType::Daiminkan => {
+                if action.consume_tiles.len() < 3 {
+                    return None;
+                }
+                for &tile in &action.consume_tiles {
+                    if !remove_tile_for_shanten(&mut hand, tile) {
+                        return None;
+                    }
+                }
+                has_declared_meld = true;
+            }
+            ActionType::Ankan => {
+                if action.consume_tiles.len() < 4 {
+                    return None;
+                }
+                for &tile in &action.consume_tiles {
+                    if !remove_tile_for_shanten(&mut hand, tile) {
+                        return None;
+                    }
+                }
+                has_declared_meld = true;
+            }
+            ActionType::Kakan => {
+                if !remove_tile_for_shanten(&mut hand, action.tile?) {
+                    return None;
+                }
+                has_declared_meld = true;
+            }
+            _ => return None,
+        }
+
+        Some(shanten::calculate_shanten_forms(&hand, has_declared_meld))
+    }
+
+    /// Encode a single legal action as the visible candidate 3-tuple.
     fn encode_candidate_action(&self, action: &Action, pid: u8) -> Option<[u16; 3]> {
         match action.action_type {
             ActionType::Discard => {
@@ -1583,8 +1763,8 @@ mod tests {
         assert_eq!(bundled.len(), candidates.len());
         assert_eq!(bundled.len(), melds.len());
         for (i, row) in bundled.iter().enumerate() {
-            assert_eq!(row[..3], candidates[i]);
-            assert_eq!(row[3..], melds[i]);
+            assert_eq!(row[..CAND_WIDTH], candidates[i]);
+            assert_eq!(row[CAND_WIDTH..], melds[i]);
         }
     }
 

@@ -1404,7 +1404,7 @@ impl Observation {
 
     /// Encode hand features as N × 2 u16 tuples.
     ///
-    /// Returns raw bytes of flattened row-major `&[[u16; 3]]`.
+    /// Returns raw bytes of flattened row-major `&[[u16; 2]]`.
     /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 2)`.
     #[pyo3(name = "encode_seq_hand")]
     pub fn encode_seq_hand_py<'py>(
@@ -1415,6 +1415,23 @@ impl Observation {
         let byte_len = hand.len() * std::mem::size_of::<[u16; 2]>();
         let byte_slice =
             unsafe { std::slice::from_raw_parts(hand.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
+    /// Encode current self shanten as 3 u16 values.
+    ///
+    /// Order: standard / seven pairs / thirteen orphans.
+    /// Values: 0=agari(-1), 1=tenpai(0), ..., 14=13-shanten, 15=N/A.
+    #[pyo3(name = "encode_seq_current_shanten")]
+    pub fn encode_seq_current_shanten_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let arr = self.encode_seq_current_shanten();
+        let byte_len = std::mem::size_of::<
+            [u16; crate::observation::sequence_features::CURRENT_SHANTEN_WIDTH],
+        >();
+        let byte_slice = unsafe { std::slice::from_raw_parts(arr.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
@@ -1480,18 +1497,19 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode candidate (legal action) features as M × 3 u16 tuples.
+    /// Encode candidate (legal action) features as M × 6 u16 tuples.
     ///
-    /// Returns raw bytes of flattened row-major `&[[u16; 3]]`.
-    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 3)`.
+    /// Returns raw bytes of flattened row-major `&[[u16; 6]]`.
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 6)`.
     #[pyo3(name = "encode_seq_candidates")]
     pub fn encode_seq_candidates_py<'py>(
         &self,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let cands = self.encode_seq_candidates();
-        // [u16; 3] is contiguous in memory; treat the slice as a flat u8 buffer directly.
-        let byte_len = cands.len() * std::mem::size_of::<[u16; 3]>();
+        // Candidate rows are contiguous in memory; treat the slice as a flat u8 buffer directly.
+        let byte_len = cands.len()
+            * std::mem::size_of::<[u16; crate::observation::sequence_features::CAND_WIDTH]>();
         let byte_slice =
             unsafe { std::slice::from_raw_parts(cands.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
@@ -1512,7 +1530,7 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode candidate 3-tuples and aligned meld sidecar rows as M × 12 u16 rows.
+    /// Encode candidate tuples and aligned meld sidecar rows as M × 15 u16 rows.
     #[pyo3(name = "encode_seq_candidate_features")]
     pub fn encode_seq_candidate_features_py<'py>(
         &self,
