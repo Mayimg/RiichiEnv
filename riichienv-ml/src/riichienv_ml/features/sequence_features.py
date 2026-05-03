@@ -17,6 +17,7 @@ class SequenceFeatureEncoder:
     Produces:
         sparse:      (MAX_SPARSE_LEN,)   int64   padded sparse embedding indices
         dealer:      ()                  int64   dealer relative seat
+        player_stats:(PLAYER_INFO_TOKENS, PLAYER_INFO_WIDTH) int64 per-player public summaries
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
@@ -39,6 +40,10 @@ class SequenceFeatureEncoder:
     MAX_SPARSE_LEN = 8
 
     DEALER_DIMS = 4
+
+    PLAYER_INFO_DIMS = (4, 2, 5, 13, 13)
+    PLAYER_INFO_TOKENS = 4
+    PLAYER_INFO_WIDTH = len(PLAYER_INFO_DIMS)
 
     MELD_DIMS = (6, 38, 4, 38, 4, 38, 4, 38, 4)
     MELD_PAD = (5, 37, 3, 37, 3, 37, 3, 37, 3)
@@ -95,6 +100,18 @@ class SequenceFeatureEncoder:
             dealer = np.int64(obs.encode_seq_dealer())
         else:
             dealer = np.int64((obs.oya - obs.player_id + self.n_players) % self.n_players)
+
+        # Per-player public summary tokens
+        player_stats_bytes = obs.encode_seq_player_stats()
+        raw_player_stats = np.frombuffer(player_stats_bytes, dtype=np.uint16).reshape(
+            -1, self.PLAYER_INFO_WIDTH
+        )
+        if raw_player_stats.shape[0] != self.PLAYER_INFO_TOKENS:
+            raise ValueError(
+                f"encode_seq_player_stats returned {raw_player_stats.shape[0]} rows; "
+                f"expected {self.PLAYER_INFO_TOKENS}"
+            )
+        player_stats = raw_player_stats.astype(np.int64, copy=True)
 
         # Current visible melds
         sparse_meld_feature_bytes = obs.encode_seq_sparse_meld_features()
@@ -214,6 +231,7 @@ class SequenceFeatureEncoder:
         return {
             "sparse": torch.from_numpy(sparse),
             "dealer": torch.tensor(dealer, dtype=torch.long),
+            "player_stats": torch.from_numpy(player_stats),
             "sparse_melds": torch.from_numpy(sparse_melds),
             "sparse_meld_owners": torch.from_numpy(sparse_meld_owners),
             "hand": torch.from_numpy(hand),
@@ -242,6 +260,7 @@ class SequenceFeaturePackedEncoder:
     Layout (all float32, P=max_prog_len, C=max_cand_len):
         sparse      (8)        int indices stored as float
         dealer      (1)        int relative dealer seat stored as float
+        player_stats(4 * 5)    int per-player summary rows stored as float
         sparse_melds(16 * 9)   int meld rows stored as float
         sparse_meld_owners(16) int relative owner seats stored as float
         hand        (14 * 2)   int tuples stored as float
@@ -259,6 +278,8 @@ class SequenceFeaturePackedEncoder:
     """
 
     _S = SequenceFeatureEncoder.MAX_SPARSE_LEN
+    _PI = SequenceFeatureEncoder.PLAYER_INFO_TOKENS
+    _PIW = SequenceFeatureEncoder.PLAYER_INFO_WIDTH
     _SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
     _MW = SequenceFeatureEncoder.MELD_WIDTH
     _CW = SequenceFeatureEncoder.CAND_WIDTH
@@ -285,6 +306,7 @@ class SequenceFeaturePackedEncoder:
         self.PACKED_SIZE = (
             self._S
             + 1
+            + self._PI * self._PIW
             + self._SM * self._MW
             + self._SM
             + self._H * 2
@@ -311,6 +333,8 @@ class SequenceFeaturePackedEncoder:
         o += self._S
         packed[o] = d["dealer"].float()
         o += 1
+        packed[o : o + self._PI * self._PIW] = d["player_stats"].reshape(-1).float()
+        o += self._PI * self._PIW
         packed[o : o + self._SM * self._MW] = d["sparse_melds"].reshape(-1).float()
         o += self._SM * self._MW
         packed[o : o + self._SM] = d["sparse_meld_owners"].float()

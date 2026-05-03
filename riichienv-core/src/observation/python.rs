@@ -168,6 +168,8 @@ impl Observation {
         dict.set_item("dora_indicators", self.dora_indicators.clone())?;
         dict.set_item("scores", self.scores)?;
         dict.set_item("riichi_declared", self.riichi_declared)?;
+        dict.set_item("riichi_stage", self.riichi_stage)?;
+        dict.set_item("discard_from_hand", self.discard_from_hand.clone())?;
 
         let actions_py = pyo3::types::PyList::empty(py);
         for a in &self._legal_actions {
@@ -1333,6 +1335,23 @@ impl Observation {
     #[pyo3(name = "encode_seq_dealer")]
     pub fn encode_seq_dealer_py(&self) -> u16 {
         self.encode_seq_dealer()
+    }
+
+    /// Encode per-player public summary rows as 4 × 5 u16 tuples.
+    ///
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(4, 5)`.
+    #[pyo3(name = "encode_seq_player_stats")]
+    pub fn encode_seq_player_stats_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let stats = self.encode_seq_player_stats();
+        let byte_len = stats.len()
+            * std::mem::size_of::<[u16; crate::observation::sequence_features::PLAYER_INFO_WIDTH]>(
+            );
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(stats.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
     /// Encode current meld features as N × 9 u16 rows.

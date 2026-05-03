@@ -12,6 +12,7 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 |---------------|-------|------|-------------|
 | **Sparse** | `(8,)` | int64 | Table metadata, tiles remaining, and dora indicators |
 | **Dealer** | `()` | int64 | Dealer seat relative to the observing player |
+| **Player Stats** | `(4, 5)` | int64 | Per-player public summary tokens in observer-relative seat order |
 | **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
@@ -26,7 +27,7 @@ Each variable-length group is padded to its maximum length, with accompanying bo
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, and reshapes agari-overtake features into four winner-relative-seat tokens.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens.
 
 ### Shared tile attributes
 
@@ -77,7 +78,7 @@ For sparse dora-indicator tokens, the model keeps the existing dora-slot distinc
 
 ### Shared relative-seat embedding
 
-All real relative-seat values (`0=self`, `1=shimocha`, `2=toimen`, `3=kamicha`) share one base embedding table. Role-specific context is added for dealer, progression actor, progression from, candidate from, sparse meld owner, and wind-tile owner before projection to the required sub-dimension. Value `4` is treated as padding/N/A/marker and maps to zero in the seat module; the aligned type field or padding mask carries the special meaning.
+All real relative-seat values (`0=self`, `1=shimocha`, `2=toimen`, `3=kamicha`) share one base embedding table. Role-specific context is added for dealer, player-summary seat, progression actor, progression from, candidate from, sparse meld owner, agari winner, and wind-tile owner before projection to the required sub-dimension. Value `4` is treated as padding/N/A/marker and maps to zero in the seat module; the aligned type field or padding mask carries the special meaning.
 
 ## Tile Encodings
 
@@ -142,6 +143,28 @@ Dealer is encoded as one scalar:
 |-------|--------|--------|
 | dealer | 0=self, 1=shimocha, 2=toimen, 3=kamicha | `relative_seat(obs.player_id, obs.oya)` |
 
+### Player Stats Feature
+
+Player stats are encoded as four always-present rows in observer-relative seat order:
+`self`, `shimocha`, `toimen`, `kamicha`.
+
+Each row is:
+
+```text
+(relative_seat, riichi_active, meld_count, discard_count, tedashi_count)
+```
+
+| Field | Values | Source |
+|-------|--------|--------|
+| `relative_seat` | 0=self, 1=shimocha, 2=toimen, 3=kamicha | row owner |
+| `riichi_active` | 0=no, 1=yes | `riichi_declared || riichi_stage` |
+| `meld_count` | 0-4 | current meld count, including closed kan; kakan does not add a second meld |
+| `discard_count` | 0-12 | all discards, clipped at 12 |
+| `tedashi_count` | 0-12 | hand discards, clipped at 12 |
+
+For `tedashi_count`, a discard with MJAI `tsumogiri=false` is counted as tedashi.
+Chi and pon are followed by a discard without an intervening draw, so their post-call discard is naturally encoded as tedashi. Kans are followed by a rinshan draw; the subsequent discard is treated as a normal drawn-turn discard. External MJAI logs are unchanged; these rows are internal observation features derived from public state.
+
 Current visible melds are encoded separately by `encode_seq_sparse_melds()` with the shared factorized meld layout.
 For training throughput, the Python wrapper reads the bundled `encode_seq_sparse_meld_features()` API,
 which returns each 9-field meld row plus its owner sidecar as a 10-field row.
@@ -152,6 +175,7 @@ Sparse meld rows include all players' current melds in observer-relative owner o
 ```rust
 obs.encode_seq_sparse(game_style: u8) -> Vec<u16>
 obs.encode_seq_dealer() -> u16
+obs.encode_seq_player_stats() -> Vec<[u16; 5]>
 ```
 
 ### Python API (raw)
@@ -160,6 +184,7 @@ obs.encode_seq_dealer() -> u16
 sparse_bytes = obs.encode_seq_sparse(game_style=1)
 sparse = np.frombuffer(sparse_bytes, dtype=np.uint16)  # variable length
 dealer = obs.encode_seq_dealer()
+player_stats = np.frombuffer(obs.encode_seq_player_stats(), dtype=np.uint16).reshape(4, 5)
 sparse_meld_features = np.frombuffer(
     obs.encode_seq_sparse_meld_features(), dtype=np.uint16
 ).reshape(-1, 10)
@@ -450,6 +475,7 @@ for pid, obs in obs_dict.items():
     features = enc.encode(obs)
     # features["sparse"]      -- (8,) int64, padded with 260
     # features["dealer"]      -- () int64, relative dealer seat
+    # features["player_stats"]-- (4, 5) int64, per-player public summaries
     # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
@@ -471,6 +497,9 @@ for pid, obs in obs_dict.items():
 SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 261
 SequenceFeatureEncoder.MAX_SPARSE_LEN     # 8
 SequenceFeatureEncoder.DEALER_DIMS         # 4
+SequenceFeatureEncoder.PLAYER_INFO_DIMS    # (4, 2, 5, 13, 13)
+SequenceFeatureEncoder.PLAYER_INFO_TOKENS  # 4
+SequenceFeatureEncoder.PLAYER_INFO_WIDTH   # 5
 SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 16
 SequenceFeatureEncoder.MELD_DIMS           # (6, 38, 4, 38, 4, 38, 4, 38, 4)
 SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10

@@ -241,6 +241,8 @@ class Observation:
     hand: list[int]
     player_id: int
     prev_events_size: int
+    riichi_stage: list[bool]
+    discard_from_hand: list[list[bool]]
     def new_events(self) -> list[str]:
         """Return MJAI JSON events unseen by this player since their previous observation.
 
@@ -455,6 +457,14 @@ class Observation:
         """Encode dealer as a relative seat id.
 
         Values: ``0=self``, ``1=shimocha``, ``2=toimen``, ``3=kamicha``.
+        """
+        ...
+    def encode_seq_player_stats(self) -> bytes:
+        """Encode per-player public summary rows.
+
+        Shape: ``(4, 5)`` / dtype: ``uint16``. Rows are ordered by observer-relative
+        seat and contain ``(relative_seat, riichi_active, meld_count,
+        discard_count, tedashi_count)``.
         """
         ...
     def encode_seq_sparse_melds(self) -> bytes:

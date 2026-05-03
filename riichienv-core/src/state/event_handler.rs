@@ -129,17 +129,28 @@ impl GameStateEventHandler for GameState {
                 self.active_players = vec![actor as u8];
                 self.needs_tsumo = false;
             }
-            MjaiEvent::Dahai { actor, pai, .. } => {
+            MjaiEvent::Dahai {
+                actor,
+                pai,
+                tsumogiri,
+            } => {
                 let tile = parse_mjai_tile(&pai);
                 self.current_player = actor as u8;
                 if let Some(idx) = self.players[actor].hand.iter().position(|&t| t == tile) {
                     self.players[actor].hand.remove(idx);
                 }
                 self.players[actor].discards.push(tile);
+                self.players[actor].discard_from_hand.push(!tsumogiri);
+                let riichi_stage = self.players[actor].riichi_stage;
+                self.players[actor].discard_is_riichi.push(riichi_stage);
+                if !tsumogiri {
+                    self.last_tedashis[actor] = Some(tile);
+                }
                 self.last_discard = Some((actor as u8, tile));
                 self.drawn_tile = None;
 
-                if self.players[actor].riichi_stage {
+                if riichi_stage {
+                    self.riichi_sutehais[actor] = Some(tile);
                     self.players[actor].riichi_declared = true;
                     self.players[actor].riichi_stage = false;
                 }
