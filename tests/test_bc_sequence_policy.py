@@ -6,7 +6,11 @@ import riichienv_ml.trainers.bc_policy as bc_policy_module
 import torch
 import torch.nn.functional as F
 from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
-from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, SequenceFeaturePackedEncoder
+from riichienv_ml.features.sequence_features import (
+    SequenceFeatureEncoder,
+    SequenceFeaturePackedEncoder,
+    sequence_feature_collate,
+)
 from riichienv_ml.models.transformer import (
     _ACTION_KIND_DISCARD,
     _ACTION_KIND_DORA,
@@ -35,6 +39,42 @@ from riichienv import Action, ActionType, Meld, MeldType, MjaiReplay, Observatio
 class DummyEncoder:
     def encode(self, obs):
         return torch.tensor([len(obs.legal_actions())], dtype=torch.float32)
+
+
+def _dummy_sequence_feature(prog_len: int = 2, cand_len: int = 3) -> dict[str, torch.Tensor]:
+    feature = {
+        "sparse": torch.full((SequenceFeatureEncoder.MAX_SPARSE_LEN,), SequenceFeatureEncoder.SPARSE_PAD),
+        "dealer": torch.tensor(0),
+        "player_stats": torch.zeros(
+            SequenceFeatureEncoder.PLAYER_INFO_TOKENS,
+            SequenceFeatureEncoder.PLAYER_INFO_WIDTH,
+            dtype=torch.long,
+        ),
+        "sparse_melds": torch.tensor(
+            [SequenceFeatureEncoder.MELD_PAD] * SequenceFeatureEncoder.MAX_SPARSE_MELDS,
+            dtype=torch.long,
+        ),
+        "sparse_meld_owners": torch.full(
+            (SequenceFeatureEncoder.MAX_SPARSE_MELDS,),
+            SequenceFeatureEncoder.SPARSE_MELD_OWNER_PAD,
+        ),
+        "hand": torch.tensor([SequenceFeatureEncoder.HAND_PAD] * SequenceFeatureEncoder.MAX_HAND_LEN),
+        "current_shanten": torch.zeros((SequenceFeatureEncoder.CURRENT_SHANTEN_WIDTH,), dtype=torch.long),
+        "numeric": torch.zeros((SequenceFeatureEncoder.NUM_NUMERIC,), dtype=torch.float32),
+        "agari_overtakes": torch.zeros((SequenceFeatureEncoder.AGARI_OVERTAKE_DIM,), dtype=torch.float32),
+        "progression": torch.tensor([SequenceFeatureEncoder.PROG_PAD] * prog_len),
+        "prog_melds": torch.tensor([SequenceFeatureEncoder.MELD_PAD] * prog_len),
+        "candidates": torch.tensor([SequenceFeatureEncoder.CAND_PAD] * cand_len),
+        "cand_melds": torch.tensor([SequenceFeatureEncoder.MELD_PAD] * cand_len),
+        "sparse_mask": torch.zeros((SequenceFeatureEncoder.MAX_SPARSE_LEN,), dtype=torch.bool),
+        "sparse_meld_mask": torch.zeros((SequenceFeatureEncoder.MAX_SPARSE_MELDS,), dtype=torch.bool),
+        "hand_mask": torch.zeros((SequenceFeatureEncoder.MAX_HAND_LEN,), dtype=torch.bool),
+        "prog_mask": torch.ones((prog_len,), dtype=torch.bool),
+        "cand_mask": torch.ones((cand_len,), dtype=torch.bool),
+    }
+    feature["sparse"][:3] = torch.tensor([1, 2, 5])
+    feature["sparse_mask"][:3] = True
+    return feature
 
 
 def _write_simple_4p_log(path):
@@ -116,8 +156,12 @@ def test_transformer_policy_network_returns_logits_only():
         max_prog_len=8,
         max_cand_len=4,
     )
-    packed_size = SequenceFeaturePackedEncoder(max_prog_len=8, max_cand_len=4).PACKED_SIZE
-    x = torch.zeros(2, packed_size)
+    x = sequence_feature_collate(
+        [
+            _dummy_sequence_feature(prog_len=2, cand_len=3),
+            _dummy_sequence_feature(prog_len=4, cand_len=2),
+        ]
+    )
 
     logits = model(x)
 
@@ -135,8 +179,12 @@ def test_transformer_actor_critic_keeps_value_head_output():
         max_prog_len=8,
         max_cand_len=4,
     )
-    packed_size = SequenceFeaturePackedEncoder(max_prog_len=8, max_cand_len=4).PACKED_SIZE
-    x = torch.zeros(2, packed_size)
+    x = sequence_feature_collate(
+        [
+            _dummy_sequence_feature(prog_len=2, cand_len=3),
+            _dummy_sequence_feature(prog_len=4, cand_len=2),
+        ]
+    )
 
     logits, value = model(x)
 
@@ -144,7 +192,7 @@ def test_transformer_actor_critic_keeps_value_head_output():
     assert value.shape == (2,)
 
 
-def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_path):
+def test_sequence_feature_dynamic_encoder_matches_transformer_policy_input(tmp_path):
     file_path = tmp_path / "bc_sequence_sample.jsonl"
     _write_simple_4p_log(file_path)
 
@@ -153,7 +201,7 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
     obs, _ = next(iter(kyoku.steps(0)))
 
     encoder = SequenceFeaturePackedEncoder(max_prog_len=256, max_cand_len=32)
-    features = encoder.encode(obs).unsqueeze(0)
+    features = sequence_feature_collate([encoder.encode(obs)])
 
     model = TransformerPolicyNetwork(
         d_model=64,
@@ -166,7 +214,7 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
 
     logits = model(features)
 
-    assert logits.shape == (1, 32)
+    assert logits.shape == (1, features["candidates"].shape[1])
 
 
 def test_sequence_feature_encoder_factorizes_hand_draw_state():
@@ -1019,8 +1067,7 @@ def test_build_encoder_passes_sequence_lengths_from_model_config():
         model_config={"max_prog_len": 11, "max_cand_len": 7, "unused": 123},
     )
 
-    assert encoder._P == 11
-    assert encoder._C == 7
+    assert isinstance(encoder, SequenceFeaturePackedEncoder)
 
 
 def test_bc_policy_trainer_train_epoch_accepts_pointer_candidate_logits():
@@ -1030,10 +1077,6 @@ def test_bc_policy_trainer_train_epoch_accepts_pointer_candidate_logits():
     trainer.max_grad_norm = 10.0
     trainer.limit = 1
 
-    max_prog_len = 2
-    max_cand_len = 3
-    encoder = SequenceFeaturePackedEncoder(max_prog_len=max_prog_len, max_cand_len=max_cand_len)
-    features = torch.zeros(2, encoder.PACKED_SIZE, dtype=torch.float32)
     masks = torch.tensor(
         [
             [1, 1, 0],
@@ -1041,7 +1084,9 @@ def test_bc_policy_trainer_train_epoch_accepts_pointer_candidate_logits():
         ],
         dtype=torch.float32,
     )
-    features[:, -max_cand_len:] = masks
+    first = _dummy_sequence_feature(prog_len=2, cand_len=2)
+    second = _dummy_sequence_feature(prog_len=2, cand_len=3)
+    features = sequence_feature_collate([first, second])
     actions = torch.tensor([0, 2])
 
     model = TransformerPolicyNetwork(
@@ -1051,8 +1096,8 @@ def test_bc_policy_trainer_train_epoch_accepts_pointer_candidate_logits():
         dim_feedforward=64,
         dropout=0.0,
         d_sub=8,
-        max_prog_len=max_prog_len,
-        max_cand_len=max_cand_len,
+        max_prog_len=2,
+        max_cand_len=3,
         policy_head_type="pointer",
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=0.0)

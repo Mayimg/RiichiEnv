@@ -1,8 +1,8 @@
 """Transformer Actor-Critic for sequence feature encoding.
 
-Accepts the packed flat tensor produced by SequenceFeaturePackedEncoder,
-unpacks it into sparse / hand / current-shanten / numeric / agari-overtake /
-progression / candidate groups, embeds each group, and processes them through a TransformerEncoder.
+Accepts the dict produced by SequenceFeatureEncoder / SequenceFeaturePackedEncoder,
+embeds sparse / hand / current-shanten / numeric / agari-overtake /
+progression / candidate groups, and processes them through a TransformerEncoder.
 
 Tile-only fields across hand / sparse dora / progression / candidates share
 an attribute-based tile embedding module. Chi/pon/kan melds use a shared
@@ -566,14 +566,14 @@ class RelativeSeatEmbedding(nn.Module):
 
 
 class TransformerActorCritic(nn.Module):
-    """Transformer Actor-Critic over packed sequence features.
+    """Transformer Actor-Critic over dynamic sequence features.
 
-    Input:  (B, PACKED_SIZE)  float32 — from SequenceFeaturePackedEncoder
+    Input:  batched sequence-feature dict from sequence_feature_collate()
     Output: (logits, value) tuple. For policy_head_type="pointer",
-    logits are (B, max_cand_len); otherwise logits are (B, num_actions).
+    logits are (B, batch_max_cand_len); otherwise logits are (B, num_actions).
 
-    V2 defaults: d_model=384, max_prog_len=256, max_cand_len=32, d_type=96, d_other=32
-    V1 compat:   pass d_sub=32, max_prog_len=512, max_cand_len=64
+    V2 defaults: d_model=384, initial max_prog_len=256, initial max_cand_len=32, d_type=96, d_other=32
+    V1 compat:   pass d_sub=32
     """
 
     def __init__(  # noqa: PLR0915
@@ -591,7 +591,7 @@ class TransformerActorCritic(nn.Module):
         d_sub: int | None = None,  # V1 compat: if set, d_type=d_other=d_sub
         d_type: int = 96,  # type field embedding dim
         d_other: int = 32,  # other field embedding dim
-        # Sequence length (must match encoder)
+        # Initial positional-encoding capacity. Inputs are not truncated to these lengths.
         max_prog_len: int = 256,
         max_cand_len: int = 32,
         # Vocab sizes (from SequenceFeatureEncoder)
@@ -614,7 +614,7 @@ class TransformerActorCritic(nn.Module):
             d_type = d_sub
             d_other = d_sub
 
-        # Packed layout constants (must match SequenceFeaturePackedEncoder)
+        # Feature layout constants.
         self._S = SequenceFeatureEncoder.MAX_SPARSE_LEN
         self._D = 1
         self._PI = SequenceFeatureEncoder.PLAYER_INFO_TOKENS
@@ -627,6 +627,8 @@ class TransformerActorCritic(nn.Module):
         self._A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
         self._AT = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS
         self._AW = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
+        # Kept as initial positional capacity and for configs that still pass
+        # max_prog_len/max_cand_len. Forward uses the batch-local input lengths.
         self._P = max_prog_len
         self._C = max_cand_len
         self._CW = len(cand_dims)
@@ -666,8 +668,7 @@ class TransformerActorCritic(nn.Module):
         )
 
         self.shanten_value_embeds = nn.ModuleList(
-            nn.Embedding(SequenceFeatureEncoder.SHANTEN_VALUE_DIMS, d_other)
-            for _ in range(self._SH)
+            nn.Embedding(SequenceFeatureEncoder.SHANTEN_VALUE_DIMS, d_other) for _ in range(self._SH)
         )
         self.current_shanten_proj = nn.Sequential(
             nn.Linear(d_other * self._SH, d_model),
@@ -700,10 +701,7 @@ class TransformerActorCritic(nn.Module):
         cand_sub_dims = [d_other if i != 0 else d_type for i in range(len(cand_dims))]
         self.cand_type_embed = nn.Embedding(cand_dims[0], d_type)
         self.cand_moqie_embed = nn.Embedding(cand_dims[1], d_other)
-        self.cand_shanten_delta_embeds = nn.ModuleList(
-            nn.Embedding(cand_dims[3 + i], d_other)
-            for i in range(self._SH)
-        )
+        self.cand_shanten_delta_embeds = nn.ModuleList(nn.Embedding(cand_dims[3 + i], d_other) for i in range(self._SH))
         cand_cat_dim = sum(cand_sub_dims)
         self.cand_proj = nn.Sequential(
             nn.Linear(cand_cat_dim, d_model),
@@ -789,6 +787,11 @@ class TransformerActorCritic(nn.Module):
         pe[:, 1::2] = torch.cos(pos * div)
         return pe.unsqueeze(0)  # (1, max_len, d_model)
 
+    def _positional_encoding(self, seq_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if self.pos_enc.shape[1] < seq_len:
+            self.pos_enc = self._sinusoidal_pe(seq_len, self.d_model).to(device=device)
+        return self.pos_enc[:, :seq_len].to(device=device, dtype=dtype)
+
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -802,44 +805,29 @@ class TransformerActorCritic(nn.Module):
                         m.weight[m.padding_idx].fill_(0)
 
     # ------------------------------------------------------------------
-    def _unpack(self, x: torch.Tensor):
-        """Unpack flat (B, PACKED_SIZE) tensor into components."""
-        o = 0
-        sparse = x[:, o : o + self._S].long()
-        o += self._S
-        dealer = x[:, o].long()
-        o += 1
-        player_stats = x[:, o : o + self._PI * self._PIW].reshape(-1, self._PI, self._PIW).long()
-        o += self._PI * self._PIW
-        sparse_melds = x[:, o : o + self._SM * self._MW].reshape(-1, self._SM, self._MW).long()
-        o += self._SM * self._MW
-        sparse_meld_owners = x[:, o : o + self._SM].long()
-        o += self._SM
-        hand = x[:, o : o + self._H * 2].reshape(-1, self._H, 2).long()
-        o += self._H * 2
-        current_shanten = x[:, o : o + self._SH].long()
-        o += self._SH
-        numeric = x[:, o : o + self._N]
-        o += self._N
-        agari_overtakes = x[:, o : o + self._A]
-        o += self._A
-        prog = x[:, o : o + self._P * 5].reshape(-1, self._P, 5).long()
-        o += self._P * 5
-        prog_melds = x[:, o : o + self._P * self._MW].reshape(-1, self._P, self._MW).long()
-        o += self._P * self._MW
-        cand = x[:, o : o + self._C * self._CW].reshape(-1, self._C, self._CW).long()
-        o += self._C * self._CW
-        cand_melds = x[:, o : o + self._C * self._MW].reshape(-1, self._C, self._MW).long()
-        o += self._C * self._MW
-        sparse_mask = x[:, o : o + self._S].bool()
-        o += self._S
-        sparse_meld_mask = x[:, o : o + self._SM].bool()
-        o += self._SM
-        hand_mask = x[:, o : o + self._H].bool()
-        o += self._H
-        prog_mask = x[:, o : o + self._P].bool()
-        o += self._P
-        cand_mask = x[:, o : o + self._C].bool()
+    def _unpack(self, x: dict[str, torch.Tensor]):
+        """Read a batched sequence-feature dict into model components."""
+        if not isinstance(x, dict):
+            raise TypeError("TransformerActorCritic expects a batched sequence-feature dict")
+
+        sparse = x["sparse"].long()
+        dealer = x["dealer"].long()
+        player_stats = x["player_stats"].long()
+        sparse_melds = x["sparse_melds"].long()
+        sparse_meld_owners = x["sparse_meld_owners"].long()
+        hand = x["hand"].long()
+        current_shanten = x["current_shanten"].long()
+        numeric = x["numeric"]
+        agari_overtakes = x["agari_overtakes"]
+        prog = x["progression"].long()
+        prog_melds = x["prog_melds"].long()
+        cand = x["candidates"].long()
+        cand_melds = x["cand_melds"].long()
+        sparse_mask = x["sparse_mask"].bool()
+        sparse_meld_mask = x["sparse_meld_mask"].bool()
+        hand_mask = x["hand_mask"].bool()
+        prog_mask = x["prog_mask"].bool()
+        cand_mask = x["cand_mask"].bool()
         return (
             sparse,
             dealer,
@@ -1028,10 +1016,7 @@ class TransformerActorCritic(nn.Module):
         return self.hand_proj(torch.cat([tile_emb, draw_state_emb], dim=-1))
 
     def _embed_current_shanten(self, current_shanten: torch.Tensor) -> torch.Tensor:
-        parts = [
-            embed(current_shanten[:, idx])
-            for idx, embed in enumerate(self.shanten_value_embeds)
-        ]
+        parts = [embed(current_shanten[:, idx]) for idx, embed in enumerate(self.shanten_value_embeds)]
         return self.current_shanten_proj(torch.cat(parts, dim=-1)).unsqueeze(1)
 
     def _embed_progression(
@@ -1106,10 +1091,7 @@ class TransformerActorCritic(nn.Module):
             self.cand_moqie_embed(cand[:, :, 1]),
             self.relative_seat_embed(cand[:, :, 2], _SEAT_ROLE_CAND_FROM, out="other"),
         ]
-        cand_parts.extend(
-            embed(cand[:, :, 3 + idx])
-            for idx, embed in enumerate(self.cand_shanten_delta_embeds)
-        )
+        cand_parts.extend(embed(cand[:, :, 3 + idx]) for idx, embed in enumerate(self.cand_shanten_delta_embeds))
         return self.cand_proj(torch.cat(cand_parts, dim=-1))
 
     def _embed_agari_overtakes(self, agari_overtakes: torch.Tensor) -> torch.Tensor:
@@ -1123,8 +1105,7 @@ class TransformerActorCritic(nn.Module):
         )
 
     # ------------------------------------------------------------------
-    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        batch_size = x.shape[0]
+    def forward(self, x: dict[str, torch.Tensor]) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         (
             sparse,
             dealer,
@@ -1145,6 +1126,9 @@ class TransformerActorCritic(nn.Module):
             prog_mask,
             cand_mask,
         ) = self._unpack(x)
+        batch_size = sparse.shape[0]
+        prog_len = prog.shape[1]
+        cand_len = cand.shape[1]
         dora_tile34 = self._decode_current_dora_tiles(sparse)
         round_wind = self._decode_round_wind(sparse)
         tile37_table, tile34_table = self.tile_embed.build_tables(
@@ -1185,7 +1169,7 @@ class TransformerActorCritic(nn.Module):
         # Project pairwise agari-rank-overtake flags by winner seat: (B, 4, d)
         agari_overtake_emb = self._embed_agari_overtakes(agari_overtakes)
 
-        # Embed progression 5-tuples: (B, P, d)
+        # Embed progression 5-tuples: (B, P_batch, d)
         prog_emb = self._embed_progression(
             prog,
             prog_melds,
@@ -1196,7 +1180,7 @@ class TransformerActorCritic(nn.Module):
             round_wind,
         )
 
-        # Embed candidate tuples: (B, C, d)
+        # Embed candidate tuples: (B, C_batch, d)
         cand_emb = self._embed_candidates(
             cand,
             cand_melds,
@@ -1211,7 +1195,7 @@ class TransformerActorCritic(nn.Module):
         cls = self.cls_token.expand(batch_size, -1, -1)
 
         # Concatenate: [CLS, sparse(S), dealer(1), player_info(4), sparse_meld(SM), hand(H),
-        # current_shanten(1), numeric(1), agari_overtake(4), prog(P), cand(C)]
+        # current_shanten(1), numeric(1), agari_overtake(4), prog(P_batch), cand(C_batch)]
         tokens = torch.cat(
             [
                 cls,
@@ -1232,30 +1216,30 @@ class TransformerActorCritic(nn.Module):
         # Add segment embeddings
         seg_ids = torch.cat(
             [
-                torch.zeros(batch_size, 1 + self._S + self._D, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._PI), 1, dtype=torch.long, device=x.device),
-                torch.zeros(batch_size, self._SM, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._H), 2, dtype=torch.long, device=x.device),
-                torch.full((batch_size, 1), 3, dtype=torch.long, device=x.device),
-                torch.full((batch_size, 1), 4, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._AT), 5, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._P), 6, dtype=torch.long, device=x.device),
-                torch.full((batch_size, self._C), 7, dtype=torch.long, device=x.device),
+                torch.zeros(batch_size, 1 + self._S + self._D, dtype=torch.long, device=sparse.device),
+                torch.full((batch_size, self._PI), 1, dtype=torch.long, device=sparse.device),
+                torch.zeros(batch_size, self._SM, dtype=torch.long, device=sparse.device),
+                torch.full((batch_size, self._H), 2, dtype=torch.long, device=sparse.device),
+                torch.full((batch_size, 1), 3, dtype=torch.long, device=sparse.device),
+                torch.full((batch_size, 1), 4, dtype=torch.long, device=sparse.device),
+                torch.full((batch_size, self._AT), 5, dtype=torch.long, device=sparse.device),
+                torch.full((batch_size, prog_len), 6, dtype=torch.long, device=sparse.device),
+                torch.full((batch_size, cand_len), 7, dtype=torch.long, device=sparse.device),
             ],
             dim=1,
         )
         tokens = tokens + self.segment_embed(seg_ids)
 
         # Add positional encoding
-        tokens = tokens + self.pos_enc[:, : tokens.shape[1]]
+        tokens = tokens + self._positional_encoding(tokens.shape[1], tokens.device, tokens.dtype)
 
         # Build padding mask: True = ignore (PyTorch convention)
-        cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        player_info_valid = torch.zeros(batch_size, self._PI, dtype=torch.bool, device=x.device)
-        shanten_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=x.device)
+        cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=sparse.device)
+        dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=sparse.device)
+        player_info_valid = torch.zeros(batch_size, self._PI, dtype=torch.bool, device=sparse.device)
+        shanten_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=sparse.device)
+        numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=sparse.device)
+        agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=sparse.device)
         pad_mask = torch.cat(
             [
                 cls_valid,  # CLS is always valid
@@ -1280,8 +1264,8 @@ class TransformerActorCritic(nn.Module):
         # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
 
-        cand_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + 1 + 1 + self._AT + self._P
-        cand_out = output[:, cand_offset : cand_offset + self._C]  # (B, C, d_model)
+        cand_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + 1 + 1 + self._AT + prog_len
+        cand_out = output[:, cand_offset : cand_offset + cand_len]  # (B, C_batch, d_model)
 
         # Policy head
         if self.policy_head_type == "cross_attn":
@@ -1294,7 +1278,7 @@ class TransformerActorCritic(nn.Module):
             policy_input = self.cross_attn_norm(cls_out + attn_out.squeeze(1))
             logits = self.policy_head(policy_input)
         elif self.policy_head_type == "pointer":
-            cls_expanded = cls_out.unsqueeze(1).expand(-1, self._C, -1)
+            cls_expanded = cls_out.unsqueeze(1).expand(-1, cand_len, -1)
             logits = self.candidate_scorer(torch.cat([cand_out, cls_expanded], dim=-1)).squeeze(-1)
         else:
             policy_input = cls_out
@@ -1308,7 +1292,7 @@ class TransformerActorCritic(nn.Module):
 
 
 class TransformerPolicyNetwork(TransformerActorCritic):
-    """Policy-only transformer over packed sequence features."""
+    """Policy-only transformer over dynamic sequence features."""
 
     def __init__(self, **kwargs):
         super().__init__(emit_value=False, **kwargs)

@@ -35,3 +35,4 @@ The Tenhou behavior cloning config writes the model, log file, and offline W&B r
 The continued-training config shows how to load an existing BC checkpoint via `load_model` and save the
 next run to a separate output path.
 The self-match config writes MJAI logs and a summary under `data/self_match/BC/test01/`.
+Sequence BC uses observation-local progression/candidate lengths and pads them only to each batch's maximum length.

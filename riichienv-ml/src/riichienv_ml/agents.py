@@ -37,6 +37,14 @@ def _candidate_mask(obs, width: int, device: torch.device) -> torch.Tensor:
     return mask
 
 
+def _batch_feature_to_device(value, device: torch.device):
+    if isinstance(value, torch.Tensor):
+        return value.to(device).unsqueeze(0)
+    if isinstance(value, dict):
+        return {k: _batch_feature_to_device(v, device) for k, v in value.items()}
+    return value
+
+
 def _select_action_from_logits(
     obs,
     logits: torch.Tensor,
@@ -110,8 +118,7 @@ class Agent:
         self.model = model_class(**model_config).to(self.device)
 
         # Load weights
-        state = torch.load(
-            model_path, map_location=self.device, weights_only=True)
+        state = torch.load(model_path, map_location=self.device, weights_only=True)
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
         self._load_weights(state)
@@ -131,14 +138,13 @@ class Agent:
             raw = yaml.safe_load(f)
         if not isinstance(raw, dict):
             raise ValueError(
-                f"Config must be a YAML mapping with one of "
-                f"{'/'.join(cls._SECTIONS)}, got {type(raw).__name__}")
+                f"Config must be a YAML mapping with one of {'/'.join(cls._SECTIONS)}, got {type(raw).__name__}"
+            )
         for key in cls._SECTIONS:
             if key in raw:
                 cfg = load_config(config_path)
                 return key, getattr(cfg, key)
-        raise ValueError(
-            f"No recognized section ({'/'.join(cls._SECTIONS)}) in {config_path}")
+        raise ValueError(f"No recognized section ({'/'.join(cls._SECTIONS)}) in {config_path}")
 
     @staticmethod
     def _find_model_path(sub_cfg, section: str) -> str:
@@ -146,9 +152,7 @@ class Agent:
             return sub_cfg.load_model
         if getattr(sub_cfg, "output", None):
             return sub_cfg.output
-        raise ValueError(
-            "Cannot determine model path from config; "
-            "pass model_path explicitly")
+        raise ValueError("Cannot determine model path from config; pass model_path explicitly")
 
     def _load_weights(self, state: dict):
         """Load state dict with automatic key mapping between model formats.
@@ -229,7 +233,7 @@ class Agent:
             greedy argmax over masked logits.
         """
         feat = self.encoder.encode(obs)
-        feat_batch = feat.to(self.device).unsqueeze(0)
+        feat_batch = _batch_feature_to_device(feat, self.device)
 
         output = self.model(feat_batch)
         logits = output[0] if isinstance(output, tuple) else output

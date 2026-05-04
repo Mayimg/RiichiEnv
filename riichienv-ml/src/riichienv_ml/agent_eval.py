@@ -9,6 +9,7 @@ Usage via plugin system::
     ev = load_evaluator("riichienv", ...)
     metrics = ev.evaluate(hero_weights, num_episodes=30)
 """
+
 from __future__ import annotations
 
 import time
@@ -17,7 +18,7 @@ import numpy as np
 import torch
 from loguru import logger
 
-from riichienv_ml.agents import Agent, _select_action_from_logits
+from riichienv_ml.agents import Agent, _batch_feature_to_device, _select_action_from_logits
 from riichienv_ml.config import (
     GAME_PARAMS,
     OpponentConfig,
@@ -78,10 +79,7 @@ class AgentEvaluator:
         self.hero_encoder = build_encoder(EncoderClass, tile_dim=self.tile_dim, model_config=model_config)
 
         # Build opponent agents (pad to N-1 if needed)
-        opp_cfgs = [
-            OpponentConfig(**o) if isinstance(o, dict) else o
-            for o in opponents
-        ]
+        opp_cfgs = [OpponentConfig(**o) if isinstance(o, dict) else o for o in opponents]
         n_opponents = n_players - 1
         if len(opp_cfgs) == 0:
             raise ValueError("At least one opponent config is required")
@@ -98,10 +96,7 @@ class AgentEvaluator:
             )
             self.opponents.append(agent)
 
-        logger.info(
-            f"AgentEvaluator: {n_players}P, hero={device}, "
-            f"{len(self.opponents)} opponent(s) on {eval_device}"
-        )
+        logger.info(f"AgentEvaluator: {n_players}P, hero={device}, {len(self.opponents)} opponent(s) on {eval_device}")
 
     # ------------------------------------------------------------------
     # ThirdPartyEvaluator protocol
@@ -150,27 +145,26 @@ class AgentEvaluator:
         }
         # Per-rank rates
         for r in range(1, self.n_players + 1):
-            metrics[f"{pfx}/{r}st_rate" if r == 1
-                    else f"{pfx}/{r}nd_rate" if r == 2
-                    else f"{pfx}/{r}rd_rate" if r == 3
-                    else f"{pfx}/{r}th_rate"] = float((ranks_arr == r).mean())
+            metrics[
+                f"{pfx}/{r}st_rate"
+                if r == 1
+                else f"{pfx}/{r}nd_rate"
+                if r == 2
+                else f"{pfx}/{r}rd_rate"
+                if r == 3
+                else f"{pfx}/{r}th_rate"
+            ] = float((ranks_arr == r).mean())
 
         return metrics
 
     def metrics_to_logline(self, metrics: dict) -> str:
         pfx = self.METRICS_PREFIX
         parts = [
-            f"rank={metrics[f'{pfx}/rank_mean']:.2f}"
-            f"\u00b1{metrics[f'{pfx}/rank_se']:.2f}",
+            f"rank={metrics[f'{pfx}/rank_mean']:.2f}\u00b1{metrics[f'{pfx}/rank_se']:.2f}",
             f"score={metrics[f'{pfx}/score_mean']:.0f}",
         ]
         for r in range(1, self.n_players + 1):
-            suffix = (
-                "1st_rate" if r == 1
-                else "2nd_rate" if r == 2
-                else "3rd_rate" if r == 3
-                else f"{r}th_rate"
-            )
+            suffix = "1st_rate" if r == 1 else "2nd_rate" if r == 2 else "3rd_rate" if r == 3 else f"{r}th_rate"
             key = f"{pfx}/{suffix}"
             if key in metrics:
                 parts.append(f"{suffix}={metrics[key]:.1%}")
@@ -205,14 +199,14 @@ class AgentEvaluator:
                     actions[pid] = seat_agents[pid].act(obs)
             obs_dict = env.step(actions)
 
-        ranks = env.ranks()   # 1-indexed
+        ranks = env.ranks()  # 1-indexed
         scores = env.scores()
         return ranks[hero_seat], scores[hero_seat]
 
     def _hero_act(self, obs):
         """Select an action for the hero using the hero model."""
         feat = self.hero_encoder.encode(obs)
-        feat_batch = feat.to(self.device).unsqueeze(0)
+        feat_batch = _batch_feature_to_device(feat, self.device)
 
         output = self.hero_model(feat_batch)
         logits = output[0] if isinstance(output, tuple) else output

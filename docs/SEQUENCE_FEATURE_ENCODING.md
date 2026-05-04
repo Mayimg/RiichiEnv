@@ -19,12 +19,12 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Current Shanten** | `(1,)` | int64 | Self minimum shanten across currently valid hand forms |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Agari Overtakes** | `(4, 96, 4)` | float32 | Pairwise rank-overtake flags for standard 4P win patterns |
-| **Progression** | `(256, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
-| **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
-| **Candidates** | `(32, 4)` | int64 | Legal actions plus minimum-shanten delta |
-| **Candidate Melds** | `(32, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
+| **Progression** | `(P, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
+| **Progression Melds** | `(P, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
+| **Candidates** | `(C, 4)` | int64 | Legal actions plus minimum-shanten delta |
+| **Candidate Melds** | `(C, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
 
-Each variable-length group is padded to its maximum length, with accompanying boolean masks indicating real vs. padding entries.
+Sparse melds and hand entries keep small fixed maximums. Progression and candidate groups are kept at their observation-local lengths and padded only to the batch-local maximum by `sequence_feature_collate()`.
 
 ## Current Transformer Embedding Strategy
 
@@ -359,8 +359,7 @@ In the transformer, the flat 1536-float vector is reshaped to four tokens:
 ```
 
 Each winner token uses a shared `Linear(384 -> d_model)` projection plus the
-shared relative-seat embedding for that winner seat. The packed feature layout
-is still flat for Ray worker compatibility.
+shared relative-seat embedding for that winner seat.
 
 ### Rust API
 
@@ -377,7 +376,7 @@ agari = np.frombuffer(agari_bytes, dtype=np.float32).reshape(4, 96, 4)
 
 ## 4. Progression Features (Action History)
 
-**5-tuple sequence, max 256 entries (default)**
+**5-tuple sequence, variable length**
 
 Each action or dora reveal from the kyoku start to the current decision point is encoded as a 5-tuple `(actor, type, moqie, liqi, from)`.
 
@@ -391,7 +390,7 @@ Each action or dora reveal from the kyoku start to the current decision point is
 | liqi | 3 | 0=no riichi, 1=with riichi declaration, 2=N/A |
 | from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=N/A |
 
-**Padding tuple:** `(4, 80, 2, 2, 4)`
+**Batch-padding tuple:** `(4, 80, 2, 2, 4)`
 
 ### Type Encoding (81 values)
 
@@ -441,7 +440,7 @@ prog_melds = np.frombuffer(obs.encode_seq_progression_melds(), dtype=np.uint16).
 
 ## 5. Candidate Features (Legal Actions)
 
-**4-field tuple set, max 32 entries (default)**
+**4-field tuple set, variable length**
 
 Each legal action candidate is encoded as `(type, moqie, from, shanten_delta)`.
 The candidate list is collapsed by the strict visible action tuple plus its aligned meld sidecar row. Physical copies with identical visible semantics still collapse, but red-five discards, tedashi/tsumogiri discards, and red/non-red consumed chi/pon candidates remain distinct pointer targets.
@@ -455,7 +454,7 @@ The candidate list is collapsed by the strict visible action tuple plus its alig
 | from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding |
 | shanten_delta | 4 | 0=advance, 1=same, 2=regress, 3=N/A |
 
-**Padding tuple:** `(47, 2, 4, 3)`
+**Batch-padding tuple:** `(47, 2, 4, 3)`
 
 ### Type Encoding (48 values)
 
@@ -501,7 +500,7 @@ cand_melds = np.frombuffer(obs.encode_seq_candidate_melds(), dtype=np.uint16).re
 
 ## Python Wrapper: SequenceFeatureEncoder
 
-`riichienv_ml.features.sequence_features.SequenceFeatureEncoder` provides padded torch tensors with masks.
+`riichienv_ml.features.sequence_features.SequenceFeatureEncoder` provides torch tensors with masks. Progression and candidate groups are not padded per observation; use `sequence_feature_collate()` as the DataLoader `collate_fn` to pad them to the batch-local maximum.
 
 ### Usage
 
@@ -524,14 +523,14 @@ for pid, obs in obs_dict.items():
     # features["current_shanten"] -- (1,) int64, current minimum shanten
     # features["numeric"]     -- (6,) float32
     # features["agari_overtakes"] -- (1536,) float32, reshapeable to (4, 96, 4)
-    # features["progression"] -- (256, 5) int64, padded with (4, 80, 2, 2, 4)
-    # features["prog_melds"]  -- (256, 9) int64, aligned with progression
-    # features["candidates"]  -- (32, 4) int64, padded with (47, 2, 4, 3)
-    # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
+    # features["progression"] -- (P, 5) int64
+    # features["prog_melds"]  -- (P, 9) int64, aligned with progression
+    # features["candidates"]  -- (C, 4) int64
+    # features["cand_melds"]  -- (C, 9) int64, aligned with candidates
     # features["sparse_mask"] -- (8,) bool, True for real tokens
     # features["hand_mask"]   -- (14,) bool, True for real entries
-    # features["prog_mask"]   -- (256,) bool, True for real entries
-    # features["cand_mask"]   -- (32,) bool, True for real entries
+    # features["prog_mask"]   -- (P,) bool, True for real entries
+    # features["cand_mask"]   -- (C,) bool, True for real entries
 ```
 
 ### Constants
@@ -550,8 +549,8 @@ SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS  # 5
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
 SequenceFeatureEncoder.SHANTEN_DIMS       # (9,)
-SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
-SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
+SequenceFeatureEncoder.PROG_PAD           # (4, 80, 2, 2, 4), used by batch collate
+SequenceFeatureEncoder.CAND_PAD           # (47, 2, 4, 3), used by batch collate
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
 SequenceFeatureEncoder.AGARI_OVERTAKE_DIMS # (4, 96, 4)
 SequenceFeatureEncoder.AGARI_OVERTAKE_DIM  # 1536

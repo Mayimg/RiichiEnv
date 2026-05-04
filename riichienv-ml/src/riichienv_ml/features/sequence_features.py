@@ -1,14 +1,18 @@
 """Sequence feature encoder for transformer models.
 
 Based on the Kanachan v3 encoding design. Wraps the Rust sequence feature
-encoding methods on Observation, producing padded tensors with masks
-suitable for batched training.
+encoding methods on Observation. Progression and candidate groups are kept
+at their observation-local lengths and padded only by the DataLoader collate
+function.
 
 See docs/SEQUENCE_FEATURE_ENCODING.md for the full specification.
 """
 
+from typing import Any
+
 import numpy as np
 import torch
+from torch.utils.data._utils.collate import default_collate
 
 
 class SequenceFeatureEncoder:
@@ -25,15 +29,15 @@ class SequenceFeatureEncoder:
         numeric:     (NUM_NUMERIC,)      float32
         agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
                          reshapeable to (AGARI_OVERTAKE_TOKENS, AGARI_OVERTAKE_TOKEN_DIM)
-        progression: (MAX_PROG_LEN, 5)   int64   padded action/dora-reveal history 5-tuples
-        prog_melds:  (MAX_PROG_LEN, 9)   int64   padded progression meld rows
-        candidates:  (MAX_CAND_LEN, 4)   int64   padded legal-action tuples
-        cand_melds:  (MAX_CAND_LEN, 9)   int64   padded candidate meld rows
+        progression: (P, 5)              int64   action/dora-reveal history 5-tuples
+        prog_melds:  (P, 9)              int64   progression meld rows
+        candidates:  (C, 4)              int64   legal-action tuples
+        cand_melds:  (C, 9)              int64   candidate meld rows
         sparse_mask: (MAX_SPARSE_LEN,)   bool    True for real tokens
         sparse_meld_mask: (MAX_SPARSE_MELDS,) bool True for real current visible melds
         hand_mask:   (MAX_HAND_LEN,)     bool    True for real hand entries
-        prog_mask:   (MAX_PROG_LEN,)     bool    True for real entries
-        cand_mask:   (MAX_CAND_LEN,)     bool    True for real entries
+        prog_mask:   (P,)                bool    True for real entries
+        cand_mask:   (C,)                bool    True for real entries
     """
 
     SPARSE_VOCAB_SIZE = 261
@@ -65,7 +69,7 @@ class SequenceFeatureEncoder:
 
     PROG_DIMS = (5, 81, 3, 3, 5)
     PROG_PAD = (4, 80, 2, 2, 4)
-    MAX_PROG_LEN = 256
+    DEFAULT_PROG_POS_CAPACITY = 256
 
     SHANTEN_DELTA_DIMS = 4
     SHANTEN_DELTA_ADVANCE = 0
@@ -75,7 +79,7 @@ class SequenceFeatureEncoder:
     CAND_DIMS = (48, 3, 5, SHANTEN_DELTA_DIMS)
     CAND_PAD = (47, 2, 4, SHANTEN_DELTA_NA)
     CAND_WIDTH = len(CAND_DIMS)
-    MAX_CAND_LEN = 32
+    DEFAULT_CAND_POS_CAPACITY = 32
 
     NUM_NUMERIC = 6
     AGARI_OVERTAKE_DIMS = (4, 96, 4)
@@ -83,11 +87,19 @@ class SequenceFeatureEncoder:
     AGARI_OVERTAKE_TOKEN_DIM = AGARI_OVERTAKE_DIMS[1] * AGARI_OVERTAKE_DIMS[2]
     AGARI_OVERTAKE_DIM = AGARI_OVERTAKE_TOKENS * AGARI_OVERTAKE_TOKEN_DIM
 
-    def __init__(self, n_players: int = 4, game_style: int = 1, max_prog_len: int = 256, max_cand_len: int = 32):
+    def __init__(
+        self,
+        n_players: int = 4,
+        game_style: int = 1,
+        max_prog_len: int | None = None,
+        max_cand_len: int | None = None,
+    ):
         self.n_players = n_players
         self.game_style = game_style  # 0=tonpuusen, 1=hanchan
-        self.MAX_PROG_LEN = max_prog_len
-        self.MAX_CAND_LEN = max_cand_len
+        # Accepted for config reuse. Progression/candidate features are no
+        # longer truncated here; padding is batch-local in sequence_feature_collate().
+        self.max_prog_len = max_prog_len
+        self.max_cand_len = max_cand_len
 
     def encode(self, obs) -> dict[str, torch.Tensor]:  # noqa: PLR0915
         """Encode observation into sequence features for transformer models.
@@ -114,13 +126,10 @@ class SequenceFeatureEncoder:
 
         # Per-player public summary tokens
         player_stats_bytes = obs.encode_seq_player_stats()
-        raw_player_stats = np.frombuffer(player_stats_bytes, dtype=np.uint16).reshape(
-            -1, self.PLAYER_INFO_WIDTH
-        )
+        raw_player_stats = np.frombuffer(player_stats_bytes, dtype=np.uint16).reshape(-1, self.PLAYER_INFO_WIDTH)
         if raw_player_stats.shape[0] != self.PLAYER_INFO_TOKENS:
             raise ValueError(
-                f"encode_seq_player_stats returned {raw_player_stats.shape[0]} rows; "
-                f"expected {self.PLAYER_INFO_TOKENS}"
+                f"encode_seq_player_stats returned {raw_player_stats.shape[0]} rows; expected {self.PLAYER_INFO_TOKENS}"
             )
         player_stats = raw_player_stats.astype(np.int64, copy=True)
 
@@ -183,26 +192,19 @@ class SequenceFeatureEncoder:
         # Progression
         prog_bytes = obs.encode_seq_progression()
         if len(prog_bytes) > 0:
-            raw_prog = np.frombuffer(prog_bytes, dtype=np.uint16).reshape(-1, 5)
-            n_prog = min(len(raw_prog), self.MAX_PROG_LEN)
+            prog = np.frombuffer(prog_bytes, dtype=np.uint16).reshape(-1, 5).astype(np.int64, copy=True)
         else:
-            raw_prog = np.empty((0, 5), dtype=np.uint16)
-            n_prog = 0
-        prog = np.tile(np.array(self.PROG_PAD, dtype=np.int64), (self.MAX_PROG_LEN, 1))
-        if n_prog > 0:
-            prog[:n_prog] = raw_prog[:n_prog]
-        prog_mask = np.zeros(self.MAX_PROG_LEN, dtype=np.bool_)
-        prog_mask[:n_prog] = True
+            prog = np.empty((0, 5), dtype=np.int64)
+        n_prog = len(prog)
+        prog_mask = np.ones(n_prog, dtype=np.bool_)
 
         prog_meld_bytes = obs.encode_seq_progression_melds()
         if len(prog_meld_bytes) > 0:
             raw_prog_melds = np.frombuffer(prog_meld_bytes, dtype=np.uint16).reshape(-1, self.MELD_WIDTH)
-            n_prog_melds = min(len(raw_prog_melds), self.MAX_PROG_LEN)
         else:
             raw_prog_melds = np.empty((0, self.MELD_WIDTH), dtype=np.uint16)
-            n_prog_melds = 0
-        prog_melds = np.tile(np.array(self.MELD_PAD, dtype=np.int64), (self.MAX_PROG_LEN, 1))
-        n_prog_sidecar = min(n_prog, n_prog_melds)
+        prog_melds = np.tile(np.array(self.MELD_PAD, dtype=np.int64), (n_prog, 1))
+        n_prog_sidecar = min(n_prog, len(raw_prog_melds))
         if n_prog_sidecar > 0:
             prog_melds[:n_prog_sidecar] = raw_prog_melds[:n_prog_sidecar]
 
@@ -218,33 +220,27 @@ class SequenceFeatureEncoder:
         if raw_cand_features is not None:
             raw_cand = raw_cand_features[:, : self.CAND_WIDTH]
             raw_cand_melds = raw_cand_features[:, self.CAND_WIDTH :]
-            n_cand = min(len(raw_cand_features), self.MAX_CAND_LEN)
-            n_cand_melds = n_cand
         else:
             cand_bytes = obs.encode_seq_candidates()
             if len(cand_bytes) > 0:
                 raw_cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, self.CAND_WIDTH)
-                n_cand = min(len(raw_cand), self.MAX_CAND_LEN)
             else:
                 raw_cand = np.empty((0, self.CAND_WIDTH), dtype=np.uint16)
-                n_cand = 0
 
             cand_meld_bytes = obs.encode_seq_candidate_melds()
             if len(cand_meld_bytes) > 0:
                 raw_cand_melds = np.frombuffer(cand_meld_bytes, dtype=np.uint16).reshape(-1, self.MELD_WIDTH)
-                n_cand_melds = min(len(raw_cand_melds), self.MAX_CAND_LEN)
             else:
                 raw_cand_melds = np.empty((0, self.MELD_WIDTH), dtype=np.uint16)
-                n_cand_melds = 0
 
-        cand = np.tile(np.array(self.CAND_PAD, dtype=np.int64), (self.MAX_CAND_LEN, 1))
+        n_cand = len(raw_cand)
+        cand = np.empty((n_cand, self.CAND_WIDTH), dtype=np.int64)
         if n_cand > 0:
-            cand[:n_cand] = raw_cand[:n_cand]
-        cand_mask = np.zeros(self.MAX_CAND_LEN, dtype=np.bool_)
-        cand_mask[:n_cand] = True
+            cand[:] = raw_cand
+        cand_mask = np.ones(n_cand, dtype=np.bool_)
 
-        cand_melds = np.tile(np.array(self.MELD_PAD, dtype=np.int64), (self.MAX_CAND_LEN, 1))
-        n_cand_sidecar = min(n_cand, n_cand_melds)
+        cand_melds = np.tile(np.array(self.MELD_PAD, dtype=np.int64), (n_cand, 1))
+        n_cand_sidecar = min(n_cand, len(raw_cand_melds))
         if n_cand_sidecar > 0:
             cand_melds[:n_cand_sidecar] = raw_cand_melds[:n_cand_sidecar]
 
@@ -271,52 +267,19 @@ class SequenceFeatureEncoder:
 
 
 class SequenceFeaturePackedEncoder:
-    """Packed single-tensor encoder for Ray worker compatibility.
+    """Compatibility-named dynamic sequence encoder.
 
-    Packs all sequence features into a flat float32 tensor so the teacher
-    worker (which expects ``encoder.encode(obs) -> Tensor``) can handle it
-    transparently.  The ``TransformerActorCritic`` model unpacks this
-    internally.
-
-    Layout (all float32, P=max_prog_len, C=max_cand_len):
-        sparse      (8)        int indices stored as float
-        dealer      (1)        int relative dealer seat stored as float
-        player_stats(4 * 5)    int per-player summary rows stored as float
-        sparse_melds(16 * 9)   int meld rows stored as float
-        sparse_meld_owners(16) int relative owner seats stored as float
-        hand        (14 * 2)   int tuples stored as float
-        current_shanten (1)    int minimum shanten stored as float
-        numeric     (6)        continuous values
-        agari_overtakes (4 * 96 * 4) pairwise agari-rank-overtake flags
-        progression (P * 5)    int action/dora-reveal tuples stored as float
-        prog_melds  (P * 9)    int meld rows stored as float
-        candidates  (C * 4)    int tuples stored as float
-        cand_melds  (C * 9)    int meld rows stored as float
-        sparse_mask (8)        bool stored as float
-        sparse_meld_mask (16)  bool stored as float
-        hand_mask   (14)       bool stored as float
-        prog_mask   (P)        bool stored as float
-        cand_mask   (C)        bool stored as float
+    Existing configs reference this class name. It now returns the same dict as
+    ``SequenceFeatureEncoder`` instead of a fixed-size packed tensor.
     """
-
-    _S = SequenceFeatureEncoder.MAX_SPARSE_LEN
-    _PI = SequenceFeatureEncoder.PLAYER_INFO_TOKENS
-    _PIW = SequenceFeatureEncoder.PLAYER_INFO_WIDTH
-    _SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
-    _MW = SequenceFeatureEncoder.MELD_WIDTH
-    _CW = SequenceFeatureEncoder.CAND_WIDTH
-    _SH = SequenceFeatureEncoder.CURRENT_SHANTEN_WIDTH
-    _H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
-    _N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
-    _A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
 
     def __init__(
         self,
         tile_dim: int = 34,
         n_players: int = 4,
         game_style: int = 1,
-        max_prog_len: int = 256,
-        max_cand_len: int = 32,
+        max_prog_len: int | None = None,
+        max_cand_len: int | None = None,
     ):
         # tile_dim accepted for API compatibility with CNN encoders
         if tile_dim == 27:
@@ -324,69 +287,65 @@ class SequenceFeaturePackedEncoder:
         self.inner = SequenceFeatureEncoder(
             n_players=n_players, game_style=game_style, max_prog_len=max_prog_len, max_cand_len=max_cand_len
         )
-        self._P = max_prog_len
-        self._C = max_cand_len
-        self.PACKED_SIZE = (
-            self._S
-            + 1
-            + self._PI * self._PIW
-            + self._SM * self._MW
-            + self._SM
-            + self._H * 2
-            + self._SH
-            + self._N
-            + self._A
-            + self._P * 5
-            + self._P * self._MW
-            + self._C * self._CW
-            + self._C * self._MW
-            + self._S
-            + self._SM
-            + self._H
-            + self._P
-            + self._C
-        )
 
-    def encode(self, obs) -> torch.Tensor:
-        """Encode observation into a flat packed tensor (PACKED_SIZE,)."""
-        d = self.inner.encode(obs)
-        packed = torch.zeros(self.PACKED_SIZE, dtype=torch.float32)
-        o = 0
+    def encode(self, obs) -> dict[str, torch.Tensor]:
+        """Encode observation into a dynamic sequence-feature dict."""
+        return self.inner.encode(obs)
 
-        packed[o : o + self._S] = d["sparse"].float()
-        o += self._S
-        packed[o] = d["dealer"].float()
-        o += 1
-        packed[o : o + self._PI * self._PIW] = d["player_stats"].reshape(-1).float()
-        o += self._PI * self._PIW
-        packed[o : o + self._SM * self._MW] = d["sparse_melds"].reshape(-1).float()
-        o += self._SM * self._MW
-        packed[o : o + self._SM] = d["sparse_meld_owners"].float()
-        o += self._SM
-        packed[o : o + self._H * 2] = d["hand"].reshape(-1).float()
-        o += self._H * 2
-        packed[o : o + self._SH] = d["current_shanten"].float()
-        o += self._SH
-        packed[o : o + self._N] = d["numeric"]
-        o += self._N
-        packed[o : o + self._A] = d["agari_overtakes"]
-        o += self._A
-        packed[o : o + self._P * 5] = d["progression"].reshape(-1).float()
-        o += self._P * 5
-        packed[o : o + self._P * self._MW] = d["prog_melds"].reshape(-1).float()
-        o += self._P * self._MW
-        packed[o : o + self._C * self._CW] = d["candidates"].reshape(-1).float()
-        o += self._C * self._CW
-        packed[o : o + self._C * self._MW] = d["cand_melds"].reshape(-1).float()
-        o += self._C * self._MW
-        packed[o : o + self._S] = d["sparse_mask"].float()
-        o += self._S
-        packed[o : o + self._SM] = d["sparse_meld_mask"].float()
-        o += self._SM
-        packed[o : o + self._H] = d["hand_mask"].float()
-        o += self._H
-        packed[o : o + self._P] = d["prog_mask"].float()
-        o += self._P
-        packed[o : o + self._C] = d["cand_mask"].float()
 
-        return packed
+def _pad_sequence_tensors(values: list[torch.Tensor], pad_value: int | bool | tuple[int, ...]) -> torch.Tensor:
+    max_len = max((int(v.shape[0]) for v in values), default=0)
+    sample = values[0]
+    out_shape = (len(values), max_len, *sample.shape[1:])
+    out = sample.new_empty(out_shape)
+
+    if isinstance(pad_value, tuple):
+        pad = torch.tensor(pad_value, dtype=sample.dtype, device=sample.device)
+        out[:] = pad.view(1, 1, *pad.shape)
+    else:
+        out.fill_(pad_value)
+
+    for idx, value in enumerate(values):
+        length = int(value.shape[0])
+        if length > 0:
+            out[idx, :length] = value
+    return out
+
+
+def _collate_feature_values(key: str, values: list[torch.Tensor]) -> torch.Tensor:
+    if key == "progression":
+        return _pad_sequence_tensors(values, SequenceFeatureEncoder.PROG_PAD)
+    if key == "prog_melds":
+        return _pad_sequence_tensors(values, SequenceFeatureEncoder.MELD_PAD)
+    if key == "candidates":
+        return _pad_sequence_tensors(values, SequenceFeatureEncoder.CAND_PAD)
+    if key == "cand_melds":
+        return _pad_sequence_tensors(values, SequenceFeatureEncoder.MELD_PAD)
+    if key in {"prog_mask", "cand_mask"}:
+        return _pad_sequence_tensors(values, False)
+    return torch.stack(values)
+
+
+def sequence_feature_collate(batch: list[Any]) -> Any:
+    """Collate sequence-feature batches with batch-local dynamic padding."""
+    elem = batch[0]
+
+    if isinstance(elem, dict):
+        collated = {key: _collate_feature_values(key, [sample[key] for sample in batch]) for key in elem}
+    elif isinstance(elem, tuple):
+        collated = tuple(sequence_feature_collate(list(items)) for items in zip(*batch, strict=True))
+    elif isinstance(elem, torch.Tensor):
+        if all(value.shape == elem.shape for value in batch):
+            collated = torch.stack(batch)
+        else:
+            collated = _pad_sequence_tensors(batch, 0)
+    elif isinstance(elem, np.ndarray):
+        tensors = [torch.from_numpy(value) for value in batch]
+        if all(value.shape == elem.shape for value in batch):
+            collated = torch.stack(tensors)
+        else:
+            collated = _pad_sequence_tensors(tensors, 0)
+    else:
+        collated = default_collate(batch)
+
+    return collated

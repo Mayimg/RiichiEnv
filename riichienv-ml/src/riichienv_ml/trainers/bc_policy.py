@@ -15,6 +15,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from riichienv_ml.config import import_class
+from riichienv_ml.features.sequence_features import sequence_feature_collate
 from riichienv_ml.trainers.bc_logs import _create_evaluator
 from riichienv_ml.utils import AverageMeter, build_encoder, load_model_weights
 
@@ -114,6 +115,7 @@ class BCPolicyTrainer:
             "batch_size": self.batch_size,
             "num_workers": self.num_workers,
             "pin_memory": True,
+            "collate_fn": sequence_feature_collate,
         }
         if self.num_workers > 0:
             kwargs["persistent_workers"] = is_train

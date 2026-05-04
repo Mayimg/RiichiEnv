@@ -21,7 +21,7 @@ bc:
   num_ray_workers: 4
   num_envs_per_worker: 16
   num_steps: 500
-  # Model (TransformerActorCritic) + Encoder (packed sequence features)
+  # Model (TransformerActorCritic) + dynamic sequence feature encoder.
   model_class: riichienv_ml.models.transformer.TransformerActorCritic
   encoder_class: riichienv_ml.features.sequence_features.SequenceFeaturePackedEncoder
   evaluator:
@@ -38,5 +38,6 @@ bc:
     num_actions: 82
     policy_head_type: cross_attn
     d_sub: 32
+    # Initial positional-encoding capacity; inputs are not truncated to these lengths.
     max_prog_len: 512
     max_cand_len: 64
