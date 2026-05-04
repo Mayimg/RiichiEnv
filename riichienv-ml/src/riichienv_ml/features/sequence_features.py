@@ -21,13 +21,13 @@ class SequenceFeatureEncoder:
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
-        current_shanten: (3,)            int64   current self shanten by hand form
+        current_shanten: (1,)            int64   current self minimum shanten
         numeric:     (NUM_NUMERIC,)      float32
         agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
                          reshapeable to (AGARI_OVERTAKE_TOKENS, AGARI_OVERTAKE_TOKEN_DIM)
         progression: (MAX_PROG_LEN, 5)   int64   padded action/dora-reveal history 5-tuples
         prog_melds:  (MAX_PROG_LEN, 9)   int64   padded progression meld rows
-        candidates:  (MAX_CAND_LEN, 6)   int64   padded legal-action tuples
+        candidates:  (MAX_CAND_LEN, 4)   int64   padded legal-action tuples
         cand_melds:  (MAX_CAND_LEN, 9)   int64   padded candidate meld rows
         sparse_mask: (MAX_SPARSE_LEN,)   bool    True for real tokens
         sparse_meld_mask: (MAX_SPARSE_MELDS,) bool True for real current visible melds
@@ -58,10 +58,10 @@ class SequenceFeatureEncoder:
     HAND_PAD = (37, 2)
     MAX_HAND_LEN = 14
 
-    SHANTEN_FORM_COUNT = 3
-    SHANTEN_VALUE_DIMS = 16
-    SHANTEN_VALUE_NA = 15
-    SHANTEN_FORM_DIMS = (SHANTEN_VALUE_DIMS,) * SHANTEN_FORM_COUNT
+    CURRENT_SHANTEN_WIDTH = 1
+    SHANTEN_VALUE_DIMS = 9
+    SHANTEN_VALUE_NA = 8
+    SHANTEN_DIMS = (SHANTEN_VALUE_DIMS,) * CURRENT_SHANTEN_WIDTH
 
     PROG_DIMS = (5, 81, 3, 3, 5)
     PROG_PAD = (4, 80, 2, 2, 4)
@@ -72,8 +72,8 @@ class SequenceFeatureEncoder:
     SHANTEN_DELTA_SAME = 1
     SHANTEN_DELTA_REGRESS = 2
     SHANTEN_DELTA_NA = 3
-    CAND_DIMS = (48, 3, 5, SHANTEN_DELTA_DIMS, SHANTEN_DELTA_DIMS, SHANTEN_DELTA_DIMS)
-    CAND_PAD = (47, 2, 4, SHANTEN_DELTA_NA, SHANTEN_DELTA_NA, SHANTEN_DELTA_NA)
+    CAND_DIMS = (48, 3, 5, SHANTEN_DELTA_DIMS)
+    CAND_PAD = (47, 2, 4, SHANTEN_DELTA_NA)
     CAND_WIDTH = len(CAND_DIMS)
     MAX_CAND_LEN = 32
 
@@ -160,13 +160,13 @@ class SequenceFeatureEncoder:
         hand_mask = np.zeros(self.MAX_HAND_LEN, dtype=np.bool_)
         hand_mask[:n_hand] = True
 
-        # Current shanten by hand form
+        # Current minimum shanten
         current_shanten_bytes = obs.encode_seq_current_shanten()
         current_shanten = np.frombuffer(current_shanten_bytes, dtype=np.uint16).astype(np.int64, copy=True)
-        if current_shanten.shape[0] != self.SHANTEN_FORM_COUNT:
+        if current_shanten.shape[0] != self.CURRENT_SHANTEN_WIDTH:
             raise ValueError(
                 f"encode_seq_current_shanten returned {current_shanten.shape[0]} values; "
-                f"expected {self.SHANTEN_FORM_COUNT}"
+                f"expected {self.CURRENT_SHANTEN_WIDTH}"
             )
 
         # Numeric
@@ -285,12 +285,12 @@ class SequenceFeaturePackedEncoder:
         sparse_melds(16 * 9)   int meld rows stored as float
         sparse_meld_owners(16) int relative owner seats stored as float
         hand        (14 * 2)   int tuples stored as float
-        current_shanten (3)    int shanten values by hand form stored as float
+        current_shanten (1)    int minimum shanten stored as float
         numeric     (6)        continuous values
         agari_overtakes (4 * 96 * 4) pairwise agari-rank-overtake flags
         progression (P * 5)    int action/dora-reveal tuples stored as float
         prog_melds  (P * 9)    int meld rows stored as float
-        candidates  (C * 6)    int tuples stored as float
+        candidates  (C * 4)    int tuples stored as float
         cand_melds  (C * 9)    int meld rows stored as float
         sparse_mask (8)        bool stored as float
         sparse_meld_mask (16)  bool stored as float
@@ -305,7 +305,7 @@ class SequenceFeaturePackedEncoder:
     _SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
     _MW = SequenceFeatureEncoder.MELD_WIDTH
     _CW = SequenceFeatureEncoder.CAND_WIDTH
-    _SH = SequenceFeatureEncoder.SHANTEN_FORM_COUNT
+    _SH = SequenceFeatureEncoder.CURRENT_SHANTEN_WIDTH
     _H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
     _N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
     _A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM

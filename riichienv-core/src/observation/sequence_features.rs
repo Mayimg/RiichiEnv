@@ -9,7 +9,7 @@
 
 use crate::action::{Action, ActionType};
 use crate::parser::mjai_to_tid;
-use crate::shanten::{self, SHANTEN_FORM_COUNT};
+use crate::shanten;
 use crate::types::{Meld, MeldType};
 
 use super::Observation;
@@ -49,18 +49,17 @@ pub const MAX_PROG_LEN: usize = 512;
 #[allow(dead_code)]
 pub const PROG_PAD: [u16; 5] = [4, 80, 2, 2, 4];
 
-/// Current shanten tuple dimensions:
-/// (standard, seven_pairs, thirteen_orphans), each encoded as shanten + 1.
-/// Values: 0=agari(-1), 1=tenpai(0), ..., 14=13-shanten, 15=N/A.
+/// Current shanten tuple dimensions.
+/// The value is the minimum shanten across currently valid hand forms.
+/// Values: 0=agari(-1), 1=tenpai(0), ..., 7=6-shanten, 8=N/A.
 #[allow(dead_code)]
-pub const SHANTEN_VALUE_DIMS: u16 = 16;
+pub const SHANTEN_VALUE_DIMS: u16 = 9;
 #[allow(dead_code)]
-pub const SHANTEN_VALUE_NA: u16 = 15;
+pub const SHANTEN_VALUE_NA: u16 = 8;
 #[allow(dead_code)]
-pub const CURRENT_SHANTEN_WIDTH: usize = SHANTEN_FORM_COUNT;
+pub const CURRENT_SHANTEN_WIDTH: usize = 1;
 #[allow(dead_code)]
-pub const SHANTEN_FORM_DIMS: [u16; CURRENT_SHANTEN_WIDTH] =
-    [SHANTEN_VALUE_DIMS; CURRENT_SHANTEN_WIDTH];
+pub const SHANTEN_DIMS: [u16; CURRENT_SHANTEN_WIDTH] = [SHANTEN_VALUE_DIMS; CURRENT_SHANTEN_WIDTH];
 
 /// Candidate shanten-delta dimensions:
 /// 0=advance, 1=same, 2=regress, 3=N/A.
@@ -75,29 +74,15 @@ pub const SHANTEN_DELTA_SAME: u16 = 1;
 #[allow(dead_code)]
 pub const SHANTEN_DELTA_REGRESS: u16 = 2;
 
-/// Candidate tuple dimensions: (type, moqie, from, standard_delta, chitoi_delta, kokushi_delta)
+/// Candidate tuple dimensions: (type, moqie, from, shanten_delta)
 #[allow(dead_code)]
-pub const CAND_WIDTH: usize = 3 + SHANTEN_FORM_COUNT;
+pub const CAND_WIDTH: usize = 4;
 #[allow(dead_code)]
-pub const CAND_DIMS: [u16; CAND_WIDTH] = [
-    48,
-    3,
-    5,
-    SHANTEN_DELTA_DIMS,
-    SHANTEN_DELTA_DIMS,
-    SHANTEN_DELTA_DIMS,
-];
+pub const CAND_DIMS: [u16; CAND_WIDTH] = [48, 3, 5, SHANTEN_DELTA_DIMS];
 #[allow(dead_code)]
 pub const MAX_CAND_LEN: usize = 64;
 #[allow(dead_code)]
-pub const CAND_PAD: [u16; CAND_WIDTH] = [
-    47,
-    2,
-    4,
-    SHANTEN_DELTA_NA,
-    SHANTEN_DELTA_NA,
-    SHANTEN_DELTA_NA,
-];
+pub const CAND_PAD: [u16; CAND_WIDTH] = [47, 2, 4, SHANTEN_DELTA_NA];
 
 /// Meld feature row: (kind, slot0_tile37, slot0_role, ..., slot3_tile37, slot3_role)
 #[allow(dead_code)]
@@ -169,7 +154,7 @@ fn normalize_score(score: i32) -> f32 {
 
 fn encode_shanten_value(value: Option<i8>) -> u16 {
     value
-        .map(|v| (v.clamp(-1, 13) + 1) as u16)
+        .map(|v| (v.clamp(-1, 6) + 1) as u16)
         .unwrap_or(SHANTEN_VALUE_NA)
 }
 
@@ -181,10 +166,6 @@ fn shanten_delta_category(current: Option<i8>, next: Option<i8>) -> u16 {
         (Some(current), Some(next)) if next == current => SHANTEN_DELTA_SAME,
         (Some(_), Some(_)) => SHANTEN_DELTA_REGRESS,
     }
-}
-
-fn shanten_delta_na() -> [u16; SHANTEN_FORM_COUNT] {
-    [SHANTEN_DELTA_NA; SHANTEN_FORM_COUNT]
 }
 
 fn remove_tile_for_shanten(hand: &mut Vec<u32>, tile: u8) -> bool {
@@ -896,16 +877,12 @@ impl Observation {
 
     // ── Current shanten features ─────────────────────────────────────────
 
-    /// Encode current self hand shanten for three forms:
-    /// standard / seven pairs / thirteen orphans.
+    /// Encode current self hand shanten as the minimum across valid hand forms.
     pub fn encode_seq_current_shanten(&self) -> [u16; CURRENT_SHANTEN_WIDTH] {
         let pid = self.player_id as usize;
-        let forms = shanten::calculate_shanten_forms(&self.hands[pid], !self.melds[pid].is_empty());
-        [
-            encode_shanten_value(forms[0]),
-            encode_shanten_value(forms[1]),
-            encode_shanten_value(forms[2]),
-        ]
+        let min_shanten =
+            shanten::calculate_min_shanten(&self.hands[pid], !self.melds[pid].is_empty());
+        [encode_shanten_value(min_shanten)]
     }
 
     // ── Candidate features ───────────────────────────────────────────────
@@ -957,7 +934,7 @@ impl Observation {
 
     /// Encode candidate (legal action) features as variable-length tuples.
     ///
-    /// Each tuple: (type, moqie, from, standard_delta, chitoi_delta, kokushi_delta)
+    /// Each tuple: (type, moqie, from, shanten_delta)
     /// - type: 0-36=discard tile37, 37-46=special/call, 47=padding
     /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
     /// - from: 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding
@@ -1027,31 +1004,19 @@ impl Observation {
     ) -> Option<[u16; CAND_WIDTH]> {
         let base = self.encode_candidate_action(action, pid)?;
         let delta = self.encode_candidate_shanten_delta(action, pid as usize);
-        Some([base[0], base[1], base[2], delta[0], delta[1], delta[2]])
+        Some([base[0], base[1], base[2], delta])
     }
 
-    fn encode_candidate_shanten_delta(
-        &self,
-        action: &Action,
-        pid: usize,
-    ) -> [u16; SHANTEN_FORM_COUNT] {
-        let Some(post_forms) = self.post_action_shanten_forms(action, pid) else {
-            return shanten_delta_na();
+    fn encode_candidate_shanten_delta(&self, action: &Action, pid: usize) -> u16 {
+        let Some(post_shanten) = self.post_action_min_shanten(action, pid) else {
+            return SHANTEN_DELTA_NA;
         };
-        let current_forms =
-            shanten::calculate_shanten_forms(&self.hands[pid], !self.melds[pid].is_empty());
-        [
-            shanten_delta_category(current_forms[0], post_forms[0]),
-            shanten_delta_category(current_forms[1], post_forms[1]),
-            shanten_delta_category(current_forms[2], post_forms[2]),
-        ]
+        let current_shanten =
+            shanten::calculate_min_shanten(&self.hands[pid], !self.melds[pid].is_empty());
+        shanten_delta_category(current_shanten, post_shanten)
     }
 
-    fn post_action_shanten_forms(
-        &self,
-        action: &Action,
-        pid: usize,
-    ) -> Option<[Option<i8>; SHANTEN_FORM_COUNT]> {
+    fn post_action_min_shanten(&self, action: &Action, pid: usize) -> Option<Option<i8>> {
         let mut hand = self.hands[pid].clone();
         let mut has_declared_meld = !self.melds[pid].is_empty();
 
@@ -1103,7 +1068,7 @@ impl Observation {
             _ => return None,
         }
 
-        Some(shanten::calculate_shanten_forms(&hand, has_declared_meld))
+        Some(shanten::calculate_min_shanten(&hand, has_declared_meld))
     }
 
     /// Encode a single legal action as the visible candidate 3-tuple.

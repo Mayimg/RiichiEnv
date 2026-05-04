@@ -16,19 +16,19 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
-| **Current Shanten** | `(3,)` | int64 | Self shanten for standard, seven-pairs, and thirteen-orphans forms |
+| **Current Shanten** | `(1,)` | int64 | Self minimum shanten across currently valid hand forms |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Agari Overtakes** | `(4, 96, 4)` | float32 | Pairwise rank-overtake flags for standard 4P win patterns |
 | **Progression** | `(256, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
 | **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
-| **Candidates** | `(32, 6)` | int64 | Legal actions plus form-specific shanten deltas |
+| **Candidates** | `(32, 4)` | int64 | Legal actions plus minimum-shanten delta |
 | **Candidate Melds** | `(32, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
 
 Each variable-length group is padded to its maximum length, with accompanying boolean masks indicating real vs. padding entries.
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, embeds the current three-form shanten summary as one token, and reshapes agari-overtake features into four winner-relative-seat tokens.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, embeds the current minimum-shanten summary as one token, and reshapes agari-overtake features into four winner-relative-seat tokens.
 
 ### Shared tile attributes
 
@@ -267,30 +267,32 @@ hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable len
 
 ## 2a. Current Shanten Features
 
-**Fixed: 3 integer fields, projected as one transformer token**
+**Fixed: 1 integer field, projected as one transformer token**
 
-The current observing player's shanten is encoded separately for three hand forms:
+The current observing player's shanten is the minimum over currently valid hand forms:
+standard 4-meld-1-pair, seven pairs, and thirteen orphans. Seven pairs and
+thirteen orphans are unavailable once the player has any declared meld,
+including a closed kan.
 
 | Field | Vocab | Values |
 |-------|-------|--------|
-| standard | 16 | `shanten + 1`; `15` = N/A |
-| seven_pairs | 16 | `shanten + 1`; `15` = N/A |
-| thirteen_orphans | 16 | `shanten + 1`; `15` = N/A |
+| min_shanten | 9 | `shanten + 1`; `8` = N/A |
 
-The value mapping is `0=agari(-1)`, `1=tenpai(0)`, ..., `14=13-shanten`, `15=N/A`.
-Seven pairs and thirteen orphans become N/A once the player has any declared meld, including a closed kan.
+The value mapping is `0=agari(-1)`, `1=tenpai(0)`, ..., `7=6-shanten`, `8=N/A`.
+For closed 13/14-tile hands, the minimum shanten is at most 6 because the
+seven-pairs shanten upper bound is 6; encoded values are clamped to this range.
 
 ### Rust API
 
 ```rust
-obs.encode_seq_current_shanten() -> [u16; 3]
+obs.encode_seq_current_shanten() -> [u16; 1]
 ```
 
 ### Python API (raw)
 
 ```python
 shanten_bytes = obs.encode_seq_current_shanten()
-current_shanten = np.frombuffer(shanten_bytes, dtype=np.uint16)  # shape (3,)
+current_shanten = np.frombuffer(shanten_bytes, dtype=np.uint16)  # shape (1,)
 ```
 
 ## 3. Numeric Features
@@ -439,9 +441,9 @@ prog_melds = np.frombuffer(obs.encode_seq_progression_melds(), dtype=np.uint16).
 
 ## 5. Candidate Features (Legal Actions)
 
-**6-field tuple set, max 32 entries (default)**
+**4-field tuple set, max 32 entries (default)**
 
-Each legal action candidate is encoded as `(type, moqie, from, standard_delta, chitoi_delta, kokushi_delta)`.
+Each legal action candidate is encoded as `(type, moqie, from, shanten_delta)`.
 The candidate list is collapsed by the strict visible action tuple plus its aligned meld sidecar row. Physical copies with identical visible semantics still collapse, but red-five discards, tedashi/tsumogiri discards, and red/non-red consumed chi/pon candidates remain distinct pointer targets.
 
 ### Tuple Fields
@@ -451,11 +453,9 @@ The candidate list is collapsed by the strict visible action tuple plus its alig
 | type | 48 | see table below |
 | moqie | 3 | 0=tedashi, 1=tsumogiri, 2=N/A |
 | from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding |
-| standard_delta | 4 | 0=advance, 1=same, 2=regress, 3=N/A |
-| chitoi_delta | 4 | 0=advance, 1=same, 2=regress, 3=N/A |
-| kokushi_delta | 4 | 0=advance, 1=same, 2=regress, 3=N/A |
+| shanten_delta | 4 | 0=advance, 1=same, 2=regress, 3=N/A |
 
-**Padding tuple:** `(47, 2, 4, 3, 3, 3)`
+**Padding tuple:** `(47, 2, 4, 3)`
 
 ### Type Encoding (48 values)
 
@@ -476,27 +476,26 @@ The candidate list is collapsed by the strict visible action tuple plus its alig
 
 For chi/pon, the tuple may be identical between red-consume and non-red-consume variants. That distinction is represented by the aligned candidate meld row, whose tile slots use `tile37`.
 
-Shanten deltas compare the current hand-form shanten against the immediate post-action hand:
+Shanten delta compares the current minimum shanten against the immediate post-action minimum shanten:
 - Discard: after removing the discarded tile.
 - Chi / pon / daiminkan: after removing consumed hand tiles and adding the meld, before the required follow-up discard.
 - Ankan: after moving the four tiles into a closed-kan meld, before the rinshan draw.
 - Kakan: after moving the added tile into the existing pon, before the rinshan draw.
 - Tsumo, ron, pass, kyushu-kyuhai, riichi, and padding use N/A.
 
-If a special form is already impossible because the player has a declared meld, its delta is N/A. If a closed-hand action makes a previously possible special form impossible, the delta is `regress`.
 These fields are derived only inside the observation encoder; external MJAI log events and action JSON remain unchanged.
 
 ### Rust API
 
 ```rust
-obs.encode_seq_candidates() -> Vec<[u16; 6]>
+obs.encode_seq_candidates() -> Vec<[u16; 4]>
 ```
 
 ### Python API (raw)
 
 ```python
 cand_bytes = obs.encode_seq_candidates()
-cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 6)  # variable length
+cand = np.frombuffer(cand_bytes, dtype=np.uint16).reshape(-1, 4)  # variable length
 cand_melds = np.frombuffer(obs.encode_seq_candidate_melds(), dtype=np.uint16).reshape(-1, 9)
 ```
 
@@ -522,12 +521,12 @@ for pid, obs in obs_dict.items():
     # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
-    # features["current_shanten"] -- (3,) int64, form-specific self shanten
+    # features["current_shanten"] -- (1,) int64, current minimum shanten
     # features["numeric"]     -- (6,) float32
     # features["agari_overtakes"] -- (1536,) float32, reshapeable to (4, 96, 4)
     # features["progression"] -- (256, 5) int64, padded with (4, 80, 2, 2, 4)
     # features["prog_melds"]  -- (256, 9) int64, aligned with progression
-    # features["candidates"]  -- (32, 6) int64, padded with (47, 2, 4, 3, 3, 3)
+    # features["candidates"]  -- (32, 4) int64, padded with (47, 2, 4, 3)
     # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
     # features["sparse_mask"] -- (8,) bool, True for real tokens
     # features["hand_mask"]   -- (14,) bool, True for real entries
@@ -550,14 +549,14 @@ SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10
 SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS  # 5
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
-SequenceFeatureEncoder.SHANTEN_FORM_DIMS  # (16, 16, 16)
+SequenceFeatureEncoder.SHANTEN_DIMS       # (9,)
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
 SequenceFeatureEncoder.AGARI_OVERTAKE_DIMS # (4, 96, 4)
 SequenceFeatureEncoder.AGARI_OVERTAKE_DIM  # 1536
 SequenceFeatureEncoder.PROG_DIMS           # (5, 81, 3, 3, 5)
-SequenceFeatureEncoder.CAND_DIMS           # (48, 3, 5, 4, 4, 4)
+SequenceFeatureEncoder.CAND_DIMS           # (48, 3, 5, 4)
 ```
 
 ## Implementation

@@ -284,6 +284,15 @@ pub fn calculate_shanten_forms(
     calc_shanten_forms_from_counts(&tile_counts, len_div3, has_declared_meld)
 }
 
+pub fn min_shanten(forms: [Option<i8>; SHANTEN_FORM_COUNT]) -> Option<i8> {
+    forms.into_iter().flatten().min()
+}
+
+/// Calculate the minimum shanten across currently valid hand forms.
+pub fn calculate_min_shanten(hand_tiles: &[u32], has_declared_meld: bool) -> Option<i8> {
+    min_shanten(calculate_shanten_forms(hand_tiles, has_declared_meld))
+}
+
 /// Valid tile types for 3-player mahjong (sanma): 1m, 9m, 1-9p, 1-9s, 7 honor tiles.
 /// Excludes 2m-8m (tile types 1-7) which don't exist in sanma.
 #[cfg(feature = "python")]

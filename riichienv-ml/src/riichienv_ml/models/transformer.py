@@ -600,7 +600,7 @@ class TransformerActorCritic(nn.Module):
         player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,13,13)
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,81,3,3,5)
-        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (48,3,5,4,4,4)
+        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (48,3,5,4)
         **kwargs,
     ):
         super().__init__()
@@ -622,7 +622,7 @@ class TransformerActorCritic(nn.Module):
         self._SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
         self._MW = SequenceFeatureEncoder.MELD_WIDTH
         self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
-        self._SH = SequenceFeatureEncoder.SHANTEN_FORM_COUNT
+        self._SH = SequenceFeatureEncoder.CURRENT_SHANTEN_WIDTH
         self._N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
         self._A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
         self._AT = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS
@@ -1176,7 +1176,7 @@ class TransformerActorCritic(nn.Module):
         # Embed hand tuples: (B, H, d)
         hand_emb = self._embed_hand(hand, dora_tile34, tile37_table, dealer, round_wind)
 
-        # Embed current form-specific shanten as one token: (B, 1, d)
+        # Embed current minimum shanten as one token: (B, 1, d)
         current_shanten_emb = self._embed_current_shanten(current_shanten)
 
         # Project numeric: (B, 1, d)

@@ -258,9 +258,8 @@ def test_sequence_feature_encoder_includes_current_shanten_token():
 
     features = SequenceFeatureEncoder().encode(obs)
 
-    assert features["current_shanten"].shape == (SequenceFeatureEncoder.SHANTEN_FORM_COUNT,)
+    assert features["current_shanten"].shape == (SequenceFeatureEncoder.CURRENT_SHANTEN_WIDTH,)
     assert features["current_shanten"][0].item() < SequenceFeatureEncoder.SHANTEN_VALUE_NA
-    assert features["current_shanten"][1:].tolist() == [SequenceFeatureEncoder.SHANTEN_VALUE_NA] * 2
 
 
 def test_sequence_feature_encoder_includes_pairwise_agari_overtake_flags():
@@ -459,7 +458,7 @@ def test_sequence_candidates_distinguish_red_and_moqie_discards():
     valid = features["candidates"][features["cand_mask"]]
     assert valid.shape[1] == SequenceFeatureEncoder.CAND_WIDTH
     assert valid[:, :3].tolist() == [[0, 0, 0], [5, 1, 0], [37, 2, 0]]
-    assert valid[2, 3:].tolist() == [SequenceFeatureEncoder.SHANTEN_DELTA_NA] * 3
+    assert valid[2, 3].item() == SequenceFeatureEncoder.SHANTEN_DELTA_NA
 
 
 def test_sequence_candidates_distinguish_red_consumed_melds():
@@ -539,11 +538,11 @@ def test_sequence_response_candidates_use_last_discard_actor_without_events():
     valid = features["candidates"][features["cand_mask"]]
     assert valid.shape[1] == SequenceFeatureEncoder.CAND_WIDTH
     assert valid[:, :3].tolist() == [[44, 2, 3], [46, 2, 3], [42, 2, 0]]
-    assert valid[1, 3:].tolist() == [SequenceFeatureEncoder.SHANTEN_DELTA_NA] * 3
-    assert valid[2, 3:].tolist() == [SequenceFeatureEncoder.SHANTEN_DELTA_NA] * 3
+    assert valid[1, 3].item() == SequenceFeatureEncoder.SHANTEN_DELTA_NA
+    assert valid[2, 3].item() == SequenceFeatureEncoder.SHANTEN_DELTA_NA
 
 
-def test_sequence_call_candidate_marks_special_forms_regressed():
+def test_sequence_call_candidate_marks_min_shanten_delta():
     obs = Observation(
         1,
         [[], [0, 4, 8, 12, 16, 17, 20, 24, 28, 32, 36, 40, 44], [], []],
@@ -572,7 +571,7 @@ def test_sequence_call_candidate_marks_special_forms_regressed():
     valid = features["candidates"][features["cand_mask"]]
 
     assert valid[:, :3].tolist() == [[44, 2, 3]]
-    assert valid[0, 4:].tolist() == [SequenceFeatureEncoder.SHANTEN_DELTA_REGRESS] * 2
+    assert valid[0, 3].item() == SequenceFeatureEncoder.SHANTEN_DELTA_SAME
 
 
 def test_mjai_replay_claim_labels_remain_strict_candidate_actions(tmp_path):

@@ -1418,10 +1418,9 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode current self shanten as 3 u16 values.
+    /// Encode current self minimum shanten as 1 u16 value.
     ///
-    /// Order: standard / seven pairs / thirteen orphans.
-    /// Values: 0=agari(-1), 1=tenpai(0), ..., 14=13-shanten, 15=N/A.
+    /// Values: 0=agari(-1), 1=tenpai(0), ..., 7=6-shanten, 8=N/A.
     #[pyo3(name = "encode_seq_current_shanten")]
     pub fn encode_seq_current_shanten_py<'py>(
         &self,
@@ -1497,10 +1496,10 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode candidate (legal action) features as M × 6 u16 tuples.
+    /// Encode candidate (legal action) features as M × 4 u16 tuples.
     ///
-    /// Returns raw bytes of flattened row-major `&[[u16; 6]]`.
-    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 6)`.
+    /// Returns raw bytes of flattened row-major `&[[u16; 4]]`.
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 4)`.
     #[pyo3(name = "encode_seq_candidates")]
     pub fn encode_seq_candidates_py<'py>(
         &self,
@@ -1530,7 +1529,7 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode candidate tuples and aligned meld sidecar rows as M × 15 u16 rows.
+    /// Encode candidate tuples and aligned meld sidecar rows as M × 13 u16 rows.
     #[pyo3(name = "encode_seq_candidate_features")]
     pub fn encode_seq_candidate_features_py<'py>(
         &self,
