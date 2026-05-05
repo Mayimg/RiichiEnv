@@ -24,6 +24,7 @@ from riichienv_ml.models.transformer import (
     _SEAT_ROLE_PROG_ACTOR,
     _SPARSE_DORA_OFFSET,
     _TILE34_PAD,
+    SplitLinearLayerNorm,
     TransformerActorCritic,
     TransformerPolicyNetwork,
 )
@@ -35,6 +36,26 @@ from riichienv import Action, ActionType, Meld, MeldType, MjaiReplay, Observatio
 class DummyEncoder:
     def encode(self, obs):
         return torch.tensor([len(obs.legal_actions())], dtype=torch.float32)
+
+
+def test_split_linear_layer_norm_matches_concat_linear():
+    torch.manual_seed(0)
+    proj = SplitLinearLayerNorm([3, 5, 2], 7)
+    parts = [
+        torch.randn(4, 6, 3),
+        torch.randn(4, 6, 5),
+        torch.randn(4, 6, 2),
+    ]
+
+    expected = F.layer_norm(
+        F.linear(torch.cat(parts, dim=-1), proj.weight, proj.bias),
+        (proj.weight.shape[0],),
+        proj.ln.weight,
+        proj.ln.bias,
+        proj.ln.eps,
+    )
+
+    torch.testing.assert_close(proj(parts), expected)
 
 
 def _write_simple_4p_log(path):
@@ -167,6 +188,41 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
     logits = model(features)
 
     assert logits.shape == (1, 32)
+
+
+def test_transformer_policy_training_step_with_sequence_features(tmp_path):
+    file_path = tmp_path / "bc_sequence_train_sample.jsonl"
+    _write_simple_4p_log(file_path)
+
+    encoder = SequenceFeaturePackedEncoder(max_prog_len=256, max_cand_len=32)
+    dataset = BehaviorCloningDataset(
+        [str(file_path)],
+        is_train=False,
+        n_players=4,
+        replay_rule="tenhou",
+        encoder=encoder,
+    )
+    features, action_id, mask = next(iter(dataset))
+
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=256,
+        max_cand_len=32,
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+    logits = model(features.unsqueeze(0))
+    legal = torch.as_tensor(mask, dtype=torch.bool).unsqueeze(0)
+    loss = F.cross_entropy(logits.masked_fill(~legal, torch.finfo(logits.dtype).min), torch.tensor([action_id]))
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    assert torch.isfinite(loss)
+    assert any(p.grad is not None for p in model.parameters())
 
 
 def test_sequence_feature_encoder_factorizes_hand_draw_state():
@@ -663,9 +719,7 @@ def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
 
     assert emb.shape == (2, SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS, 64)
     assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
-    expected_seq_len = (
-        1 + model._S + model._D + model._PI + model._SM + model._H + 1 + model._AT + model._P + model._C
-    )
+    expected_seq_len = 1 + model._S + model._D + model._PI + model._SM + model._H + 1 + model._AT + model._P + model._C
     assert model.pos_enc.shape[1] == expected_seq_len
 
     winner_seats = torch.arange(SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS).unsqueeze(0).expand(2, -1)

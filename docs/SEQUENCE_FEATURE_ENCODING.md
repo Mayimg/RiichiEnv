@@ -29,13 +29,17 @@ Each variable-length group is padded to its maximum length, with accompanying bo
 
 The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens.
 
+The feature vocabulary and external MJAI log format are independent of the projection implementation described here. The optimized transformer keeps the same encoded feature groups and vocabularies, but evaluates several projections with fixed-shape table/gather operations to reduce small CUDA kernels and GPU-to-CPU synchronization points.
+
 ### Shared tile attributes
 
 For tile-only tokens, a tile embedding is built as:
 
 ```text
-attribute embeddings -> concat -> linear projection
+attribute embeddings -> field-wise projected component sum -> LayerNorm
 ```
+
+This is mathematically equivalent to the previous `Linear(concat(attributes)) + LayerNorm` form because the linear weight can be split by field and summed as `W1 e1 + W2 e2 + ... + b`.
 
 with the following attributes:
 
@@ -79,6 +83,14 @@ For sparse dora-indicator tokens, the model keeps the existing dora-slot distinc
 ### Shared relative-seat embedding
 
 All real relative-seat values (`0=self`, `1=shimocha`, `2=toimen`, `3=kamicha`) share one base embedding table. Role-specific context is added for dealer, player-summary seat, progression actor, progression from, candidate from, sparse meld owner, agari winner, and wind-tile owner before projection to the required sub-dimension. Value `4` is treated as padding/N/A/marker and maps to zero in the seat module; the aligned type field or padding mask carries the special meaning.
+
+At model forward time, the relative-seat module builds `role x seat` tables once for both sub-dimension and model-dimension outputs. Downstream feature groups gather from these tables instead of repeatedly projecting the same role/seat combinations.
+
+### Projection execution
+
+The Python model uses a split projection helper for feature groups that are conceptually `concat -> Linear -> LayerNorm`. It stores the same full linear weight and bias shape as the concatenated formulation, but applies the relevant weight slice to each field and sums the results before LayerNorm. For categorical fields, small projected tables are built from the embedding weights and then gathered by id.
+
+Sparse melds, progression meld sidecars, and candidate meld sidecars are embedded in one fixed-shape shared meld pass per forward and then split back into their feature groups. Padding rows remain represented by the same `(5, 37, 3, 37, 3, 37, 3, 37, 3)` row and are selected with `torch.where`, so this changes execution shape rather than feature semantics.
 
 ## Tile Encodings
 
