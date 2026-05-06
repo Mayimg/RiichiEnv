@@ -23,7 +23,7 @@ bc:
   num_steps: 500
   # Model (TransformerActorCritic) + Encoder (packed sequence features)
   model_class: riichienv_ml.models.transformer.TransformerActorCritic
-  encoder_class: riichienv_ml.features.sequence_features.SequenceFeaturePackedEncoder
+  encoder_class: riichienv_ml.features.sequence_features.SequenceFeatureEncoder
   evaluator:
     model_path: /data/workspace/best_model/best.pth
     eval_episodes: 48
@@ -38,5 +38,3 @@ bc:
     num_actions: 82
     policy_head_type: cross_attn
     d_sub: 32
-    max_prog_len: 512
-    max_cand_len: 64

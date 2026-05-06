@@ -6,9 +6,9 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
-logger = logging.getLogger(__name__)
-
 from riichienv import MjaiReplay
+
+logger = logging.getLogger(__name__)
 
 
 def _compute_rank(end_scores: list, player_id: int, n_players: int) -> int:
@@ -112,9 +112,9 @@ class MCDataset(BaseDataset):
                             assert mask[action_id] == 1, f"action_id {action_id} should be legal"
                             trajectory.append((features, action_id, mask))
 
-                        T = len(trajectory)
+                        trajectory_len = len(trajectory)
                         for t, (feat, act, mask) in enumerate(trajectory):
-                            decayed = final_reward * (self.gamma ** (T - t - 1))
+                            decayed = final_reward * (self.gamma ** (trajectory_len - t - 1))
                             buffer.append((feat, act, decayed, mask, rank))
             except (RuntimeError, ValueError) as e:
                 logger.warning("Skipping replay due to error: %s: %s", file_path, e)
@@ -133,20 +133,8 @@ class MCDataset(BaseDataset):
 class BehaviorCloningDataset(BaseDataset):
     """Yields (features, candidate_index, candidate_mask) tuples for pure action cloning."""
 
-    def _max_candidate_len(self) -> int:
-        if hasattr(self.encoder, "_C"):
-            return int(self.encoder._C)
-        inner = getattr(self.encoder, "inner", None)
-        if inner is not None and hasattr(inner, "MAX_CAND_LEN"):
-            return int(inner.MAX_CAND_LEN)
-        return 32
-
     def _candidate_mask(self, obs) -> np.ndarray:
-        max_cand_len = self._max_candidate_len()
-        n_cand = min(len(obs.candidate_actions()), max_cand_len)
-        mask = np.zeros(max_cand_len, dtype=np.uint8)
-        mask[:n_cand] = 1
-        return mask
+        return np.ones(len(obs.candidate_actions()), dtype=np.uint8)
 
     def __iter__(self):
         files = self._get_files()
@@ -181,7 +169,7 @@ class BehaviorCloningDataset(BaseDataset):
 
                             mask = self._candidate_mask(obs)
                             if not 0 <= action_id < mask.shape[0]:
-                                raise ValueError(f"candidate index {action_id} exceeds max_cand_len={mask.shape[0]}")
+                                raise ValueError(f"candidate index {action_id} exceeds candidate_count={mask.shape[0]}")
                             if mask[action_id] != 1:
                                 raise ValueError(f"candidate index {action_id} is not legal")
                             buffer.append((features, action_id, mask))

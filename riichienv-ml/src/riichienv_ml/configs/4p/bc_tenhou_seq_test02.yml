@@ -24,7 +24,7 @@ bc:
   wandb_mode: offline
   model_class: riichienv_ml.models.transformer.TransformerPolicyNetwork
   dataset_class: riichienv_ml.datasets.mjai_logs.BehaviorCloningDataset
-  encoder_class: riichienv_ml.features.sequence_features.SequenceFeaturePackedEncoder
+  encoder_class: riichienv_ml.features.sequence_features.SequenceFeatureEncoder
   model:
     d_model: 384
     nhead: 8

@@ -43,18 +43,15 @@ pub const HAND_PAD: [u16; 2] = [37, 2];
 
 /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
 #[allow(dead_code)]
-pub const PROG_DIMS: [u16; 5] = [5, 81, 3, 3, 5];
-pub const MAX_PROG_LEN: usize = 512;
+pub const PROG_DIMS: [u16; 5] = [5, 80, 3, 3, 5];
 #[allow(dead_code)]
-pub const PROG_PAD: [u16; 5] = [4, 80, 2, 2, 4];
+pub const PROG_PAD: [u16; 5] = [4, 0, 2, 2, 4];
 
 /// Candidate tuple dimensions: (type, moqie, from)
 #[allow(dead_code)]
-pub const CAND_DIMS: [u16; 3] = [48, 3, 5];
+pub const CAND_DIMS: [u16; 3] = [47, 3, 5];
 #[allow(dead_code)]
-pub const MAX_CAND_LEN: usize = 64;
-#[allow(dead_code)]
-pub const CAND_PAD: [u16; 3] = [47, 2, 4];
+pub const CAND_PAD: [u16; 3] = [42, 2, 4];
 
 /// Meld feature row: (kind, slot0_tile37, slot0_role, ..., slot3_tile37, slot3_role)
 #[allow(dead_code)]
@@ -740,7 +737,7 @@ impl Observation {
     /// Each tuple: (actor, type, moqie, liqi, from)
     /// - actor: 0-3 (seats), 4 (marker/padding)
     /// - type: 0=start, 1-37=discard, 38=chi, 39=pon, 40=daiminkan,
-    ///   41=ankan, 42=kakan, 43-79=dora reveal, 80=padding
+    ///   41=ankan, 42=kakan, 43-79=dora reveal
     /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
     /// - liqi: 0=no riichi, 1=with riichi, 2=N/A
     /// - from: 0-3 (observer-relative seat), 4=N/A
@@ -762,13 +759,6 @@ impl Observation {
                 process_event_progression_entries_with_melds(&v, &mut pending_reach_actor)
             {
                 prog.push(entry);
-                if prog.len() >= MAX_PROG_LEN {
-                    break;
-                }
-            }
-
-            if prog.len() >= MAX_PROG_LEN {
-                break;
             }
         }
 
@@ -806,13 +796,6 @@ impl Observation {
                 process_event_progression_entries_with_melds(&v, &mut pending_reach_actor)
             {
                 melds.push(meld);
-                if melds.len() >= MAX_PROG_LEN {
-                    break;
-                }
-            }
-
-            if melds.len() >= MAX_PROG_LEN {
-                break;
             }
         }
 
@@ -869,7 +852,7 @@ impl Observation {
     /// Encode candidate (legal action) features as variable-length 3-tuples.
     ///
     /// Each tuple: (type, moqie, from)
-    /// - type: 0-36=discard tile37, 37-46=special/call, 47=padding
+    /// - type: 0-36=discard tile37, 37-46=special/call
     /// - moqie: 0=tedashi, 1=tsumogiri, 2=N/A
     /// - from: 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding
     pub fn encode_seq_candidates(&self) -> Vec<[u16; 3]> {
@@ -1591,7 +1574,6 @@ mod tests {
     #[test]
     fn test_progression_type_bounds() {
         let prog_type_max = PROG_DIMS[1];
-        assert!(80 < prog_type_max); // padding
         assert!(79 < prog_type_max); // dora reveal max
         assert!(42 < prog_type_max); // kakan
     }
@@ -1600,7 +1582,6 @@ mod tests {
     fn test_candidate_type_bounds() {
         let cand_type_max = CAND_DIMS[0];
         assert!(36 < cand_type_max); // discard max: 36
-        assert!(47 < cand_type_max); // padding
         assert!(46 < cand_type_max); // ron
     }
 }

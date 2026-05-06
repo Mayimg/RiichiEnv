@@ -23,7 +23,7 @@ def test_self_match_runner_writes_parseable_mjai_logs(tmp_path):
                 "replay_rule": "tenhou",
             },
             "model_class": "riichienv_ml.models.transformer.TransformerPolicyNetwork",
-            "encoder_class": "riichienv_ml.features.sequence_features.SequenceFeaturePackedEncoder",
+            "encoder_class": "riichienv_ml.features.sequence_features.SequenceFeatureEncoder",
             "model": {
                 "d_model": 64,
                 "nhead": 4,
@@ -31,8 +31,6 @@ def test_self_match_runner_writes_parseable_mjai_logs(tmp_path):
                 "dim_feedforward": 128,
                 "dropout": 0.1,
                 "num_actions": 82,
-                "max_prog_len": 256,
-                "max_cand_len": 32,
             },
         }
     }
@@ -46,8 +44,6 @@ def test_self_match_runner_writes_parseable_mjai_logs(tmp_path):
         dim_feedforward=128,
         dropout=0.1,
         num_actions=82,
-        max_prog_len=256,
-        max_cand_len=32,
     )
     torch.save(model.state_dict(), model_path)
 

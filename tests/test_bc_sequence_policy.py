@@ -6,7 +6,11 @@ import riichienv_ml.trainers.bc_policy as bc_policy_module
 import torch
 import torch.nn.functional as F
 from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
-from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, SequenceFeaturePackedEncoder
+from riichienv_ml.features.sequence_features import (
+    SequenceFeatureEncoder,
+    SequenceFeaturePackedEncoder,
+    collate_sequence_features,
+)
 from riichienv_ml.models.transformer import (
     _ACTION_KIND_DISCARD,
     _ACTION_KIND_DORA,
@@ -89,6 +93,47 @@ def _write_simple_4p_log(path):
             f.write(json.dumps(event) + "\n")
 
 
+def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int = 3) -> dict[str, torch.Tensor]:
+    player_stats = torch.tensor(
+        [[0, 0, 0, 0, 0], [1, 0, 0, 0, 0], [2, 0, 0, 0, 0], [3, 0, 0, 0, 0]],
+        dtype=torch.long,
+    )
+    batch = {
+        "sparse": torch.full((batch_size, SequenceFeatureEncoder.MAX_SPARSE_LEN), SequenceFeatureEncoder.SPARSE_PAD),
+        "dealer": torch.zeros(batch_size, dtype=torch.long),
+        "player_stats": player_stats.unsqueeze(0).expand(batch_size, -1, -1).clone(),
+        "sparse_melds": torch.tensor(SequenceFeatureEncoder.MELD_PAD).repeat(
+            batch_size,
+            SequenceFeatureEncoder.MAX_SPARSE_MELDS,
+            1,
+        ),
+        "sparse_meld_owners": torch.full(
+            (batch_size, SequenceFeatureEncoder.MAX_SPARSE_MELDS),
+            SequenceFeatureEncoder.SPARSE_MELD_OWNER_PAD,
+            dtype=torch.long,
+        ),
+        "hand": torch.tensor(SequenceFeatureEncoder.HAND_PAD).repeat(
+            batch_size,
+            SequenceFeatureEncoder.MAX_HAND_LEN,
+            1,
+        ),
+        "numeric": torch.zeros(batch_size, SequenceFeatureEncoder.NUM_NUMERIC),
+        "agari_overtakes": torch.zeros(batch_size, SequenceFeatureEncoder.AGARI_OVERTAKE_DIM),
+        "progression": torch.tensor(SequenceFeatureEncoder.PROG_PAD).repeat(batch_size, prog_len, 1),
+        "prog_melds": torch.tensor(SequenceFeatureEncoder.MELD_PAD).repeat(batch_size, prog_len, 1),
+        "candidates": torch.tensor(SequenceFeatureEncoder.CAND_PAD).repeat(batch_size, cand_len, 1),
+        "cand_melds": torch.tensor(SequenceFeatureEncoder.MELD_PAD).repeat(batch_size, cand_len, 1),
+        "sparse_mask": torch.zeros(batch_size, SequenceFeatureEncoder.MAX_SPARSE_LEN, dtype=torch.bool),
+        "sparse_meld_mask": torch.zeros(batch_size, SequenceFeatureEncoder.MAX_SPARSE_MELDS, dtype=torch.bool),
+        "hand_mask": torch.zeros(batch_size, SequenceFeatureEncoder.MAX_HAND_LEN, dtype=torch.bool),
+        "prog_mask": torch.ones(batch_size, prog_len, dtype=torch.bool),
+        "cand_mask": torch.ones(batch_size, cand_len, dtype=torch.bool),
+    }
+    batch["sparse"][:, :3] = torch.tensor([1, 2, 74])
+    batch["sparse_mask"][:, :3] = True
+    return batch
+
+
 def test_behavior_cloning_dataset_yields_legal_action_labels(tmp_path):
     file_path = tmp_path / "bc_policy_sample.jsonl"
     _write_simple_4p_log(file_path)
@@ -137,8 +182,7 @@ def test_transformer_policy_network_returns_logits_only():
         max_prog_len=8,
         max_cand_len=4,
     )
-    packed_size = SequenceFeaturePackedEncoder(max_prog_len=8, max_cand_len=4).PACKED_SIZE
-    x = torch.zeros(2, packed_size)
+    x = _dummy_sequence_batch(batch_size=2, prog_len=8, cand_len=4)
 
     logits = model(x)
 
@@ -156,8 +200,7 @@ def test_transformer_actor_critic_keeps_value_head_output():
         max_prog_len=8,
         max_cand_len=4,
     )
-    packed_size = SequenceFeaturePackedEncoder(max_prog_len=8, max_cand_len=4).PACKED_SIZE
-    x = torch.zeros(2, packed_size)
+    x = _dummy_sequence_batch(batch_size=2, prog_len=8, cand_len=4)
 
     logits, value = model(x)
 
@@ -173,8 +216,9 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
     kyoku = list(replay.take_kyokus())[0]
     obs, _ = next(iter(kyoku.steps(0)))
 
-    encoder = SequenceFeaturePackedEncoder(max_prog_len=256, max_cand_len=32)
-    features = encoder.encode(obs).unsqueeze(0)
+    encoder = SequenceFeaturePackedEncoder()
+    sample = encoder.encode(obs)
+    features = collate_sequence_features([sample])
 
     model = TransformerPolicyNetwork(
         d_model=64,
@@ -187,14 +231,14 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
 
     logits = model(features)
 
-    assert logits.shape == (1, 32)
+    assert logits.shape == (1, sample["candidates"].shape[0])
 
 
 def test_transformer_policy_training_step_with_sequence_features(tmp_path):
     file_path = tmp_path / "bc_sequence_train_sample.jsonl"
     _write_simple_4p_log(file_path)
 
-    encoder = SequenceFeaturePackedEncoder(max_prog_len=256, max_cand_len=32)
+    encoder = SequenceFeaturePackedEncoder()
     dataset = BehaviorCloningDataset(
         [str(file_path)],
         is_train=False,
@@ -214,7 +258,8 @@ def test_transformer_policy_training_step_with_sequence_features(tmp_path):
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
-    logits = model(features.unsqueeze(0))
+    batch_features = collate_sequence_features([features])
+    logits = model(batch_features)
     legal = torch.as_tensor(mask, dtype=torch.bool).unsqueeze(0)
     loss = F.cross_entropy(logits.masked_fill(~legal, torch.finfo(logits.dtype).min), torch.tensor([action_id]))
     optimizer.zero_grad()
@@ -479,7 +524,7 @@ def test_sequence_candidates_distinguish_red_and_moqie_discards():
     assert obs.find_candidate_action(obs.find_candidate_index(Action(ActionType.DISCARD, 16, []))).tile == 16
     assert obs.find_candidate_action(obs.find_candidate_index(Action(ActionType.DISCARD, 17, []))).tile == 17
 
-    features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
+    features = SequenceFeatureEncoder().encode(obs)
     valid = features["candidates"][features["cand_mask"]]
     assert valid.tolist() == [[0, 0, 0], [5, 1, 0], [37, 2, 0]]
 
@@ -515,7 +560,7 @@ def test_sequence_candidates_distinguish_red_consumed_melds():
     assert [a.action_type for a in candidates] == [ActionType.PON, ActionType.PON]
     assert [a.consume_tiles for a in candidates] == [[17, 18], [16, 17]]
 
-    features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
+    features = SequenceFeatureEncoder().encode(obs)
     valid = features["candidates"][features["cand_mask"]]
     assert valid.tolist() == [[44, 2, 3], [44, 2, 3]]
     valid_melds = features["cand_melds"][features["cand_mask"]]
@@ -556,7 +601,7 @@ def test_sequence_response_candidates_use_last_discard_actor_without_events():
     candidates = obs.candidate_actions()
 
     assert [a.action_type for a in candidates] == [ActionType.PON, ActionType.RON, ActionType.PASS]
-    features = SequenceFeatureEncoder(max_cand_len=8).encode(obs)
+    features = SequenceFeatureEncoder().encode(obs)
     valid = features["candidates"][features["cand_mask"]]
     assert valid.tolist() == [[44, 2, 3], [46, 2, 3], [42, 2, 0]]
 
@@ -641,7 +686,6 @@ def test_transformer_tile_only_action_type_lookups_ignore_meld_patterns():
     assert model.prog_type_tile37[43].item() == 0
     assert model.prog_type_action_kind[79].item() == _ACTION_KIND_DORA
     assert model.prog_type_tile37[79].item() == 36
-    assert model.prog_type_action_kind[80].item() == _ACTION_KIND_PAD
 
     assert model.cand_type_action_kind[0].item() == _ACTION_KIND_DISCARD
     assert model.cand_type_tile37[0].item() == 0
@@ -719,8 +763,7 @@ def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
 
     assert emb.shape == (2, SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS, 64)
     assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
-    expected_seq_len = 1 + model._S + model._D + model._PI + model._SM + model._H + 1 + model._AT + model._P + model._C
-    assert model.pos_enc.shape[1] == expected_seq_len
+    assert model._progression_pe(5, torch.device("cpu"), torch.float32).shape == (1, 5, 64)
 
     winner_seats = torch.arange(SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS).unsqueeze(0).expand(2, -1)
     seat_emb = model.relative_seat_embed(winner_seats, _SEAT_ROLE_AGARI_WINNER, out="model")
@@ -997,15 +1040,15 @@ def test_bc_policy_trainer_logs_recent_100_batch_metrics(monkeypatch):
     assert float(match["window_acc"]) == pytest.approx(0.0, abs=1e-4)
 
 
-def test_build_encoder_passes_sequence_lengths_from_model_config():
+def test_build_encoder_ignores_removed_sequence_lengths_from_model_config():
     encoder = build_encoder(
         SequenceFeaturePackedEncoder,
         tile_dim=34,
         model_config={"max_prog_len": 11, "max_cand_len": 7, "unused": 123},
     )
 
-    assert encoder._P == 11
-    assert encoder._C == 7
+    assert isinstance(encoder, SequenceFeaturePackedEncoder)
+    assert not hasattr(encoder, "PACKED_SIZE")
 
 
 def test_bc_policy_trainer_train_epoch_accepts_pointer_candidate_logits():
@@ -1017,16 +1060,15 @@ def test_bc_policy_trainer_train_epoch_accepts_pointer_candidate_logits():
 
     max_prog_len = 2
     max_cand_len = 3
-    encoder = SequenceFeaturePackedEncoder(max_prog_len=max_prog_len, max_cand_len=max_cand_len)
-    features = torch.zeros(2, encoder.PACKED_SIZE, dtype=torch.float32)
+    features = _dummy_sequence_batch(batch_size=2, prog_len=max_prog_len, cand_len=max_cand_len)
     masks = torch.tensor(
         [
             [1, 1, 0],
             [1, 1, 1],
         ],
-        dtype=torch.float32,
+        dtype=torch.bool,
     )
-    features[:, -max_cand_len:] = masks
+    features["cand_mask"] = masks
     actions = torch.tensor([0, 2])
 
     model = TransformerPolicyNetwork(
