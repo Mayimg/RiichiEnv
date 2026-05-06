@@ -29,17 +29,19 @@ Each variable-length group is padded to its maximum length, with accompanying bo
 
 The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens.
 
-The feature vocabulary and external MJAI log format are independent of the projection implementation described here. The optimized transformer keeps the same encoded feature groups and vocabularies, but evaluates several projections with fixed-shape table/gather operations to reduce small CUDA kernels and GPU-to-CPU synchronization points.
+The feature vocabulary and external MJAI log format are independent of the projection implementation described here. The optimized transformer keeps the same encoded feature groups and vocabularies, but constructs most categorical tokens as direct model-dimension field sums to reduce small CUDA kernels, dynamic shapes, and GPU-to-CPU synchronization points.
+
+This direct table strategy is intentionally not checkpoint-compatible with older `concat -> Linear -> LayerNorm` token projections. It keeps the same feature meanings, but each categorical field contributes a learned `d_model` vector directly and the token is normalized after summation.
 
 ### Shared tile attributes
 
-For tile-only tokens, a tile embedding is built as:
+For tile-only tokens and meld tile slots, a tile embedding is built as:
 
 ```text
 attribute embeddings -> field-wise projected component sum -> LayerNorm
 ```
 
-This is mathematically equivalent to the previous `Linear(concat(attributes)) + LayerNorm` form because the linear weight can be split by field and summed as `W1 e1 + W2 e2 + ... + b`.
+The model builds both `d_type` tile tables for shared meld internals and `d_model` tile tables for direct token construction. Within each tile table, the component-sum form is mathematically equivalent to `Linear(concat(attributes)) + LayerNorm` over the tile attributes themselves because the linear weight can be split by field and summed as `W1 e1 + W2 e2 + ... + b`. The direct `d_model` table is a new model-space parameterization for final tokens, not a compatibility wrapper around older hand/progression/candidate projection weights.
 
 with the following attributes:
 
@@ -78,7 +80,7 @@ The shared tile embedding is applied to single-tile fields and to the tile slots
 | Sparse / progression / candidate meld sidecars | 4 tile slots per meld | Yes, via shared meld embedding |
 | Progression / candidates | pass / ron / tsumo / markers | No |
 
-For sparse dora-indicator tokens, the model keeps the existing dora-slot distinction (`1st` indicator, `2nd` indicator, etc.) as a separate embedding and combines it with the shared tile embedding for the indicator tile itself.
+For sparse dora-indicator tokens, the model keeps the existing dora-slot distinction (`1st` indicator, `2nd` indicator, etc.) as a separate `d_model` embedding and sums it with the shared `d_model` tile embedding for the indicator tile itself.
 
 ### Shared relative-seat embedding
 
@@ -86,11 +88,28 @@ All real relative-seat values (`0=self`, `1=shimocha`, `2=toimen`, `3=kamicha`) 
 
 At model forward time, the relative-seat module builds `role x seat` tables once for both sub-dimension and model-dimension outputs. Downstream feature groups gather from these tables instead of repeatedly projecting the same role/seat combinations.
 
-### Projection execution
+### Direct token construction
 
-The Python model uses a split projection helper for feature groups that are conceptually `concat -> Linear -> LayerNorm`. It stores the same full linear weight and bias shape as the concatenated formulation, but applies the relevant weight slice to each field and sums the results before LayerNorm. For categorical fields, small projected tables are built from the embedding weights and then gathered by id.
+Most categorical feature groups do not materialize `concat` tensors or run a small final projection. Instead, each field contributes a `d_model` vector and the token is produced as:
+
+```text
+field_1_model + field_2_model + ... + learned_bias -> LayerNorm
+```
+
+The main direct-sum groups are:
+
+| Feature group | Direct model-space contributions |
+|---------------|----------------------------------|
+| Player Stats | relative-seat role table + riichi + meld count + discard count + tedashi count |
+| Hand | `d_model` tile37 table + draw-state embedding |
+| Sparse dora indicators | `d_model` tile37 table + dora-slot embedding |
+| Progression | actor seat + action type/tile/meld representation + moqie + liqi + from seat |
+| Candidates | action type/tile/meld representation + moqie + from seat |
+| Sparse melds | shared meld representation + owner seat |
 
 Sparse melds, progression meld sidecars, and candidate meld sidecars are embedded in one fixed-shape shared meld pass per forward and then split back into their feature groups. Padding rows remain represented by the same `(5, 37, 3, 37, 3, 37, 3, 37, 3)` row and are selected with `torch.where`, so this changes execution shape rather than feature semantics.
+
+Meld rows are still factorized before entering model space: the shared meld module produces `d_type` meld embeddings from meld kind, four tile slots, and slot roles. A shared `d_type -> d_model` projection is then applied once over the concatenated sparse/progression/candidate meld sidecars and reused by all three feature groups.
 
 ## Tile Encodings
 

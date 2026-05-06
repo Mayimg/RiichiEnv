@@ -24,6 +24,7 @@ from riichienv_ml.models.transformer import (
     _SEAT_ROLE_PROG_ACTOR,
     _SPARSE_DORA_OFFSET,
     _TILE34_PAD,
+    DirectSumLayerNorm,
     SplitLinearLayerNorm,
     TransformerActorCritic,
     TransformerPolicyNetwork,
@@ -56,6 +57,22 @@ def test_split_linear_layer_norm_matches_concat_linear():
     )
 
     torch.testing.assert_close(proj(parts), expected)
+
+
+def test_direct_sum_layer_norm_adds_bias_before_layer_norm():
+    torch.manual_seed(0)
+    proj = DirectSumLayerNorm(7)
+    raw = torch.randn(4, 6, 7)
+
+    expected = F.layer_norm(
+        raw + proj.bias,
+        (7,),
+        proj.ln.weight,
+        proj.ln.bias,
+        proj.ln.eps,
+    )
+
+    torch.testing.assert_close(proj(raw), expected)
 
 
 def _write_simple_4p_log(path):

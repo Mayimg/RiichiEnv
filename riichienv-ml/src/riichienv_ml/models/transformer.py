@@ -143,6 +143,18 @@ class SplitLinearLayerNorm(nn.Module):
         return self.finish(raw)
 
 
+class DirectSumLayerNorm(nn.Module):
+    """LayerNorm over a direct d_model field-sum with a learned bias."""
+
+    def __init__(self, out_dim: int):
+        super().__init__()
+        self.bias = nn.Parameter(torch.zeros(out_dim))
+        self.ln = nn.LayerNorm(out_dim)
+
+    def forward(self, raw: torch.Tensor) -> torch.Tensor:
+        return self.ln(raw + self.bias)
+
+
 def _tile37_to_tile34(tile37: int) -> int:
     if tile37 == 0:
         tile34 = 4
@@ -709,24 +721,29 @@ class TransformerActorCritic(nn.Module):
         # --- Embedding layers ---
         self.sparse_embed = nn.Embedding(sparse_vocab, d_model, padding_idx=sparse_pad)
         self.relative_seat_embed = RelativeSeatEmbedding(base_dim=d_other, d_model=d_model)
-        self.player_riichi_embed = nn.Embedding(self.player_info_dims[1], d_other)
-        self.player_meld_count_embed = nn.Embedding(self.player_info_dims[2], d_other)
-        self.player_discard_count_embed = nn.Embedding(self.player_info_dims[3], d_other)
-        self.player_tedashi_count_embed = nn.Embedding(self.player_info_dims[4], d_other)
-        self.player_info_proj = SplitLinearLayerNorm([d_other] * self._PIW, d_model)
+        self.player_riichi_model_embed = nn.Embedding(self.player_info_dims[1], d_model)
+        self.player_meld_count_model_embed = nn.Embedding(self.player_info_dims[2], d_model)
+        self.player_discard_count_model_embed = nn.Embedding(self.player_info_dims[3], d_model)
+        self.player_tedashi_count_model_embed = nn.Embedding(self.player_info_dims[4], d_model)
+        self.player_info_ln = DirectSumLayerNorm(d_model)
         self.tile_embed = SharedTileEmbedding(out_dim=d_type, attr_dim=d_other)
-        self.tile_action_kind_embed = nn.Embedding(_ACTION_KIND_PAD + 1, d_other, padding_idx=_ACTION_KIND_PAD)
-        self.tile_action_proj = SplitLinearLayerNorm([d_type, d_other], d_type)
+        self.tile_model_embed = SharedTileEmbedding(out_dim=d_model, attr_dim=d_other)
+        self.tile_action_kind_model_embed = nn.Embedding(
+            _ACTION_KIND_PAD + 1,
+            d_model,
+            padding_idx=_ACTION_KIND_PAD,
+        )
+        self.tile_action_model_ln = DirectSumLayerNorm(d_model)
         self.meld_embed = SharedMeldEmbedding(out_dim=d_type, role_dim=d_other)
-        self.sparse_meld_proj = nn.Sequential(
+        self.meld_model_proj = nn.Sequential(
             nn.Linear(d_type, d_model),
             nn.LayerNorm(d_model),
         )
+        self.sparse_meld_ln = DirectSumLayerNorm(d_model)
 
-        # Hand: embed (tile37, draw_state) with split Linear(concat(...)) equivalent.
-        hand_sub_dims = [d_type, d_other]
-        self.hand_draw_state_embed = nn.Embedding(hand_dims[1], d_other)
-        self.hand_proj = SplitLinearLayerNorm(hand_sub_dims, d_model)
+        # Hand: direct d_model tile contribution + draw-state contribution.
+        self.hand_draw_state_model_embed = nn.Embedding(hand_dims[1], d_model)
+        self.hand_ln = DirectSumLayerNorm(d_model)
 
         self.numeric_proj = nn.Sequential(
             nn.Linear(self._N, d_model),
@@ -737,22 +754,18 @@ class TransformerActorCritic(nn.Module):
             nn.LayerNorm(d_model),
         )
 
-        # Progression: shared seat fields + type/moqie/liqi embeddings.
-        # field[1] is type (vocab=81) -> d_type; others -> d_other
-        prog_sub_dims = [d_other if i != 1 else d_type for i in range(len(prog_dims))]
-        self.prog_type_embed = nn.Embedding(prog_dims[1], d_type)
-        self.prog_moqie_embed = nn.Embedding(prog_dims[2], d_other)
-        self.prog_liqi_embed = nn.Embedding(prog_dims[3], d_other)
-        self.prog_proj = SplitLinearLayerNorm(prog_sub_dims, d_model)
+        # Progression: direct d_model field contributions.
+        self.prog_type_model_embed = nn.Embedding(prog_dims[1], d_model)
+        self.prog_moqie_model_embed = nn.Embedding(prog_dims[2], d_model)
+        self.prog_liqi_model_embed = nn.Embedding(prog_dims[3], d_model)
+        self.prog_ln = DirectSumLayerNorm(d_model)
 
-        # Candidates: shared from-seat field + type/moqie embeddings.
-        # field[0] is type (vocab=48) -> d_type; others -> d_other
-        cand_sub_dims = [d_other if i != 0 else d_type for i in range(len(cand_dims))]
-        self.cand_type_embed = nn.Embedding(cand_dims[0], d_type)
-        self.cand_moqie_embed = nn.Embedding(cand_dims[1], d_other)
-        self.cand_proj = SplitLinearLayerNorm(cand_sub_dims, d_model)
-        self.dora_slot_embed = nn.Embedding(_DORA_SLOT_PAD + 1, d_other, padding_idx=_DORA_SLOT_PAD)
-        self.sparse_dora_proj = SplitLinearLayerNorm([d_type, d_other], d_model)
+        # Candidates: direct d_model field contributions.
+        self.cand_type_model_embed = nn.Embedding(cand_dims[0], d_model)
+        self.cand_moqie_model_embed = nn.Embedding(cand_dims[1], d_model)
+        self.cand_ln = DirectSumLayerNorm(d_model)
+        self.dora_slot_model_embed = nn.Embedding(_DORA_SLOT_PAD + 1, d_model, padding_idx=_DORA_SLOT_PAD)
+        self.sparse_dora_ln = DirectSumLayerNorm(d_model)
 
         # --- CLS token ---
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
@@ -944,27 +957,21 @@ class TransformerActorCritic(nn.Module):
     def _embed_sparse(
         self,
         sparse: torch.Tensor,
-        dora_tile34: torch.Tensor,
-        tile37_table: torch.Tensor,
+        tile37_model_table: torch.Tensor,
     ) -> torch.Tensor:
         sparse_emb = self.sparse_embed(sparse)
         dora_slot = self.sparse_dora_slot[sparse]
         dora_mask = dora_slot != _DORA_SLOT_PAD
 
         indicator_tile37 = self.sparse_indicator_tile37[sparse]
-        tile_emb = self.tile_embed.embed_tile37_from_table(indicator_tile37, tile37_table)
-        dora_raw = self.sparse_dora_proj.project_part(0, tile_emb) + self.sparse_dora_proj.project_embedding(
-            1,
-            self.dora_slot_embed,
-            dora_slot,
-        )
-        dora_emb = self.sparse_dora_proj.finish(dora_raw)
+        tile_emb = self.tile_model_embed.embed_tile37_from_table(indicator_tile37, tile37_model_table)
+        dora_emb = self.sparse_dora_ln(tile_emb + self.dora_slot_model_embed(dora_slot))
         return torch.where(dora_mask.unsqueeze(-1), dora_emb, sparse_emb)
 
     def _embed_player_info(
         self,
         player_stats: torch.Tensor,
-        seat_other_table: torch.Tensor | None = None,
+        seat_model_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
         seats = player_stats[:, :, 0].clamp(min=0, max=3)
         riichi = player_stats[:, :, 1].clamp(min=0, max=self.player_info_dims[1] - 1)
@@ -972,16 +979,13 @@ class TransformerActorCritic(nn.Module):
         discard_count = player_stats[:, :, 3].clamp(min=0, max=self.player_info_dims[3] - 1)
         tedashi_count = player_stats[:, :, 4].clamp(min=0, max=self.player_info_dims[4] - 1)
         raw = (
-            self.player_info_proj.project_part(
-                0,
-                self._seat_other(seats, _SEAT_ROLE_PLAYER_INFO, seat_other_table),
-            )
-            + self.player_info_proj.project_embedding(1, self.player_riichi_embed, riichi)
-            + self.player_info_proj.project_embedding(2, self.player_meld_count_embed, meld_count)
-            + self.player_info_proj.project_embedding(3, self.player_discard_count_embed, discard_count)
-            + self.player_info_proj.project_embedding(4, self.player_tedashi_count_embed, tedashi_count)
+            self._seat_model(seats, _SEAT_ROLE_PLAYER_INFO, seat_model_table)
+            + self.player_riichi_model_embed(riichi)
+            + self.player_meld_count_model_embed(meld_count)
+            + self.player_discard_count_model_embed(discard_count)
+            + self.player_tedashi_count_model_embed(tedashi_count)
         )
-        return self.player_info_proj.finish(raw)
+        return self.player_info_ln(raw)
 
     def _embed_sparse_melds(
         self,
@@ -991,10 +995,10 @@ class TransformerActorCritic(nn.Module):
         owners: torch.Tensor | None = None,
         dealer: torch.Tensor | None = None,
         round_wind: torch.Tensor | None = None,
-        meld_emb: torch.Tensor | None = None,
+        meld_model_emb: torch.Tensor | None = None,
         seat_model_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if meld_emb is None:
+        if meld_model_emb is None:
             meld_emb = self.meld_embed(
                 melds,
                 dora_tile34,
@@ -1004,23 +1008,21 @@ class TransformerActorCritic(nn.Module):
                 round_wind,
                 self.relative_seat_embed,
             )
-        out = self.sparse_meld_proj(meld_emb)
+            meld_model_emb = self.meld_model_proj(meld_emb)
+        out = meld_model_emb
         if owners is not None:
             out = out + self._seat_model(owners, _SEAT_ROLE_MELD_OWNER, seat_model_table)
-        return out
+        return self.sparse_meld_ln(out)
 
-    def _embed_tile_only_action_type(
+    def _embed_tile_only_action_model_type(
         self,
         type_ids: torch.Tensor,
         generic_embed: nn.Embedding,
         action_kind_lookup: torch.Tensor,
         tile37_lookup: torch.Tensor,
         tile34_lookup: torch.Tensor,
-        dora_tile34: torch.Tensor,
-        tile37_table: torch.Tensor | None = None,
-        tile34_table: torch.Tensor | None = None,
-        dealer: torch.Tensor | None = None,
-        round_wind: torch.Tensor | None = None,
+        tile37_model_table: torch.Tensor,
+        tile34_model_table: torch.Tensor,
     ) -> torch.Tensor:
         type_emb = generic_embed(type_ids)
         action_kind = action_kind_lookup[type_ids]
@@ -1028,33 +1030,10 @@ class TransformerActorCritic(nn.Module):
 
         tile37 = tile37_lookup[type_ids]
         tile34 = tile34_lookup[type_ids]
-        if tile37_table is None:
-            tile37_emb = self.tile_embed.embed_tile37(
-                tile37,
-                dora_tile34,
-                dealer,
-                round_wind,
-                self.relative_seat_embed,
-            )
-        else:
-            tile37_emb = self.tile_embed.embed_tile37_from_table(tile37, tile37_table)
-        if tile34_table is None:
-            tile34_emb = self.tile_embed.embed_tile34(
-                tile34,
-                dora_tile34,
-                dealer,
-                round_wind,
-                self.relative_seat_embed,
-            )
-        else:
-            tile34_emb = self.tile_embed.embed_tile34_from_table(tile34, tile34_table)
+        tile37_emb = self.tile_model_embed.embed_tile37_from_table(tile37, tile37_model_table)
+        tile34_emb = self.tile_model_embed.embed_tile34_from_table(tile34, tile34_model_table)
         tile_emb = torch.where((tile37 != _TILE37_PAD).unsqueeze(-1), tile37_emb, tile34_emb)
-        target_raw = self.tile_action_proj.project_part(0, tile_emb) + self.tile_action_proj.project_embedding(
-            1,
-            self.tile_action_kind_embed,
-            action_kind,
-        )
-        target_emb = self.tile_action_proj.finish(target_raw)
+        target_emb = self.tile_action_model_ln(tile_emb + self.tile_action_kind_model_embed(action_kind))
         return torch.where(target_mask.unsqueeze(-1), target_emb, type_emb)
 
     def _embed_meld_action_type(
@@ -1081,121 +1060,76 @@ class TransformerActorCritic(nn.Module):
             )
         return torch.where(meld_mask.unsqueeze(-1), meld_emb, type_emb)
 
+    @staticmethod
+    def _embed_meld_action_model_type(
+        type_emb: torch.Tensor,
+        melds: torch.Tensor,
+        meld_model_emb: torch.Tensor,
+    ) -> torch.Tensor:
+        meld_mask = melds[:, :, 0] != _MELD_KIND_PAD
+        return torch.where(meld_mask.unsqueeze(-1), meld_model_emb, type_emb)
+
     def _embed_hand(
         self,
         hand: torch.Tensor,
-        dora_tile34: torch.Tensor,
-        tile37_table: torch.Tensor | None = None,
-        dealer: torch.Tensor | None = None,
-        round_wind: torch.Tensor | None = None,
+        tile37_model_table: torch.Tensor,
     ) -> torch.Tensor:
-        if tile37_table is None:
-            tile_emb = self.tile_embed.embed_tile37(
-                hand[:, :, 0],
-                dora_tile34,
-                dealer,
-                round_wind,
-                self.relative_seat_embed,
-            )
-        else:
-            tile_emb = self.tile_embed.embed_tile37_from_table(hand[:, :, 0], tile37_table)
-        raw = self.hand_proj.project_part(0, tile_emb) + self.hand_proj.project_embedding(
-            1,
-            self.hand_draw_state_embed,
-            hand[:, :, 1],
-        )
-        return self.hand_proj.finish(raw)
+        tile_emb = self.tile_model_embed.embed_tile37_from_table(hand[:, :, 0], tile37_model_table)
+        return self.hand_ln(tile_emb + self.hand_draw_state_model_embed(hand[:, :, 1]))
 
     def _embed_progression(
         self,
         prog: torch.Tensor,
         prog_melds: torch.Tensor,
-        dora_tile34: torch.Tensor,
-        tile37_table: torch.Tensor | None = None,
-        tile34_table: torch.Tensor | None = None,
-        dealer: torch.Tensor | None = None,
-        round_wind: torch.Tensor | None = None,
-        meld_emb: torch.Tensor | None = None,
-        seat_other_table: torch.Tensor | None = None,
+        tile37_model_table: torch.Tensor,
+        tile34_model_table: torch.Tensor,
+        meld_model_emb: torch.Tensor,
+        seat_model_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        type_emb = self._embed_tile_only_action_type(
+        type_emb = self._embed_tile_only_action_model_type(
             prog[:, :, 1],
-            self.prog_type_embed,
+            self.prog_type_model_embed,
             self.prog_type_action_kind,
             self.prog_type_tile37,
             self.prog_type_tile34,
-            dora_tile34,
-            tile37_table,
-            tile34_table,
-            dealer,
-            round_wind,
+            tile37_model_table,
+            tile34_model_table,
         )
-        type_emb = self._embed_meld_action_type(
-            type_emb,
-            prog_melds,
-            dora_tile34,
-            tile37_table,
-            dealer,
-            round_wind,
-            meld_emb,
-        )
+        type_emb = self._embed_meld_action_model_type(type_emb, prog_melds, meld_model_emb)
         raw = (
-            self.prog_proj.project_part(
-                0,
-                self._seat_other(prog[:, :, 0], _SEAT_ROLE_PROG_ACTOR, seat_other_table),
-            )
-            + self.prog_proj.project_part(1, type_emb)
-            + self.prog_proj.project_embedding(2, self.prog_moqie_embed, prog[:, :, 2])
-            + self.prog_proj.project_embedding(3, self.prog_liqi_embed, prog[:, :, 3])
-            + self.prog_proj.project_part(
-                4,
-                self._seat_other(prog[:, :, 4], _SEAT_ROLE_PROG_FROM, seat_other_table),
-            )
+            self._seat_model(prog[:, :, 0], _SEAT_ROLE_PROG_ACTOR, seat_model_table)
+            + type_emb
+            + self.prog_moqie_model_embed(prog[:, :, 2])
+            + self.prog_liqi_model_embed(prog[:, :, 3])
+            + self._seat_model(prog[:, :, 4], _SEAT_ROLE_PROG_FROM, seat_model_table)
         )
-        return self.prog_proj.finish(raw)
+        return self.prog_ln(raw)
 
     def _embed_candidates(
         self,
         cand: torch.Tensor,
         cand_melds: torch.Tensor,
-        dora_tile34: torch.Tensor,
-        tile37_table: torch.Tensor | None = None,
-        tile34_table: torch.Tensor | None = None,
-        dealer: torch.Tensor | None = None,
-        round_wind: torch.Tensor | None = None,
-        meld_emb: torch.Tensor | None = None,
-        seat_other_table: torch.Tensor | None = None,
+        tile37_model_table: torch.Tensor,
+        tile34_model_table: torch.Tensor,
+        meld_model_emb: torch.Tensor,
+        seat_model_table: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        type_emb = self._embed_tile_only_action_type(
+        type_emb = self._embed_tile_only_action_model_type(
             cand[:, :, 0],
-            self.cand_type_embed,
+            self.cand_type_model_embed,
             self.cand_type_action_kind,
             self.cand_type_tile37,
             self.cand_type_tile34,
-            dora_tile34,
-            tile37_table,
-            tile34_table,
-            dealer,
-            round_wind,
+            tile37_model_table,
+            tile34_model_table,
         )
-        type_emb = self._embed_meld_action_type(
-            type_emb,
-            cand_melds,
-            dora_tile34,
-            tile37_table,
-            dealer,
-            round_wind,
-            meld_emb,
-        )
+        type_emb = self._embed_meld_action_model_type(type_emb, cand_melds, meld_model_emb)
         raw = (
-            self.cand_proj.project_part(0, type_emb)
-            + self.cand_proj.project_embedding(1, self.cand_moqie_embed, cand[:, :, 1])
-            + self.cand_proj.project_part(
-                2,
-                self._seat_other(cand[:, :, 2], _SEAT_ROLE_CAND_FROM, seat_other_table),
-            )
+            type_emb
+            + self.cand_moqie_model_embed(cand[:, :, 1])
+            + self._seat_model(cand[:, :, 2], _SEAT_ROLE_CAND_FROM, seat_model_table)
         )
-        return self.cand_proj.finish(raw)
+        return self.cand_ln(raw)
 
     def _embed_agari_overtakes(
         self,
@@ -1243,6 +1177,13 @@ class TransformerActorCritic(nn.Module):
             self.relative_seat_embed,
             seat_other_table,
         )
+        tile37_model_table, tile34_model_table = self.tile_model_embed.build_tables(
+            dora_tile34,
+            dealer,
+            round_wind,
+            self.relative_seat_embed,
+            seat_other_table,
+        )
         all_meld_emb = self.meld_embed(
             torch.cat([sparse_melds, prog_melds, cand_melds], dim=1),
             dora_tile34,
@@ -1252,19 +1193,20 @@ class TransformerActorCritic(nn.Module):
             round_wind,
             self.relative_seat_embed,
         )
-        sparse_meld_type, prog_meld_type, cand_meld_type = all_meld_emb.split(
+        all_meld_model_emb = self.meld_model_proj(all_meld_emb)
+        sparse_meld_model, prog_meld_model, cand_meld_model = all_meld_model_emb.split(
             [self._SM, self._P, self._C],
             dim=1,
         )
 
         # Embed sparse tokens: (B, S, d)
-        sparse_emb = self._embed_sparse(sparse, dora_tile34, tile37_table)
+        sparse_emb = self._embed_sparse(sparse, tile37_model_table)
 
         # Embed dealer relative seat: (B, 1, d)
         dealer_emb = self._seat_model(dealer, _SEAT_ROLE_DEALER, seat_model_table).unsqueeze(1)
 
         # Embed per-player public summaries: (B, 4, d)
-        player_info_emb = self._embed_player_info(player_stats, seat_other_table)
+        player_info_emb = self._embed_player_info(player_stats, seat_model_table)
 
         # Embed current visible melds: (B, SM, d)
         sparse_meld_emb = self._embed_sparse_melds(
@@ -1274,12 +1216,12 @@ class TransformerActorCritic(nn.Module):
             sparse_meld_owners,
             dealer,
             round_wind,
-            sparse_meld_type,
+            sparse_meld_model,
             seat_model_table,
         )
 
         # Embed hand tuples: (B, H, d)
-        hand_emb = self._embed_hand(hand, dora_tile34, tile37_table, dealer, round_wind)
+        hand_emb = self._embed_hand(hand, tile37_model_table)
 
         # Project numeric: (B, 1, d)
         numeric_emb = self.numeric_proj(numeric).unsqueeze(1)
@@ -1291,26 +1233,20 @@ class TransformerActorCritic(nn.Module):
         prog_emb = self._embed_progression(
             prog,
             prog_melds,
-            dora_tile34,
-            tile37_table,
-            tile34_table,
-            dealer,
-            round_wind,
-            prog_meld_type,
-            seat_other_table,
+            tile37_model_table,
+            tile34_model_table,
+            prog_meld_model,
+            seat_model_table,
         )
 
         # Embed candidate tuples: (B, C, d)
         cand_emb = self._embed_candidates(
             cand,
             cand_melds,
-            dora_tile34,
-            tile37_table,
-            tile34_table,
-            dealer,
-            round_wind,
-            cand_meld_type,
-            seat_other_table,
+            tile37_model_table,
+            tile34_model_table,
+            cand_meld_model,
+            seat_model_table,
         )
 
         # CLS token: (B, 1, d)
