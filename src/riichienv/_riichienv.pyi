@@ -497,6 +497,16 @@ class Observation:
         optional drawn tile last.
         """
         ...
+    def encode_seq_visible_tile_counts(self) -> bytes:
+        """Encode visible tile count tokens for sequence features.
+
+        Shape: ``(37, 2)`` / dtype: ``uint16``.
+
+        Each row is ``(tile37, visible_count)``. Counts include self hand,
+        all visible meld tiles, all discards, and visible dora indicators,
+        with called discard tiles counted only once.
+        """
+        ...
     def encode_seq_numeric(self) -> bytes:
         """Encode sequence features as numeric values.
 

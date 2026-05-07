@@ -258,6 +258,49 @@ def test_sequence_feature_encoder_factorizes_hand_draw_state():
     assert torch.count_nonzero(valid_hand[:, 1] == 0) == len(valid_hand) - 1
 
 
+def test_sequence_feature_encoder_includes_visible_tile_count_tokens():
+    obs = Observation(
+        0,
+        [[16], [], [], []],
+        [
+            [],
+            [Meld(MeldType.Pon, [0, 1, 2], True, 0, 0)],
+            [Meld(MeldType.Ankan, [72, 73, 74, 75], False, -1, None)],
+            [],
+        ],
+        [[0], [], [], []],
+        [4],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    visible = SequenceFeatureEncoder().encode(obs)["visible_tile_counts"]
+
+    assert visible.shape == (
+        SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS,
+        SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH,
+    )
+    assert visible[:, 0].tolist() == list(range(SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS))
+    assert visible[1, 1].item() == 3  # called discard is not double-counted with the pon meld
+    assert visible[0, 1].item() == 1  # red 5m is counted separately from normal 5m
+    assert visible[2, 1].item() == 1  # dora indicator tile itself
+    assert visible[21, 1].item() == 4  # ankan is visible
+
+
 def test_sequence_numeric_features_use_current_normalized_scores_only():
     obs = Observation(
         2,
@@ -719,7 +762,19 @@ def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
 
     assert emb.shape == (2, SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS, 64)
     assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
-    expected_seq_len = 1 + model._S + model._D + model._PI + model._SM + model._H + 1 + model._AT + model._P + model._C
+    expected_seq_len = (
+        1
+        + model._S
+        + model._D
+        + model._PI
+        + model._SM
+        + model._H
+        + model._V
+        + 1
+        + model._AT
+        + model._P
+        + model._C
+    )
     assert model.pos_enc.shape[1] == expected_seq_len
 
     winner_seats = torch.arange(SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS).unsqueeze(0).expand(2, -1)

@@ -1418,6 +1418,24 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
+    /// Encode visible tile count tokens as 37 × 2 u16 tuples.
+    ///
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(37, 2)`.
+    #[pyo3(name = "encode_seq_visible_tile_counts")]
+    pub fn encode_seq_visible_tile_counts_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let counts = self.encode_seq_visible_tile_counts();
+        let byte_len = counts.len()
+            * std::mem::size_of::<
+                [u16; crate::observation::sequence_features::VISIBLE_TILE_COUNT_WIDTH],
+            >();
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(counts.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
     /// Encode numeric features as 6 × f32.
     ///
     /// Returns raw bytes of `[f32; 6]`.

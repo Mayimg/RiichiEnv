@@ -21,6 +21,7 @@ class SequenceFeatureEncoder:
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
+        visible_tile_counts: (VISIBLE_TILE_COUNT_TOKENS, 2) int64 tile37/count tuples
         numeric:     (NUM_NUMERIC,)      float32
         agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
                          reshapeable to (AGARI_OVERTAKE_TOKENS, AGARI_OVERTAKE_TOKEN_DIM)
@@ -56,6 +57,10 @@ class SequenceFeatureEncoder:
     HAND_DIMS = (38, 3)
     HAND_PAD = (37, 2)
     MAX_HAND_LEN = 14
+
+    VISIBLE_TILE_COUNT_DIMS = (38, 5)
+    VISIBLE_TILE_COUNT_TOKENS = 37
+    VISIBLE_TILE_COUNT_WIDTH = len(VISIBLE_TILE_COUNT_DIMS)
 
     PROG_DIMS = (5, 81, 3, 3, 5)
     PROG_PAD = (4, 80, 2, 2, 4)
@@ -149,6 +154,18 @@ class SequenceFeatureEncoder:
         hand_mask = np.zeros(self.MAX_HAND_LEN, dtype=np.bool_)
         hand_mask[:n_hand] = True
 
+        # Visible tile counts
+        visible_tile_count_bytes = obs.encode_seq_visible_tile_counts()
+        visible_tile_counts = np.frombuffer(visible_tile_count_bytes, dtype=np.uint16).reshape(
+            -1, self.VISIBLE_TILE_COUNT_WIDTH
+        )
+        if visible_tile_counts.shape != (self.VISIBLE_TILE_COUNT_TOKENS, self.VISIBLE_TILE_COUNT_WIDTH):
+            raise ValueError(
+                f"encode_seq_visible_tile_counts returned shape {visible_tile_counts.shape}; "
+                f"expected {(self.VISIBLE_TILE_COUNT_TOKENS, self.VISIBLE_TILE_COUNT_WIDTH)}"
+            )
+        visible_tile_counts = visible_tile_counts.astype(np.int64, copy=True)
+
         # Numeric
         numeric = np.frombuffer(obs.encode_seq_numeric(), dtype=np.float32).copy()
 
@@ -235,6 +252,7 @@ class SequenceFeatureEncoder:
             "sparse_melds": torch.from_numpy(sparse_melds),
             "sparse_meld_owners": torch.from_numpy(sparse_meld_owners),
             "hand": torch.from_numpy(hand),
+            "visible_tile_counts": torch.from_numpy(visible_tile_counts),
             "numeric": torch.from_numpy(numeric),
             "agari_overtakes": torch.from_numpy(agari_overtakes),
             "progression": torch.from_numpy(prog),
@@ -264,6 +282,7 @@ class SequenceFeaturePackedEncoder:
         sparse_melds(16 * 9)   int meld rows stored as float
         sparse_meld_owners(16) int relative owner seats stored as float
         hand        (14 * 2)   int tuples stored as float
+        visible_tile_counts (37 * 2) int tile37/count tuples stored as float
         numeric     (6)        continuous values
         agari_overtakes (4 * 96 * 4) pairwise agari-rank-overtake flags
         progression (P * 5)    int action/dora-reveal tuples stored as float
@@ -284,6 +303,8 @@ class SequenceFeaturePackedEncoder:
     _MW = SequenceFeatureEncoder.MELD_WIDTH
     _CW = SequenceFeatureEncoder.CAND_WIDTH
     _H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
+    _V = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS
+    _VW = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH
     _N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
     _A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
 
@@ -310,6 +331,7 @@ class SequenceFeaturePackedEncoder:
             + self._SM * self._MW
             + self._SM
             + self._H * 2
+            + self._V * self._VW
             + self._N
             + self._A
             + self._P * 5
@@ -341,6 +363,8 @@ class SequenceFeaturePackedEncoder:
         o += self._SM
         packed[o : o + self._H * 2] = d["hand"].reshape(-1).float()
         o += self._H * 2
+        packed[o : o + self._V * self._VW] = d["visible_tile_counts"].reshape(-1).float()
+        o += self._V * self._VW
         packed[o : o + self._N] = d["numeric"]
         o += self._N
         packed[o : o + self._A] = d["agari_overtakes"]

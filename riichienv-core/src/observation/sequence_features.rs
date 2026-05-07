@@ -41,6 +41,14 @@ pub const MAX_HAND_LEN: usize = 14;
 #[allow(dead_code)]
 pub const HAND_PAD: [u16; 2] = [37, 2];
 
+/// Visible tile count tuple dimensions: (tile37, visible_count)
+#[allow(dead_code)]
+pub const VISIBLE_TILE_COUNT_DIMS: [u16; 2] = [38, 5];
+#[allow(dead_code)]
+pub const VISIBLE_TILE_COUNT_TOKENS: usize = 37;
+#[allow(dead_code)]
+pub const VISIBLE_TILE_COUNT_WIDTH: usize = 2;
+
 /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
 #[allow(dead_code)]
 pub const PROG_DIMS: [u16; 5] = [5, 81, 3, 3, 5];
@@ -635,6 +643,72 @@ impl Observation {
         }
 
         hand
+    }
+
+    fn add_visible_tile_count(counts: &mut [u16; VISIBLE_TILE_COUNT_TOKENS], tile: u32) {
+        if tile < 136 {
+            counts[tile_id_to_kan37(tile) as usize] += 1;
+        }
+    }
+
+    fn visible_tile37_counts(&self) -> [u16; VISIBLE_TILE_COUNT_TOKENS] {
+        let mut counts = [0u16; VISIBLE_TILE_COUNT_TOKENS];
+        let mut discard_counts = [0u16; VISIBLE_TILE_COUNT_TOKENS];
+        let mut called_counts = [0u16; VISIBLE_TILE_COUNT_TOKENS];
+
+        for &tile in &self.hands[self.player_id as usize] {
+            Self::add_visible_tile_count(&mut counts, tile);
+        }
+
+        for melds in &self.melds {
+            for meld in melds {
+                for &tile in &meld.tiles {
+                    Self::add_visible_tile_count(&mut counts, tile as u32);
+                }
+                if matches!(
+                    meld.meld_type,
+                    MeldType::Chi | MeldType::Pon | MeldType::Daiminkan | MeldType::Kakan
+                ) && let Some(called_tile) = meld.called_tile
+                    && called_tile < 136
+                {
+                    called_counts[tile_id_to_kan37(called_tile as u32) as usize] += 1;
+                }
+            }
+        }
+
+        for discards in &self.discards {
+            for &tile in discards {
+                Self::add_visible_tile_count(&mut counts, tile);
+                if tile < 136 {
+                    discard_counts[tile_id_to_kan37(tile) as usize] += 1;
+                }
+            }
+        }
+
+        for idx in 0..VISIBLE_TILE_COUNT_TOKENS {
+            let duplicate_called_discards = called_counts[idx].min(discard_counts[idx]);
+            counts[idx] = counts[idx].saturating_sub(duplicate_called_discards);
+        }
+
+        for &tile in &self.dora_indicators {
+            Self::add_visible_tile_count(&mut counts, tile);
+        }
+
+        counts
+    }
+
+    /// Encode visible tile counts as fixed 37 × 2 `(tile37, visible_count)` rows.
+    ///
+    /// Counts include self hand, all current meld tiles (including ankan),
+    /// all discards, and currently visible dora indicator tiles. Called
+    /// discard tiles that are represented both in a river and in a meld are
+    /// counted only once. Counts are clipped to 0-4 for the embedding table.
+    pub fn encode_seq_visible_tile_counts(&self) -> Vec<[u16; VISIBLE_TILE_COUNT_WIDTH]> {
+        self.visible_tile37_counts()
+            .iter()
+            .enumerate()
+            .map(|(tile37, &count)| [tile37 as u16, count.min(4)])
+            .collect()
     }
 
     /// Count approximate tiles remaining in the wall.
@@ -1277,6 +1351,51 @@ mod tests {
 
         let hand = obs.encode_seq_hand();
         assert_eq!(hand, vec![[1, 0], [2, 0], [3, 0]]);
+    }
+
+    #[test]
+    fn test_encode_visible_tile_counts_are_tile37_and_deduplicate_called_discards() {
+        let obs = Observation::new(
+            0,
+            [vec![16], vec![], vec![], vec![]],
+            [
+                vec![],
+                vec![Meld::new(MeldType::Pon, vec![0, 1, 2], true, 0, Some(0))],
+                vec![Meld::new(
+                    MeldType::Ankan,
+                    vec![72, 73, 74, 75],
+                    false,
+                    -1,
+                    None,
+                )],
+                vec![],
+            ],
+            [vec![0], vec![], vec![], vec![]],
+            vec![4],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![],
+            vec![],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+            None,
+            None,
+        );
+
+        let counts = obs.encode_seq_visible_tile_counts();
+        assert_eq!(counts.len(), VISIBLE_TILE_COUNT_TOKENS);
+        assert_eq!(counts[1], [1, 3]); // called discard is not double-counted with pon
+        assert_eq!(counts[0], [0, 1]); // red 5m uses its own tile37 slot
+        assert_eq!(counts[2], [2, 1]); // dora indicator tile itself
+        assert_eq!(counts[21], [21, 4]); // ankan is visible
     }
 
     #[test]

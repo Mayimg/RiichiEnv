@@ -16,6 +16,7 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
+| **Visible Tile Counts** | `(37, 2)` | int64 | Per-`tile37` visible counts as `(tile37, visible_count)` tuples |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Agari Overtakes** | `(4, 96, 4)` | float32 | Pairwise rank-overtake flags for standard 4P win patterns |
 | **Progression** | `(256, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
@@ -72,6 +73,7 @@ The shared tile embedding is applied to single-tile fields and to the tile slots
 | Feature group | Field / token range | Uses shared tile embedding |
 |---------------|---------------------|----------------------------|
 | Hand | `tile37` | Yes |
+| Visible Tile Counts | `tile37` | Yes, with an extra visible-count embedding shared across all tiles |
 | Sparse | dora-indicator tokens (`75-259`) | Yes, with an extra dora-slot embedding |
 | Progression | discard and dora-reveal type ranges | Yes |
 | Candidates | discard type range | Yes |
@@ -274,6 +276,58 @@ obs.encode_seq_hand() -> Vec<[u16; 2]>
 ```python
 hand_bytes = obs.encode_seq_hand()
 hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable length
+```
+
+## 2a. Visible Tile Count Features
+
+**Fixed 37 entries**
+
+Each tile type in `kan37` order is encoded as a 2-tuple `(tile37, visible_count)`.
+
+| Field | Vocab | Values |
+|-------|-------|--------|
+| tile37 | 38 | 0-36 = kan37 tile, 37 = padding/unused |
+| visible_count | 5 | 0-4 visible copies, clipped at 4 |
+
+The 37 entries are always present and ordered by `tile37=0..36`.
+
+Visible counts include only information observable by the player:
+
+- self hand
+- all current meld tiles, including closed kans (`ankan`)
+- all discards
+- currently visible dora indicator tiles, counting the indicator tile itself
+
+Called discard tiles are represented both in the engine's discard list and in
+the corresponding open meld. The encoder subtracts those duplicate called
+tiles so each physical tile is counted once.
+
+Red fives are counted in their own `tile37` slots. For example, visible red 5m
+increments tile37 `0`, while visible non-red 5m copies increment tile37 `5`.
+
+External MJAI logs are unchanged. This is an internal observation feature
+derived from the current observation state.
+
+In the transformer, each visible-count row is embedded as:
+
+```text
+shared tile embedding(tile37) + visible-count embedding(count) -> SplitLinearLayerNorm
+```
+
+The count embedding table is shared across all tile rows, so the same count
+value uses the same count embedding for every tile.
+
+### Rust API
+
+```rust
+obs.encode_seq_visible_tile_counts() -> Vec<[u16; 2]>  // fixed length 37
+```
+
+### Python API (raw)
+
+```python
+visible_count_bytes = obs.encode_seq_visible_tile_counts()
+visible_counts = np.frombuffer(visible_count_bytes, dtype=np.uint16).reshape(37, 2)
 ```
 
 ## 3. Numeric Features
@@ -491,6 +545,7 @@ for pid, obs in obs_dict.items():
     # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
+    # features["visible_tile_counts"] -- (37, 2) int64, fixed (tile37, visible_count) rows
     # features["numeric"]     -- (6,) float32
     # features["agari_overtakes"] -- (1536,) float32, reshapeable to (4, 96, 4)
     # features["progression"] -- (256, 5) int64, padded with (4, 80, 2, 2, 4)
@@ -518,6 +573,9 @@ SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10
 SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS  # 5
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
+SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS    # (38, 5)
+SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS  # 37
+SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH   # 2
 SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
 SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
