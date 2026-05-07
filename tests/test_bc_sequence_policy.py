@@ -10,6 +10,8 @@ from riichienv_ml.features.sequence_features import (
     SequenceFeatureEncoder,
     SequenceFeaturePackedEncoder,
     collate_sequence_features,
+    pack_sequence_features,
+    packed_candidate_mask,
 )
 from riichienv_ml.models.transformer import (
     _ACTION_KIND_DISCARD,
@@ -218,20 +220,26 @@ def test_sequence_feature_packed_encoder_matches_transformer_policy_input(tmp_pa
 
     encoder = SequenceFeaturePackedEncoder()
     sample = encoder.encode(obs)
-    features = collate_sequence_features([sample])
+    dict_features = collate_sequence_features([sample])
+    features = pack_sequence_features([sample])
 
     model = TransformerPolicyNetwork(
         d_model=64,
         nhead=4,
         num_layers=2,
         dim_feedforward=128,
+        dropout=0.0,
         max_prog_len=256,
         max_cand_len=32,
     )
+    model.eval()
 
     logits = model(features)
+    dict_logits = model(dict_features)
 
     assert logits.shape == (1, sample["candidates"].shape[0])
+    assert packed_candidate_mask(features).shape == (1, sample["candidates"].shape[0])
+    assert torch.allclose(logits, dict_logits, atol=1e-6)
 
 
 def test_transformer_policy_training_step_with_sequence_features(tmp_path):
@@ -258,9 +266,10 @@ def test_transformer_policy_training_step_with_sequence_features(tmp_path):
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
-    batch_features = collate_sequence_features([features])
+    batch_features = pack_sequence_features([features])
     logits = model(batch_features)
-    legal = torch.as_tensor(mask, dtype=torch.bool).unsqueeze(0)
+    legal = packed_candidate_mask(batch_features)
+    assert torch.equal(legal.cpu(), torch.as_tensor(mask, dtype=torch.bool).unsqueeze(0))
     loss = F.cross_entropy(logits.masked_fill(~legal, torch.finfo(logits.dtype).min), torch.tensor([action_id]))
     optimizer.zero_grad()
     loss.backward()

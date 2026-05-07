@@ -471,6 +471,8 @@ cand_melds = np.frombuffer(obs.encode_seq_candidate_melds(), dtype=np.uint16).re
 
 `riichienv_ml.features.sequence_features.SequenceFeatureEncoder` provides torch tensors with masks. `collate_sequence_features()` pads progression and candidate groups to the maximum length in the current batch.
 
+BC training uses `pack_sequence_features()` as the DataLoader fast path. It applies the same batch-local P/C padding, then flattens the batch into one `float32` tensor plus `(prog_len, cand_len)` metadata so worker IPC, pinned-memory handling, and host-to-device transfer do not move many small tensors per batch. The transformer accepts both this packed tuple and the collated dictionary form.
+
 `SequenceFeaturePackedEncoder` remains as a deprecated config alias, but it now returns the same dynamic feature dictionary rather than a flat packed tensor.
 
 ### Usage

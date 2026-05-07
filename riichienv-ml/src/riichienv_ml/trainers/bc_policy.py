@@ -15,7 +15,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, default_collate
 
 from riichienv_ml.config import EvaluatorConfig, import_class
-from riichienv_ml.features.sequence_features import collate_sequence_features
+from riichienv_ml.features.sequence_features import pack_sequence_features, packed_candidate_mask
 from riichienv_ml.trainers.bc_logs import _create_evaluator
 from riichienv_ml.utils import AverageMeter, build_encoder, load_model_weights
 
@@ -41,26 +41,21 @@ def _with_suffix(path: str, suffix: str) -> str:
     return str(p.with_name(f"{p.stem}_{suffix}{p.suffix}"))
 
 
-def _pad_candidate_masks(masks) -> torch.Tensor:
-    tensors = [torch.as_tensor(mask, dtype=torch.bool) for mask in masks]
-    max_len = max((int(t.numel()) for t in tensors), default=0)
-    out = torch.zeros((len(tensors), max_len), dtype=torch.bool)
-    for i, tensor in enumerate(tensors):
-        n = int(tensor.numel())
-        if n > 0:
-            out[i, :n] = tensor
-    return out
-
-
 def _bc_collate_fn(batch):
-    features, actions, masks = zip(*batch, strict=True)
+    features, actions, _masks = zip(*batch, strict=True)
     if isinstance(features[0], dict):
         return (
-            collate_sequence_features(list(features)),
+            pack_sequence_features(list(features)),
             torch.as_tensor(actions, dtype=torch.long),
-            _pad_candidate_masks(masks),
+            None,
         )
     return default_collate(batch)
+
+
+def _batch_candidate_masks(features, batch_masks, device: torch.device) -> torch.Tensor:
+    if batch_masks is None:
+        return packed_candidate_mask(features)
+    return batch_masks.to(device, non_blocking=True)
 
 
 class BCPolicyTrainer:
@@ -278,7 +273,7 @@ class BCPolicyTrainer:
         for batch_idx, (batch_features, batch_actions, batch_masks) in enumerate(dataloader):
             features = _move_to_device(batch_features, self.device)
             actions = batch_actions.long().to(self.device, non_blocking=True)
-            masks = batch_masks.to(self.device, non_blocking=True)
+            masks = _batch_candidate_masks(features, batch_masks, self.device)
 
             optimizer.zero_grad()
 
@@ -346,7 +341,7 @@ class BCPolicyTrainer:
         for batch_features, batch_actions, batch_masks in dataloader:
             features = _move_to_device(batch_features, self.device)
             actions = batch_actions.long().to(self.device, non_blocking=True)
-            masks = batch_masks.to(self.device, non_blocking=True)
+            masks = _batch_candidate_masks(features, batch_masks, self.device)
 
             logits = self._forward_logits(model, features)
             logits = self._mask_logits(logits, masks)

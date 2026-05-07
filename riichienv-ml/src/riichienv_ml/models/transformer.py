@@ -24,7 +24,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from riichienv_ml.features.sequence_features import SequenceFeatureEncoder
+from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, packed_sequence_size
 
 _TILE37_PAD = 37
 _TILE34_PAD = 34
@@ -696,6 +696,7 @@ class TransformerActorCritic(nn.Module):
         self._A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
         self._AT = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS
         self._AW = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
+        self._PW = len(prog_dims)
         self._CW = len(cand_dims)
         if len(player_info_dims) != self._PIW:
             raise ValueError(f"player_info_dims must have {self._PIW} entries")
@@ -853,8 +854,76 @@ class TransformerActorCritic(nn.Module):
                         m.weight[m.padding_idx].fill_(0)
 
     # ------------------------------------------------------------------
-    def _feature_tensors(self, x: dict[str, torch.Tensor]):
+    def _unpack_packed(self, x: torch.Tensor, prog_len: int, cand_len: int):
+        """Unpack the DataLoader fast-path flattened sequence feature tensor."""
+        if x.ndim != 2:
+            raise ValueError(f"packed sequence features must be rank-2, got shape={tuple(x.shape)}")
+        prog_len = int(prog_len)
+        cand_len = int(cand_len)
+        expected = packed_sequence_size(prog_len, cand_len)
+        if x.shape[1] != expected:
+            raise ValueError(f"packed sequence feature width {x.shape[1]} does not match expected {expected}")
+
+        batch_size = x.shape[0]
+        offset = 0
+
+        def take(shape: tuple[int, ...], kind: str) -> torch.Tensor:
+            nonlocal offset
+            width = math.prod(shape)
+            tensor = x[:, offset : offset + width].reshape(batch_size, *shape)
+            offset += width
+            if kind == "long":
+                return tensor.long()
+            if kind == "bool":
+                return tensor.bool()
+            return tensor.float()
+
+        sparse = take((self._S,), "long")
+        dealer = take((self._D,), "long").squeeze(1)
+        player_stats = take((self._PI, self._PIW), "long")
+        sparse_melds = take((self._SM, self._MW), "long")
+        sparse_meld_owners = take((self._SM,), "long")
+        hand = take((self._H, 2), "long")
+        numeric = take((self._N,), "float")
+        agari_overtakes = take((self._A,), "float")
+        sparse_mask = take((self._S,), "bool")
+        sparse_meld_mask = take((self._SM,), "bool")
+        hand_mask = take((self._H,), "bool")
+        progression = take((prog_len, self._PW), "long")
+        prog_melds = take((prog_len, self._MW), "long")
+        candidates = take((cand_len, self._CW), "long")
+        cand_melds = take((cand_len, self._MW), "long")
+        prog_mask = take((prog_len,), "bool")
+        cand_mask = take((cand_len,), "bool")
+        if offset != x.shape[1]:
+            raise RuntimeError(f"packed sequence unpack width mismatch: read {offset}, expected {x.shape[1]}")
+
+        return (
+            sparse,
+            dealer,
+            player_stats,
+            sparse_melds,
+            sparse_meld_owners,
+            hand,
+            numeric,
+            agari_overtakes,
+            progression,
+            prog_melds,
+            candidates,
+            cand_melds,
+            sparse_mask,
+            sparse_meld_mask,
+            hand_mask,
+            prog_mask,
+            cand_mask,
+        )
+
+    def _feature_tensors(self, x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int]):
         """Normalize a batched feature dict into typed component tensors."""
+        if isinstance(x, tuple):
+            if len(x) != 3:
+                raise TypeError("packed sequence features must be (tensor, prog_len, cand_len)")
+            return self._unpack_packed(x[0], int(x[1]), int(x[2]))
         return (
             x["sparse"].long(),
             x["dealer"].long(),
@@ -1176,9 +1245,12 @@ class TransformerActorCritic(nn.Module):
         )
 
     # ------------------------------------------------------------------
-    def forward(self, x: dict[str, torch.Tensor]) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:  # noqa: PLR0915
-        if not isinstance(x, dict):
-            raise TypeError("TransformerActorCritic expects a sequence feature dictionary")
+    def forward(  # noqa: PLR0915
+        self,
+        x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int],
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if not isinstance(x, (dict, tuple)):
+            raise TypeError("TransformerActorCritic expects sequence feature dict or packed sequence tuple")
         (
             sparse,
             dealer,

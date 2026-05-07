@@ -239,6 +239,52 @@ class SequenceFeatureEncoder:
         }
 
 
+PACKED_FIXED_SIZE = (
+    SequenceFeatureEncoder.MAX_SPARSE_LEN
+    + 1
+    + SequenceFeatureEncoder.PLAYER_INFO_TOKENS * SequenceFeatureEncoder.PLAYER_INFO_WIDTH
+    + SequenceFeatureEncoder.MAX_SPARSE_MELDS * SequenceFeatureEncoder.MELD_WIDTH
+    + SequenceFeatureEncoder.MAX_SPARSE_MELDS
+    + SequenceFeatureEncoder.MAX_HAND_LEN * len(SequenceFeatureEncoder.HAND_DIMS)
+    + SequenceFeatureEncoder.NUM_NUMERIC
+    + SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
+    + SequenceFeatureEncoder.MAX_SPARSE_LEN
+    + SequenceFeatureEncoder.MAX_SPARSE_MELDS
+    + SequenceFeatureEncoder.MAX_HAND_LEN
+)
+PACKED_PROG_STRIDE = len(SequenceFeatureEncoder.PROG_DIMS) + SequenceFeatureEncoder.MELD_WIDTH + 1
+PACKED_CAND_STRIDE = SequenceFeatureEncoder.CAND_WIDTH + SequenceFeatureEncoder.MELD_WIDTH + 1
+
+
+def packed_sequence_size(prog_len: int, cand_len: int) -> int:
+    """Return flattened packed feature width for batch-local sequence lengths."""
+    prog_len = int(prog_len)
+    cand_len = int(cand_len)
+    if prog_len < 0 or cand_len < 0:
+        raise ValueError("prog_len and cand_len must be non-negative")
+    return PACKED_FIXED_SIZE + prog_len * PACKED_PROG_STRIDE + cand_len * PACKED_CAND_STRIDE
+
+
+def _candidate_mask_offset(prog_len: int, cand_len: int) -> int:
+    return (
+        PACKED_FIXED_SIZE
+        + int(prog_len)
+        * (len(SequenceFeatureEncoder.PROG_DIMS) + SequenceFeatureEncoder.MELD_WIDTH + 1)
+        + int(cand_len) * (SequenceFeatureEncoder.CAND_WIDTH + SequenceFeatureEncoder.MELD_WIDTH)
+    )
+
+
+def packed_candidate_mask(features) -> torch.Tensor:
+    """Return candidate masks from either collated dict features or packed batch features."""
+    if isinstance(features, dict):
+        return features["cand_mask"].bool()
+    if isinstance(features, tuple) and len(features) == 3:
+        packed, prog_len, cand_len = features
+        start = _candidate_mask_offset(int(prog_len), int(cand_len))
+        return packed[:, start : start + int(cand_len)].bool()
+    raise TypeError("expected sequence feature dict or packed sequence feature tuple")
+
+
 def _pad_rows(
     tensors: list[torch.Tensor],
     pad_row: tuple[int, ...],
@@ -290,6 +336,77 @@ def collate_sequence_features(features: list[dict[str, torch.Tensor]]) -> dict[s
     batch["prog_mask"] = _pad_masks([feature["prog_mask"] for feature in features])
     batch["cand_mask"] = _pad_masks([feature["cand_mask"] for feature in features])
     return batch
+
+
+def pack_sequence_features(features: list[dict[str, torch.Tensor]]) -> tuple[torch.Tensor, int, int]:
+    """Pack sequence feature dictionaries into one flat tensor plus dynamic lengths.
+
+    This is the training fast path: DataLoader workers return a single pinned
+    tensor instead of a dictionary of many small tensors, while P/C are still
+    padded only to the maximum length in the current batch.
+    """
+    if not features:
+        raise ValueError("features must not be empty")
+
+    batch_size = len(features)
+    prog_len = max((int(feature["progression"].shape[0]) for feature in features), default=0)
+    cand_len = max((int(feature["candidates"].shape[0]) for feature in features), default=0)
+    packed = torch.empty((batch_size, packed_sequence_size(prog_len, cand_len)), dtype=torch.float32)
+    offset = 0
+
+    def put_fixed(key: str) -> None:
+        nonlocal offset
+        values = torch.stack([feature[key] for feature in features]).reshape(batch_size, -1)
+        width = int(values.shape[1])
+        packed[:, offset : offset + width] = values.float()
+        offset += width
+
+    def put_rows(key: str, max_len: int, pad_row: tuple[int, ...]) -> None:
+        nonlocal offset
+        width = len(pad_row)
+        block = packed[:, offset : offset + max_len * width].view(batch_size, max_len, width)
+        block[:] = torch.tensor(pad_row, dtype=packed.dtype)
+        for row_idx, feature in enumerate(features):
+            values = feature[key]
+            n_rows = int(values.shape[0])
+            if n_rows > 0:
+                block[row_idx, :n_rows] = values.float()
+        offset += max_len * width
+
+    def put_masks(key: str, max_len: int) -> None:
+        nonlocal offset
+        block = packed[:, offset : offset + max_len]
+        block.zero_()
+        for row_idx, feature in enumerate(features):
+            values = feature[key]
+            n_rows = int(values.shape[0])
+            if n_rows > 0:
+                block[row_idx, :n_rows] = values.float()
+        offset += max_len
+
+    for key in (
+        "sparse",
+        "dealer",
+        "player_stats",
+        "sparse_melds",
+        "sparse_meld_owners",
+        "hand",
+        "numeric",
+        "agari_overtakes",
+        "sparse_mask",
+        "sparse_meld_mask",
+        "hand_mask",
+    ):
+        put_fixed(key)
+    put_rows("progression", prog_len, SequenceFeatureEncoder.PROG_PAD)
+    put_rows("prog_melds", prog_len, SequenceFeatureEncoder.MELD_PAD)
+    put_rows("candidates", cand_len, SequenceFeatureEncoder.CAND_PAD)
+    put_rows("cand_melds", cand_len, SequenceFeatureEncoder.MELD_PAD)
+    put_masks("prog_mask", prog_len)
+    put_masks("cand_mask", cand_len)
+    if offset != packed.shape[1]:
+        raise RuntimeError(f"packed sequence feature width mismatch: wrote {offset}, expected {packed.shape[1]}")
+    return packed, prog_len, cand_len
 
 
 class SequenceFeaturePackedEncoder(SequenceFeatureEncoder):
