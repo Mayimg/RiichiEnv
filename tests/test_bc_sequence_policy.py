@@ -100,6 +100,13 @@ def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int 
         [[0, 0, 0, 0, 0], [1, 0, 0, 0, 0], [2, 0, 0, 0, 0], [3, 0, 0, 0, 0]],
         dtype=torch.long,
     )
+    visible_tile_counts = torch.stack(
+        [
+            torch.arange(SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS, dtype=torch.long),
+            torch.zeros(SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS, dtype=torch.long),
+        ],
+        dim=1,
+    )
     batch = {
         "sparse": torch.full((batch_size, SequenceFeatureEncoder.MAX_SPARSE_LEN), SequenceFeatureEncoder.SPARSE_PAD),
         "dealer": torch.zeros(batch_size, dtype=torch.long),
@@ -119,6 +126,7 @@ def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int 
             SequenceFeatureEncoder.MAX_HAND_LEN,
             1,
         ),
+        "visible_tile_counts": visible_tile_counts.unsqueeze(0).expand(batch_size, -1, -1).clone(),
         "numeric": torch.zeros(batch_size, SequenceFeatureEncoder.NUM_NUMERIC),
         "agari_overtakes": torch.zeros(batch_size, SequenceFeatureEncoder.AGARI_OVERTAKE_DIM),
         "progression": torch.tensor(SequenceFeatureEncoder.PROG_PAD).repeat(batch_size, prog_len, 1),
@@ -459,6 +467,46 @@ def test_sequence_feature_encoder_includes_player_stats():
         [2, 0, 1, 3, 2],
         [3, 1, 0, 2, 2],
     ]
+
+
+def test_sequence_feature_encoder_includes_visible_tile_counts_by_tile37():
+    obs = Observation(
+        0,
+        [[16, 17], [], [], []],
+        [[], [Meld(MeldType.Pon, [0, 1, 2], True, 0, 0)], [], []],
+        [[], [], [0], []],
+        [4],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+    counts = features["visible_tile_counts"]
+
+    assert counts.shape == (
+        SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS,
+        SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH,
+    )
+    assert counts[:, 0].tolist() == list(range(SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS))
+    assert counts[0].tolist() == [0, 1]  # red 5m in self hand
+    assert counts[1].tolist() == [1, 3]  # discard + two consumed pon tiles; called tile skipped in meld
+    assert counts[2].tolist() == [2, 1]  # visible dora indicator 2m
+    assert counts[5].tolist() == [5, 1]  # normal 5m in self hand
+    assert counts[:, 1].sum().item() == 6
 
 
 def test_sequence_progression_includes_dora_reveals():
@@ -896,6 +944,35 @@ def test_transformer_tile_embedding_tables_match_direct_embedding():
         model.tile_embed.embed_tile34_from_table(tile34, tile34_table),
         model.tile_embed.embed_tile34(tile34, dora_tile34, dealer, round_wind, model.relative_seat_embed),
     )
+
+
+def test_transformer_visible_tile_count_embedding_uses_shared_tile_table():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        d_sub=8,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    sparse = torch.tensor([[_SPARSE_DORA_OFFSET + 4, SequenceFeatureEncoder.SPARSE_PAD]], dtype=torch.long)
+    dora_tile34 = model._decode_current_dora_tiles(sparse)
+    dealer = torch.tensor([3], dtype=torch.long)
+    round_wind = torch.tensor([1], dtype=torch.long)
+    tile37_table, _ = model.tile_embed.build_tables(
+        dora_tile34,
+        dealer,
+        round_wind,
+        model.relative_seat_embed,
+    )
+    visible_counts = torch.tensor([[[0, 1], [5, 2], [36, 0]]], dtype=torch.long)
+
+    table_emb = model._embed_visible_tile_counts(visible_counts, dora_tile34, tile37_table, dealer, round_wind)
+    direct_emb = model._embed_visible_tile_counts(visible_counts, dora_tile34, None, dealer, round_wind)
+
+    assert table_emb.shape == (1, 3, 64)
+    torch.testing.assert_close(table_emb, direct_emb)
 
 
 def test_transformer_shared_tile_embedding_marks_wind_owner_and_round_wind():
