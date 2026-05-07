@@ -1,8 +1,8 @@
 """Transformer Actor-Critic for sequence feature encoding.
 
-Accepts the packed flat tensor produced by SequenceFeaturePackedEncoder,
-unpacks it into sparse / hand / numeric / agari-overtake / progression / candidate groups,
-embeds each group, and processes them through a TransformerEncoder.
+Accepts the feature dictionaries produced by SequenceFeatureEncoder, embeds
+each group, and processes them through a TransformerEncoder.  Progression and
+candidate groups are padded only to the maximum length in the current batch.
 
 Tile-only fields across hand / sparse dora / progression / candidates share
 an attribute-based tile embedding module. Chi/pon/kan melds use a shared
@@ -24,7 +24,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from riichienv_ml.features.sequence_features import SequenceFeatureEncoder
+from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, packed_sequence_size
 
 _TILE37_PAD = 37
 _TILE34_PAD = 34
@@ -639,14 +639,11 @@ class RelativeSeatEmbedding(nn.Module):
 
 
 class TransformerActorCritic(nn.Module):
-    """Transformer Actor-Critic over packed sequence features.
+    """Transformer Actor-Critic over sequence feature dictionaries.
 
-    Input:  (B, PACKED_SIZE)  float32 — from SequenceFeaturePackedEncoder
+    Input:  dict[str, Tensor] — from SequenceFeatureEncoder and its collator
     Output: (logits, value) tuple. For policy_head_type="pointer",
-    logits are (B, max_cand_len); otherwise logits are (B, num_actions).
-
-    V2 defaults: d_model=384, max_prog_len=256, max_cand_len=32, d_type=96, d_other=32
-    V1 compat:   pass d_sub=32, max_prog_len=512, max_cand_len=64
+    logits are (B, batch_max_cand_len); otherwise logits are (B, num_actions).
     """
 
     def __init__(  # noqa: PLR0915
@@ -664,16 +661,16 @@ class TransformerActorCritic(nn.Module):
         d_sub: int | None = None,  # V1 compat: if set, d_type=d_other=d_sub
         d_type: int = 96,  # type field embedding dim
         d_other: int = 32,  # other field embedding dim
-        # Sequence length (must match encoder)
-        max_prog_len: int = 256,
-        max_cand_len: int = 32,
+        # Accepted for old configs; sequence lengths are now dynamic.
+        max_prog_len: int | None = None,
+        max_cand_len: int | None = None,
         # Vocab sizes (from SequenceFeatureEncoder)
         sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,  # 261
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 260
         player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,13,13)
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
-        prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,81,3,3,5)
-        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (48,3,5)
+        prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,80,3,3,5)
+        cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (47,3,5)
         **kwargs,
     ):
         super().__init__()
@@ -687,7 +684,7 @@ class TransformerActorCritic(nn.Module):
             d_type = d_sub
             d_other = d_sub
 
-        # Packed layout constants (must match SequenceFeaturePackedEncoder)
+        # Fixed feature layout constants.
         self._S = SequenceFeatureEncoder.MAX_SPARSE_LEN
         self._D = 1
         self._PI = SequenceFeatureEncoder.PLAYER_INFO_TOKENS
@@ -699,8 +696,7 @@ class TransformerActorCritic(nn.Module):
         self._A = SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
         self._AT = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS
         self._AW = SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
-        self._P = max_prog_len
-        self._C = max_cand_len
+        self._PW = len(prog_dims)
         self._CW = len(cand_dims)
         if len(player_info_dims) != self._PIW:
             raise ValueError(f"player_info_dims must have {self._PIW} entries")
@@ -738,7 +734,7 @@ class TransformerActorCritic(nn.Module):
         )
 
         # Progression: shared seat fields + type/moqie/liqi embeddings.
-        # field[1] is type (vocab=81) -> d_type; others -> d_other
+        # field[1] is type (vocab=80) -> d_type; others -> d_other
         prog_sub_dims = [d_other if i != 1 else d_type for i in range(len(prog_dims))]
         self.prog_type_embed = nn.Embedding(prog_dims[1], d_type)
         self.prog_moqie_embed = nn.Embedding(prog_dims[2], d_other)
@@ -746,7 +742,7 @@ class TransformerActorCritic(nn.Module):
         self.prog_proj = SplitLinearLayerNorm(prog_sub_dims, d_model)
 
         # Candidates: shared from-seat field + type/moqie embeddings.
-        # field[0] is type (vocab=48) -> d_type; others -> d_other
+        # field[0] is type (vocab=47) -> d_type; others -> d_other
         cand_sub_dims = [d_other if i != 0 else d_type for i in range(len(cand_dims))]
         self.cand_type_embed = nn.Embedding(cand_dims[0], d_type)
         self.cand_moqie_embed = nn.Embedding(cand_dims[1], d_other)
@@ -761,23 +757,9 @@ class TransformerActorCritic(nn.Module):
         # --- Segment embeddings (7 groups: sparse / player / hand / numeric / agari / prog / cand) ---
         self.segment_embed = nn.Embedding(7, d_model)
 
-        # --- Positional encoding (sinusoidal) ---
-        max_seq = 1 + self._S + self._D + self._PI + self._SM + self._H + 1 + self._AT + self._P + self._C
-        self.register_buffer("pos_enc", self._sinusoidal_pe(max_seq, d_model))
-        segment_ids = torch.cat(
-            [
-                torch.zeros(1 + self._S + self._D, dtype=torch.long),
-                torch.full((self._PI,), 1, dtype=torch.long),
-                torch.zeros(self._SM, dtype=torch.long),
-                torch.full((self._H,), 2, dtype=torch.long),
-                torch.full((1,), 3, dtype=torch.long),
-                torch.full((self._AT,), 4, dtype=torch.long),
-                torch.full((self._P,), 5, dtype=torch.long),
-                torch.full((self._C,), 6, dtype=torch.long),
-            ],
-            dim=0,
-        )
-        self.register_buffer("segment_ids", segment_ids.unsqueeze(0), persistent=False)
+        # --- Progression-only positional encoding (sinusoidal) ---
+        inv_freq = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        self.register_buffer("prog_pe_inv_freq", inv_freq, persistent=False)
 
         # --- Transformer encoder (pre-LN for stability) ---
         encoder_layer = nn.TransformerEncoderLayer(
@@ -833,14 +815,31 @@ class TransformerActorCritic(nn.Module):
         self._init_weights()
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _sinusoidal_pe(max_len: int, d_model: int) -> torch.Tensor:
-        pe = torch.zeros(max_len, d_model)
-        pos = torch.arange(max_len).unsqueeze(1).float()
-        div = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(pos * div)
-        pe[:, 1::2] = torch.cos(pos * div)
-        return pe.unsqueeze(0)  # (1, max_len, d_model)
+    def _progression_pe(self, length: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if length == 0:
+            return torch.empty(1, 0, self.d_model, device=device, dtype=dtype)
+        inv_freq = self.prog_pe_inv_freq.to(device=device)
+        pos = torch.arange(length, device=device, dtype=inv_freq.dtype).unsqueeze(1)
+        angles = pos * inv_freq.unsqueeze(0)
+        pe = torch.zeros(length, self.d_model, device=device, dtype=inv_freq.dtype)
+        pe[:, 0::2] = angles.sin()
+        pe[:, 1::2] = angles.cos()[:, : pe[:, 1::2].shape[1]]
+        return pe.to(dtype=dtype).unsqueeze(0)
+
+    def _segment_ids(self, prog_len: int, cand_len: int, device: torch.device) -> torch.Tensor:
+        return torch.cat(
+            [
+                torch.zeros(1 + self._S + self._D, dtype=torch.long, device=device),
+                torch.full((self._PI,), 1, dtype=torch.long, device=device),
+                torch.zeros(self._SM, dtype=torch.long, device=device),
+                torch.full((self._H,), 2, dtype=torch.long, device=device),
+                torch.full((1,), 3, dtype=torch.long, device=device),
+                torch.full((self._AT,), 4, dtype=torch.long, device=device),
+                torch.full((prog_len,), 5, dtype=torch.long, device=device),
+                torch.full((cand_len,), 6, dtype=torch.long, device=device),
+            ],
+            dim=0,
+        ).unsqueeze(0)
 
     def _init_weights(self):
         for m in self.modules():
@@ -855,42 +854,50 @@ class TransformerActorCritic(nn.Module):
                         m.weight[m.padding_idx].fill_(0)
 
     # ------------------------------------------------------------------
-    def _unpack(self, x: torch.Tensor):
-        """Unpack flat (B, PACKED_SIZE) tensor into components."""
-        o = 0
-        sparse = x[:, o : o + self._S].long()
-        o += self._S
-        dealer = x[:, o].long()
-        o += 1
-        player_stats = x[:, o : o + self._PI * self._PIW].reshape(-1, self._PI, self._PIW).long()
-        o += self._PI * self._PIW
-        sparse_melds = x[:, o : o + self._SM * self._MW].reshape(-1, self._SM, self._MW).long()
-        o += self._SM * self._MW
-        sparse_meld_owners = x[:, o : o + self._SM].long()
-        o += self._SM
-        hand = x[:, o : o + self._H * 2].reshape(-1, self._H, 2).long()
-        o += self._H * 2
-        numeric = x[:, o : o + self._N]
-        o += self._N
-        agari_overtakes = x[:, o : o + self._A]
-        o += self._A
-        prog = x[:, o : o + self._P * 5].reshape(-1, self._P, 5).long()
-        o += self._P * 5
-        prog_melds = x[:, o : o + self._P * self._MW].reshape(-1, self._P, self._MW).long()
-        o += self._P * self._MW
-        cand = x[:, o : o + self._C * self._CW].reshape(-1, self._C, self._CW).long()
-        o += self._C * self._CW
-        cand_melds = x[:, o : o + self._C * self._MW].reshape(-1, self._C, self._MW).long()
-        o += self._C * self._MW
-        sparse_mask = x[:, o : o + self._S].bool()
-        o += self._S
-        sparse_meld_mask = x[:, o : o + self._SM].bool()
-        o += self._SM
-        hand_mask = x[:, o : o + self._H].bool()
-        o += self._H
-        prog_mask = x[:, o : o + self._P].bool()
-        o += self._P
-        cand_mask = x[:, o : o + self._C].bool()
+    def _unpack_packed(self, x: torch.Tensor, prog_len: int, cand_len: int):
+        """Unpack the DataLoader fast-path flattened sequence feature tensor."""
+        if x.ndim != 2:
+            raise ValueError(f"packed sequence features must be rank-2, got shape={tuple(x.shape)}")
+        prog_len = int(prog_len)
+        cand_len = int(cand_len)
+        expected = packed_sequence_size(prog_len, cand_len)
+        if x.shape[1] != expected:
+            raise ValueError(f"packed sequence feature width {x.shape[1]} does not match expected {expected}")
+
+        batch_size = x.shape[0]
+        offset = 0
+
+        def take(shape: tuple[int, ...], kind: str) -> torch.Tensor:
+            nonlocal offset
+            width = math.prod(shape)
+            tensor = x[:, offset : offset + width].reshape(batch_size, *shape)
+            offset += width
+            if kind == "long":
+                return tensor.long()
+            if kind == "bool":
+                return tensor.bool()
+            return tensor.float()
+
+        sparse = take((self._S,), "long")
+        dealer = take((self._D,), "long").squeeze(1)
+        player_stats = take((self._PI, self._PIW), "long")
+        sparse_melds = take((self._SM, self._MW), "long")
+        sparse_meld_owners = take((self._SM,), "long")
+        hand = take((self._H, 2), "long")
+        numeric = take((self._N,), "float")
+        agari_overtakes = take((self._A,), "float")
+        sparse_mask = take((self._S,), "bool")
+        sparse_meld_mask = take((self._SM,), "bool")
+        hand_mask = take((self._H,), "bool")
+        progression = take((prog_len, self._PW), "long")
+        prog_melds = take((prog_len, self._MW), "long")
+        candidates = take((cand_len, self._CW), "long")
+        cand_melds = take((cand_len, self._MW), "long")
+        prog_mask = take((prog_len,), "bool")
+        cand_mask = take((cand_len,), "bool")
+        if offset != x.shape[1]:
+            raise RuntimeError(f"packed sequence unpack width mismatch: read {offset}, expected {x.shape[1]}")
+
         return (
             sparse,
             dealer,
@@ -900,15 +907,41 @@ class TransformerActorCritic(nn.Module):
             hand,
             numeric,
             agari_overtakes,
-            prog,
+            progression,
             prog_melds,
-            cand,
+            candidates,
             cand_melds,
             sparse_mask,
             sparse_meld_mask,
             hand_mask,
             prog_mask,
             cand_mask,
+        )
+
+    def _feature_tensors(self, x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int]):
+        """Normalize a batched feature dict into typed component tensors."""
+        if isinstance(x, tuple):
+            if len(x) != 3:
+                raise TypeError("packed sequence features must be (tensor, prog_len, cand_len)")
+            return self._unpack_packed(x[0], int(x[1]), int(x[2]))
+        return (
+            x["sparse"].long(),
+            x["dealer"].long(),
+            x["player_stats"].long(),
+            x["sparse_melds"].long(),
+            x["sparse_meld_owners"].long(),
+            x["hand"].long(),
+            x["numeric"].float(),
+            x["agari_overtakes"].float(),
+            x["progression"].long(),
+            x["prog_melds"].long(),
+            x["candidates"].long(),
+            x["cand_melds"].long(),
+            x["sparse_mask"].bool(),
+            x["sparse_meld_mask"].bool(),
+            x["hand_mask"].bool(),
+            x["prog_mask"].bool(),
+            x["cand_mask"].bool(),
         )
 
     # ------------------------------------------------------------------
@@ -1212,8 +1245,12 @@ class TransformerActorCritic(nn.Module):
         )
 
     # ------------------------------------------------------------------
-    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        batch_size = x.shape[0]
+    def forward(  # noqa: PLR0915
+        self,
+        x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int],
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if not isinstance(x, (dict, tuple)):
+            raise TypeError("TransformerActorCritic expects sequence feature dict or packed sequence tuple")
         (
             sparse,
             dealer,
@@ -1232,7 +1269,11 @@ class TransformerActorCritic(nn.Module):
             hand_mask,
             prog_mask,
             cand_mask,
-        ) = self._unpack(x)
+        ) = self._feature_tensors(x)
+        batch_size = sparse.shape[0]
+        device = sparse.device
+        prog_len = prog.shape[1]
+        cand_len = cand.shape[1]
         dora_tile34 = self._decode_current_dora_tiles(sparse)
         round_wind = self._decode_round_wind(sparse)
         seat_other_table, seat_model_table = self.relative_seat_embed.build_tables()
@@ -1253,7 +1294,7 @@ class TransformerActorCritic(nn.Module):
             self.relative_seat_embed,
         )
         sparse_meld_type, prog_meld_type, cand_meld_type = all_meld_emb.split(
-            [self._SM, self._P, self._C],
+            [self._SM, prog_len, cand_len],
             dim=1,
         )
 
@@ -1299,6 +1340,7 @@ class TransformerActorCritic(nn.Module):
             prog_meld_type,
             seat_other_table,
         )
+        prog_emb = prog_emb + self._progression_pe(prog_len, device, prog_emb.dtype)
 
         # Embed candidate tuples: (B, C, d)
         cand_emb = self._embed_candidates(
@@ -1335,18 +1377,15 @@ class TransformerActorCritic(nn.Module):
         )
 
         # Add segment embeddings
-        seg_ids = self.segment_ids[:, : tokens.shape[1]].expand(batch_size, -1)
+        seg_ids = self._segment_ids(prog_len, cand_len, device).expand(batch_size, -1)
         tokens = tokens + self.segment_embed(seg_ids)
 
-        # Add positional encoding
-        tokens = tokens + self.pos_enc[:, : tokens.shape[1]]
-
         # Build padding mask: True = ignore (PyTorch convention)
-        cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        player_info_valid = torch.zeros(batch_size, self._PI, dtype=torch.bool, device=x.device)
-        numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
-        agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=x.device)
+        cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
+        dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
+        player_info_valid = torch.zeros(batch_size, self._PI, dtype=torch.bool, device=device)
+        numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
+        agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=device)
         pad_mask = torch.cat(
             [
                 cls_valid,  # CLS is always valid
@@ -1370,8 +1409,8 @@ class TransformerActorCritic(nn.Module):
         # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
 
-        cand_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + 1 + self._AT + self._P
-        cand_out = output[:, cand_offset : cand_offset + self._C]  # (B, C, d_model)
+        cand_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + 1 + self._AT + prog_len
+        cand_out = output[:, cand_offset : cand_offset + cand_len]  # (B, C, d_model)
 
         # Policy head
         if self.policy_head_type == "cross_attn":
@@ -1384,7 +1423,7 @@ class TransformerActorCritic(nn.Module):
             policy_input = self.cross_attn_norm(cls_out + attn_out.squeeze(1))
             logits = self.policy_head(policy_input)
         elif self.policy_head_type == "pointer":
-            cls_expanded = cls_out.unsqueeze(1).expand(-1, self._C, -1)
+            cls_expanded = cls_out.unsqueeze(1).expand(-1, cand_len, -1)
             logits = self.candidate_scorer(torch.cat([cand_out, cls_expanded], dim=-1)).squeeze(-1)
         else:
             policy_input = cls_out

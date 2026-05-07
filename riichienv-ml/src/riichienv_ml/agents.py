@@ -29,6 +29,14 @@ from riichienv_ml.config import import_class, load_config
 from riichienv_ml.utils import build_encoder, configure_matmul_precision
 
 
+def _feature_to_device_batch(feature, device: torch.device):
+    if isinstance(feature, torch.Tensor):
+        return feature.to(device).unsqueeze(0)
+    if isinstance(feature, dict):
+        return {key: value.to(device).unsqueeze(0) for key, value in feature.items()}
+    raise TypeError(f"Unsupported feature type: {type(feature).__name__}")
+
+
 def _candidate_mask(obs, width: int, device: torch.device) -> torch.Tensor:
     mask = torch.zeros(1, width, dtype=torch.bool, device=device)
     n_cand = min(len(obs.candidate_actions()), width)
@@ -229,7 +237,7 @@ class Agent:
             greedy argmax over masked logits.
         """
         feat = self.encoder.encode(obs)
-        feat_batch = feat.to(self.device).unsqueeze(0)
+        feat_batch = _feature_to_device_batch(feat, self.device)
 
         output = self.model(feat_batch)
         logits = output[0] if isinstance(output, tuple) else output

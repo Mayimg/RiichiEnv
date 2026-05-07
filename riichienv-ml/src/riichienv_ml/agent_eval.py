@@ -17,7 +17,8 @@ import numpy as np
 import torch
 from loguru import logger
 
-from riichienv_ml.agents import Agent, _select_action_from_logits
+from riichienv import RiichiEnv
+from riichienv_ml.agents import Agent, _feature_to_device_batch, _select_action_from_logits
 from riichienv_ml.config import (
     GAME_PARAMS,
     OpponentConfig,
@@ -69,13 +70,13 @@ class AgentEvaluator:
         self.episodes_per_seat = episodes_per_seat
 
         # Build hero model
-        ModelClass = import_class(model_class)
-        self.hero_model = ModelClass(**model_config).to(self.device)
+        model_cls = import_class(model_class)
+        self.hero_model = model_cls(**model_config).to(self.device)
         self.hero_model.eval()
 
         # Build hero encoder
-        EncoderClass = import_class(encoder_class)
-        self.hero_encoder = build_encoder(EncoderClass, tile_dim=self.tile_dim, model_config=model_config)
+        encoder_cls = import_class(encoder_class)
+        self.hero_encoder = build_encoder(encoder_cls, tile_dim=self.tile_dim, model_config=model_config)
 
         # Build opponent agents (pad to N-1 if needed)
         opp_cfgs = [
@@ -119,8 +120,6 @@ class AgentEvaluator:
         self.hero_model.load_state_dict(hero_weights, strict=False)
         self.hero_model.eval()
 
-        from riichienv import RiichiEnv
-
         eps_per_seat = self.episodes_per_seat
         if eps_per_seat is None:
             eps_per_seat = max(1, -(-num_episodes // self.n_players))  # ceil division
@@ -131,7 +130,7 @@ class AgentEvaluator:
 
         for hero_seat in range(self.n_players):
             for _ in range(eps_per_seat):
-                rank, score = self._play_one_game(RiichiEnv, hero_seat)
+                rank, score = self._play_one_game(hero_seat)
                 all_ranks.append(rank)
                 all_scores.append(score)
 
@@ -183,7 +182,7 @@ class AgentEvaluator:
     # ------------------------------------------------------------------
 
     @torch.inference_mode()
-    def _play_one_game(self, RiichiEnv, hero_seat: int) -> tuple[int, float]:
+    def _play_one_game(self, hero_seat: int) -> tuple[int, float]:
         """Play a single game and return (hero_rank, hero_score)."""
         env = RiichiEnv(game_mode=self.game_mode)
         obs_dict = env.reset(scores=list(self.starting_scores))
@@ -212,7 +211,7 @@ class AgentEvaluator:
     def _hero_act(self, obs):
         """Select an action for the hero using the hero model."""
         feat = self.hero_encoder.encode(obs)
-        feat_batch = feat.to(self.device).unsqueeze(0)
+        feat_batch = _feature_to_device_batch(feat, self.device)
 
         output = self.hero_model(feat_batch)
         logits = output[0] if isinstance(output, tuple) else output

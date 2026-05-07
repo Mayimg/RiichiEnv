@@ -6,7 +6,7 @@ The encoding design is based on [Kanachan v3](https://github.com/Cryolite/kanach
 
 ## Overview
 
-Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors, the sequence feature encoding produces padded heterogeneous feature groups designed for embedding-based transformer architectures:
+Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors, the sequence feature encoding produces heterogeneous feature groups designed for embedding-based transformer architectures:
 
 | Feature Group | Shape | Type | Description |
 |---------------|-------|------|-------------|
@@ -18,16 +18,16 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Agari Overtakes** | `(4, 96, 4)` | float32 | Pairwise rank-overtake flags for standard 4P win patterns |
-| **Progression** | `(256, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
-| **Progression Melds** | `(256, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
-| **Candidates** | `(32, 3)` | int64 | Legal actions as 3-tuple sets |
-| **Candidate Melds** | `(32, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
+| **Progression** | `(P, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
+| **Progression Melds** | `(P, 9)` | int64 | Factorized meld sidecar aligned with progression rows |
+| **Candidates** | `(C, 3)` | int64 | Legal actions as 3-tuple sets |
+| **Candidate Melds** | `(C, 9)` | int64 | Factorized meld sidecar aligned with candidate rows |
 
-Each variable-length group is padded to its maximum length, with accompanying boolean masks indicating real vs. padding entries.
+Progression and candidate groups stay variable-length for a single observation and are padded only to the maximum length inside the current batch. Their boolean masks indicate real vs. batch-padding rows. Smaller fixed-format groups such as sparse metadata, hand, and current visible melds keep their fixed padded shapes.
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens. Sinusoidal positional encoding is applied only to progression tokens, starting at position 0 for the first progression row.
 
 The feature vocabulary and external MJAI log format are independent of the projection implementation described here. The optimized transformer keeps the same encoded feature groups and vocabularies, but evaluates several projections with fixed-shape table/gather operations to reduce small CUDA kernels and GPU-to-CPU synchronization points.
 
@@ -358,7 +358,7 @@ agari = np.frombuffer(agari_bytes, dtype=np.float32).reshape(4, 96, 4)
 
 ## 4. Progression Features (Action History)
 
-**5-tuple sequence, max 256 entries (default)**
+**Variable-length 5-tuple sequence**
 
 Each action or dora reveal from the kyoku start to the current decision point is encoded as a 5-tuple `(actor, type, moqie, liqi, from)`.
 
@@ -367,14 +367,14 @@ Each action or dora reveal from the kyoku start to the current decision point is
 | Field | Vocab | Values |
 |-------|-------|--------|
 | actor | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding/marker |
-| type | 81 | see table below |
+| type | 80 | see table below |
 | moqie | 3 | 0=tedashi (hand tile), 1=tsumogiri (drawn tile), 2=N/A |
 | liqi | 3 | 0=no riichi, 1=with riichi declaration, 2=N/A |
 | from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=N/A |
 
-**Padding tuple:** `(4, 80, 2, 2, 4)`
+Batch padding uses `(4, 0, 2, 2, 4)` and is ignored by `prog_mask`.
 
-### Type Encoding (81 values)
+### Type Encoding (80 values)
 
 | Range | Count | Action | Encoding |
 |-------|-------|--------|----------|
@@ -386,7 +386,6 @@ Each action or dora reveal from the kyoku start to the current decision point is
 | 41 | 1 | Ankan | Details in aligned progression meld row |
 | 42 | 1 | Kakan | Details in aligned progression meld row |
 | 43-79 | 37 | Dora reveal | `43 + kan37(dora_marker)` |
-| 80 | 1 | Padding | - |
 
 ### MJAI Event to Tuple Mapping
 
@@ -422,7 +421,7 @@ prog_melds = np.frombuffer(obs.encode_seq_progression_melds(), dtype=np.uint16).
 
 ## 5. Candidate Features (Legal Actions)
 
-**3-tuple set, max 32 entries (default)**
+**Variable-length 3-tuple set**
 
 Each legal action candidate is encoded as a 3-tuple `(type, moqie, from)`. The candidate list is collapsed by the strict candidate tuple plus its aligned meld sidecar row. Physical copies with identical visible semantics still collapse, but red-five discards, tedashi/tsumogiri discards, and red/non-red consumed chi/pon candidates remain distinct pointer targets.
 
@@ -430,13 +429,13 @@ Each legal action candidate is encoded as a 3-tuple `(type, moqie, from)`. The c
 
 | Field | Vocab | Values |
 |-------|-------|--------|
-| type | 48 | see table below |
+| type | 47 | see table below |
 | moqie | 3 | 0=tedashi, 1=tsumogiri, 2=N/A |
 | from | 5 | 0=self, 1=shimocha, 2=toimen, 3=kamicha, 4=padding |
 
-**Padding tuple:** `(47, 2, 4)`
+Batch padding uses `(42, 2, 4)` and is ignored by `cand_mask`.
 
-### Type Encoding (48 values)
+### Type Encoding (47 values)
 
 | Range | Count | Action | Encoding |
 |-------|-------|--------|----------|
@@ -451,7 +450,6 @@ Each legal action candidate is encoded as a 3-tuple `(type, moqie, from)`. The c
 | 44 | 1 | Pon | Details in aligned candidate meld row |
 | 45 | 1 | Daiminkan | Details in aligned candidate meld row |
 | 46 | 1 | Ron (win) | Fixed |
-| 47 | 1 | Padding | - |
 
 For chi/pon, the tuple may be identical between red-consume and non-red-consume variants. That distinction is represented by the aligned candidate meld row, whose tile slots use `tile37`.
 
@@ -471,7 +469,11 @@ cand_melds = np.frombuffer(obs.encode_seq_candidate_melds(), dtype=np.uint16).re
 
 ## Python Wrapper: SequenceFeatureEncoder
 
-`riichienv_ml.features.sequence_features.SequenceFeatureEncoder` provides padded torch tensors with masks.
+`riichienv_ml.features.sequence_features.SequenceFeatureEncoder` provides torch tensors with masks. `collate_sequence_features()` pads progression and candidate groups to the maximum length in the current batch.
+
+BC training uses `pack_sequence_features()` as the DataLoader fast path. It applies the same batch-local P/C padding, then flattens the batch into one `float32` tensor plus `(prog_len, cand_len)` metadata so worker IPC, pinned-memory handling, and host-to-device transfer do not move many small tensors per batch. The transformer accepts both this packed tuple and the collated dictionary form.
+
+`SequenceFeaturePackedEncoder` remains as a deprecated config alias, but it now returns the same dynamic feature dictionary rather than a flat packed tensor.
 
 ### Usage
 
@@ -493,14 +495,14 @@ for pid, obs in obs_dict.items():
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
     # features["numeric"]     -- (6,) float32
     # features["agari_overtakes"] -- (1536,) float32, reshapeable to (4, 96, 4)
-    # features["progression"] -- (256, 5) int64, padded with (4, 80, 2, 2, 4)
-    # features["prog_melds"]  -- (256, 9) int64, aligned with progression
-    # features["candidates"]  -- (32, 3) int64, padded with (47, 2, 4)
-    # features["cand_melds"]  -- (32, 9) int64, aligned with candidates
+    # features["progression"] -- (P, 5) int64
+    # features["prog_melds"]  -- (P, 9) int64, aligned with progression
+    # features["candidates"]  -- (C, 3) int64
+    # features["cand_melds"]  -- (C, 9) int64, aligned with candidates
     # features["sparse_mask"] -- (8,) bool, True for real tokens
     # features["hand_mask"]   -- (14,) bool, True for real entries
-    # features["prog_mask"]   -- (256,) bool, True for real entries
-    # features["cand_mask"]   -- (32,) bool, True for real entries
+    # features["prog_mask"]   -- (P,) bool, True for real entries
+    # features["cand_mask"]   -- (C,) bool, True for real entries
 ```
 
 ### Constants
@@ -518,13 +520,11 @@ SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10
 SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS  # 5
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
-SequenceFeatureEncoder.MAX_PROG_LEN       # 256 (default; V1 compat: 512)
-SequenceFeatureEncoder.MAX_CAND_LEN       # 32  (default; V1 compat: 64)
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
 SequenceFeatureEncoder.AGARI_OVERTAKE_DIMS # (4, 96, 4)
 SequenceFeatureEncoder.AGARI_OVERTAKE_DIM  # 1536
-SequenceFeatureEncoder.PROG_DIMS           # (5, 81, 3, 3, 5)
-SequenceFeatureEncoder.CAND_DIMS           # (48, 3, 5)
+SequenceFeatureEncoder.PROG_DIMS           # (5, 80, 3, 3, 5)
+SequenceFeatureEncoder.CAND_DIMS           # (47, 3, 5)
 ```
 
 ## Implementation

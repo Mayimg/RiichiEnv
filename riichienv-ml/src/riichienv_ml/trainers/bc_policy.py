@@ -8,13 +8,14 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-import torch.optim as optim
 import wandb
 from loguru import logger
+from torch import optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, default_collate
 
-from riichienv_ml.config import import_class
+from riichienv_ml.config import EvaluatorConfig, import_class
+from riichienv_ml.features.sequence_features import pack_sequence_features, packed_candidate_mask
 from riichienv_ml.trainers.bc_logs import _create_evaluator
 from riichienv_ml.utils import AverageMeter, build_encoder, load_model_weights
 
@@ -40,6 +41,23 @@ def _with_suffix(path: str, suffix: str) -> str:
     return str(p.with_name(f"{p.stem}_{suffix}{p.suffix}"))
 
 
+def _bc_collate_fn(batch):
+    features, actions, _masks = zip(*batch, strict=True)
+    if isinstance(features[0], dict):
+        return (
+            pack_sequence_features(list(features)),
+            torch.as_tensor(actions, dtype=torch.long),
+            None,
+        )
+    return default_collate(batch)
+
+
+def _batch_candidate_masks(features, batch_masks, device: torch.device) -> torch.Tensor:
+    if batch_masks is None:
+        return packed_candidate_mask(features)
+    return batch_masks.to(device, non_blocking=True)
+
+
 class BCPolicyTrainer:
     def __init__(
         self,
@@ -59,7 +77,7 @@ class BCPolicyTrainer:
         model_config: dict | None = None,
         model_class: str = "riichienv_ml.models.transformer.TransformerPolicyNetwork",
         dataset_class: str = "riichienv_ml.datasets.mjai_logs.BehaviorCloningDataset",
-        encoder_class: str = "riichienv_ml.features.sequence_features.SequenceFeaturePackedEncoder",
+        encoder_class: str = "riichienv_ml.features.sequence_features.SequenceFeatureEncoder",
         n_players: int = 4,
         replay_rule: str = "tenhou",
         tile_dim: int = 34,
@@ -88,8 +106,6 @@ class BCPolicyTrainer:
         self.tile_dim = tile_dim
 
         if evaluator_config is None:
-            from riichienv_ml.config import EvaluatorConfig
-
             evaluator_config = EvaluatorConfig()
         self.evaluator_config = evaluator_config
 
@@ -114,6 +130,7 @@ class BCPolicyTrainer:
             "batch_size": self.batch_size,
             "num_workers": self.num_workers,
             "pin_memory": True,
+            "collate_fn": _bc_collate_fn,
         }
         if self.num_workers > 0:
             kwargs["persistent_workers"] = is_train
@@ -147,7 +164,7 @@ class BCPolicyTrainer:
         finally:
             model.train()
 
-    def train(self, output_path: str) -> None:
+    def train(self, output_path: str) -> None:  # noqa: PLR0915
         output_dir = Path(output_path).parent
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -160,11 +177,11 @@ class BCPolicyTrainer:
         if self.val_data_glob:
             logger.info(f"Found {len(val_files)} validation files")
 
-        EncoderClass = import_class(self.encoder_class)
-        encoder = build_encoder(EncoderClass, tile_dim=self.tile_dim, model_config=self.model_config)
+        encoder_cls = import_class(self.encoder_class)
+        encoder = build_encoder(encoder_cls, tile_dim=self.tile_dim, model_config=self.model_config)
 
-        DatasetClass = import_class(self.dataset_class)
-        train_dataset = DatasetClass(
+        dataset_cls = import_class(self.dataset_class)
+        train_dataset = dataset_cls(
             train_files,
             is_train=True,
             n_players=self.n_players,
@@ -175,7 +192,7 @@ class BCPolicyTrainer:
 
         val_loader = None
         if val_files:
-            val_dataset = DatasetClass(
+            val_dataset = dataset_cls(
                 val_files,
                 is_train=False,
                 n_players=self.n_players,
@@ -184,8 +201,8 @@ class BCPolicyTrainer:
             )
             val_loader = self._create_dataloader(val_dataset, is_train=False)
 
-        ModelClass = import_class(self.model_class)
-        model = ModelClass(**self.model_config).to(self.device)
+        model_cls = import_class(self.model_class)
+        model = model_cls(**self.model_config).to(self.device)
         if self.load_model:
             load_model_weights(model, self.load_model, map_location=self.device)
         optimizer = optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -253,10 +270,10 @@ class BCPolicyTrainer:
         window_loss_meter = AverageMeter("window_loss", ":.4f")
         window_acc_meter = AverageMeter("window_acc", ":.4f")
 
-        for batch_idx, (features, actions, masks) in enumerate(dataloader):
-            features = _move_to_device(features, self.device)
-            actions = actions.long().to(self.device, non_blocking=True)
-            masks = masks.to(self.device, non_blocking=True)
+        for batch_idx, (batch_features, batch_actions, batch_masks) in enumerate(dataloader):
+            features = _move_to_device(batch_features, self.device)
+            actions = batch_actions.long().to(self.device, non_blocking=True)
+            masks = _batch_candidate_masks(features, batch_masks, self.device)
 
             optimizer.zero_grad()
 
@@ -321,10 +338,10 @@ class BCPolicyTrainer:
         loss_meter = AverageMeter("loss", ":.4f")
         acc_meter = AverageMeter("acc", ":.4f")
 
-        for features, actions, masks in dataloader:
-            features = _move_to_device(features, self.device)
-            actions = actions.long().to(self.device, non_blocking=True)
-            masks = masks.to(self.device, non_blocking=True)
+        for batch_features, batch_actions, batch_masks in dataloader:
+            features = _move_to_device(batch_features, self.device)
+            actions = batch_actions.long().to(self.device, non_blocking=True)
+            masks = _batch_candidate_masks(features, batch_masks, self.device)
 
             logits = self._forward_logits(model, features)
             logits = self._mask_logits(logits, masks)

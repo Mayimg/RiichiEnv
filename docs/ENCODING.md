@@ -42,7 +42,7 @@ For Transformer BC with `policy_head_type="pointer"`, legal actions are not trai
 They are represented as strict candidate rows:
 
 - Candidate tuple: `(type, moqie, from)`
-- `type`: `0-36` discard `kan37(tile)`, `37` riichi, `38` ankan, `39` kakan, `40` tsumo, `41` kyushu kyuhai, `42` pass, `43` chi, `44` pon, `45` daiminkan, `46` ron, `47` padding
+- `type`: `0-36` discard `kan37(tile)`, `37` riichi, `38` ankan, `39` kakan, `40` tsumo, `41` kyushu kyuhai, `42` pass, `43` chi, `44` pon, `45` daiminkan, `46` ron
 - `moqie`: `0` tedashi, `1` tsumogiri, `2` N/A
 - `from`: `0` self, `1` shimocha, `2` toimen, `3` kamicha, `4` padding
 - Chi/pon/kan details are represented by the aligned meld sidecar row using `tile37` slots.
