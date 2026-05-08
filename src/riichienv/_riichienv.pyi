@@ -497,6 +497,15 @@ class Observation:
         optional drawn tile last.
         """
         ...
+    def encode_seq_visible_tile_counts(self) -> bytes:
+        """Encode visible tile counts for all tile37 ids.
+
+        Shape: ``(37, 2)`` / dtype: ``uint16``.
+
+        Each row is ``(tile37, visible_count)``. Counts include self hand,
+        visible meld tiles, discards, and visible dora indicators.
+        """
+        ...
     def encode_seq_numeric(self) -> bytes:
         """Encode sequence features as numeric values.
 

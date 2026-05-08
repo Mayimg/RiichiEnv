@@ -22,6 +22,7 @@ class SequenceFeatureEncoder:
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
+        visible_tile_counts: (37, 2)     int64   fixed tile37 visible-count tuples
         numeric:     (NUM_NUMERIC,)      float32
         agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
                          reshapeable to (AGARI_OVERTAKE_TOKENS, AGARI_OVERTAKE_TOKEN_DIM)
@@ -57,6 +58,10 @@ class SequenceFeatureEncoder:
     HAND_DIMS = (38, 3)
     HAND_PAD = (37, 2)
     MAX_HAND_LEN = 14
+
+    VISIBLE_TILE_COUNT_DIMS = (37, 5)
+    VISIBLE_TILE_COUNT_TOKENS = 37
+    VISIBLE_TILE_COUNT_WIDTH = len(VISIBLE_TILE_COUNT_DIMS)
 
     PROG_DIMS = (5, 80, 3, 3, 5)
     PROG_PAD = (4, 0, 2, 2, 4)
@@ -100,13 +105,10 @@ class SequenceFeatureEncoder:
 
         # Per-player public summary tokens
         player_stats_bytes = obs.encode_seq_player_stats()
-        raw_player_stats = np.frombuffer(player_stats_bytes, dtype=np.uint16).reshape(
-            -1, self.PLAYER_INFO_WIDTH
-        )
+        raw_player_stats = np.frombuffer(player_stats_bytes, dtype=np.uint16).reshape(-1, self.PLAYER_INFO_WIDTH)
         if raw_player_stats.shape[0] != self.PLAYER_INFO_TOKENS:
             raise ValueError(
-                f"encode_seq_player_stats returned {raw_player_stats.shape[0]} rows; "
-                f"expected {self.PLAYER_INFO_TOKENS}"
+                f"encode_seq_player_stats returned {raw_player_stats.shape[0]} rows; expected {self.PLAYER_INFO_TOKENS}"
             )
         player_stats = raw_player_stats.astype(np.int64, copy=True)
 
@@ -145,6 +147,19 @@ class SequenceFeatureEncoder:
             hand[:n_hand] = raw_hand[:n_hand]
         hand_mask = np.zeros(self.MAX_HAND_LEN, dtype=np.bool_)
         hand_mask[:n_hand] = True
+
+        # Visible tile counts
+        visible_count_bytes = obs.encode_seq_visible_tile_counts()
+        visible_tile_counts = np.frombuffer(visible_count_bytes, dtype=np.uint16).reshape(
+            -1,
+            self.VISIBLE_TILE_COUNT_WIDTH,
+        )
+        if visible_tile_counts.shape[0] != self.VISIBLE_TILE_COUNT_TOKENS:
+            raise ValueError(
+                f"encode_seq_visible_tile_counts returned {visible_tile_counts.shape[0]} rows; "
+                f"expected {self.VISIBLE_TILE_COUNT_TOKENS}"
+            )
+        visible_tile_counts = visible_tile_counts.astype(np.int64, copy=True)
 
         # Numeric
         numeric = np.frombuffer(obs.encode_seq_numeric(), dtype=np.float32).copy()
@@ -225,6 +240,7 @@ class SequenceFeatureEncoder:
             "sparse_melds": torch.from_numpy(sparse_melds),
             "sparse_meld_owners": torch.from_numpy(sparse_meld_owners),
             "hand": torch.from_numpy(hand),
+            "visible_tile_counts": torch.from_numpy(visible_tile_counts),
             "numeric": torch.from_numpy(numeric),
             "agari_overtakes": torch.from_numpy(agari_overtakes),
             "progression": torch.from_numpy(prog),
@@ -246,6 +262,7 @@ PACKED_FIXED_SIZE = (
     + SequenceFeatureEncoder.MAX_SPARSE_MELDS * SequenceFeatureEncoder.MELD_WIDTH
     + SequenceFeatureEncoder.MAX_SPARSE_MELDS
     + SequenceFeatureEncoder.MAX_HAND_LEN * len(SequenceFeatureEncoder.HAND_DIMS)
+    + SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS * SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH
     + SequenceFeatureEncoder.NUM_NUMERIC
     + SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
     + SequenceFeatureEncoder.MAX_SPARSE_LEN
@@ -268,8 +285,7 @@ def packed_sequence_size(prog_len: int, cand_len: int) -> int:
 def _candidate_mask_offset(prog_len: int, cand_len: int) -> int:
     return (
         PACKED_FIXED_SIZE
-        + int(prog_len)
-        * (len(SequenceFeatureEncoder.PROG_DIMS) + SequenceFeatureEncoder.MELD_WIDTH + 1)
+        + int(prog_len) * (len(SequenceFeatureEncoder.PROG_DIMS) + SequenceFeatureEncoder.MELD_WIDTH + 1)
         + int(cand_len) * (SequenceFeatureEncoder.CAND_WIDTH + SequenceFeatureEncoder.MELD_WIDTH)
     )
 
@@ -322,6 +338,7 @@ def collate_sequence_features(features: list[dict[str, torch.Tensor]]) -> dict[s
         "sparse_melds",
         "sparse_meld_owners",
         "hand",
+        "visible_tile_counts",
         "numeric",
         "agari_overtakes",
         "sparse_mask",
@@ -391,6 +408,7 @@ def pack_sequence_features(features: list[dict[str, torch.Tensor]]) -> tuple[tor
         "sparse_melds",
         "sparse_meld_owners",
         "hand",
+        "visible_tile_counts",
         "numeric",
         "agari_overtakes",
         "sparse_mask",
