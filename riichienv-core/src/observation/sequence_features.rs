@@ -41,13 +41,22 @@ pub const MAX_HAND_LEN: usize = 14;
 #[allow(dead_code)]
 pub const HAND_PAD: [u16; 2] = [37, 2];
 
-/// Visible tile count tuple dimensions: (tile37, visible_count)
+/// Visible tile count tuple dimensions:
+/// (
+///   tile37, total_visible_count,
+///   self_hand_count, self_meld_count, self_discard_count,
+///   shimocha_meld_count, shimocha_discard_count,
+///   toimen_meld_count, toimen_discard_count,
+///   kamicha_meld_count, kamicha_discard_count
+/// )
 #[allow(dead_code)]
-pub const VISIBLE_TILE_COUNT_DIMS: [u16; 2] = [37, 5];
+pub const VISIBLE_TILE_COUNT_DIMS: [u16; 11] = [37, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5];
 #[allow(dead_code)]
 pub const VISIBLE_TILE_COUNT_TOKENS: usize = 37;
 #[allow(dead_code)]
-pub const VISIBLE_TILE_COUNT_WIDTH: usize = 2;
+pub const VISIBLE_TILE_COUNT_WIDTH: usize = 11;
+#[allow(dead_code)]
+pub const VISIBLE_TILE_COUNT_BREAKDOWN_FIELDS: usize = 9;
 
 /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
 #[allow(dead_code)]
@@ -193,6 +202,12 @@ fn count_meld_visible_tiles(counts: &mut [u16; VISIBLE_TILE_COUNT_TOKENS], meld:
         if called_idx == Some(idx) {
             continue;
         }
+        increment_visible_tile37_count(counts, tile as u32);
+    }
+}
+
+fn count_meld_all_tiles(counts: &mut [u16; VISIBLE_TILE_COUNT_TOKENS], meld: &Meld) {
+    for &tile in &meld.tiles {
         increment_visible_tile37_count(counts, tile as u32);
     }
 }
@@ -693,17 +708,58 @@ impl Observation {
         counts
     }
 
-    /// Encode visible tile counts as fixed 37 `(tile37, visible_count)` rows.
+    fn visible_tile37_breakdown_counts(
+        &self,
+    ) -> [[u16; VISIBLE_TILE_COUNT_TOKENS]; VISIBLE_TILE_COUNT_BREAKDOWN_FIELDS] {
+        let mut counts = [[0u16; VISIBLE_TILE_COUNT_TOKENS]; VISIBLE_TILE_COUNT_BREAKDOWN_FIELDS];
+
+        for &tile in &self.hands[self.player_id as usize] {
+            increment_visible_tile37_count(&mut counts[0], tile);
+        }
+
+        for (owner_rel, &abs_idx) in self.rel_order().iter().enumerate() {
+            let meld_field = if owner_rel == 0 { 1 } else { 1 + owner_rel * 2 };
+            let discard_field = if owner_rel == 0 { 2 } else { meld_field + 1 };
+
+            for meld in &self.melds[abs_idx] {
+                count_meld_all_tiles(&mut counts[meld_field], meld);
+            }
+            for &tile in &self.discards[abs_idx] {
+                increment_visible_tile37_count(&mut counts[discard_field], tile);
+            }
+        }
+
+        counts
+    }
+
+    /// Encode visible tile counts as fixed 37 rows.
     ///
-    /// Counts include the observing player's hand, all visible meld tiles, all
-    /// discards, and currently visible dora indicators. Claimed tiles are counted
-    /// from the discard river and skipped once inside their meld to avoid double
-    /// counting the same visible tile.
+    /// Each row is:
+    /// `(tile37, total_visible_count, self_hand_count, self_meld_count,
+    /// self_discard_count, shimocha_meld_count, shimocha_discard_count,
+    /// toimen_meld_count, toimen_discard_count, kamicha_meld_count,
+    /// kamicha_discard_count)`.
+    ///
+    /// The total count includes the observing player's hand, all visible meld
+    /// tiles, all discards, and currently visible dora indicators. Claimed tiles
+    /// are counted from the discard river and skipped once inside their meld to
+    /// avoid double counting the same visible physical tile. The per-meld
+    /// breakdown fields count all tiles in each meld, including the called tile
+    /// and closed kan tiles.
     pub fn encode_seq_visible_tile_counts(&self) -> Vec<[u16; VISIBLE_TILE_COUNT_WIDTH]> {
-        self.visible_tile37_counts()
-            .into_iter()
-            .enumerate()
-            .map(|(tile37, count)| [tile37 as u16, count.min(4)])
+        let total_counts = self.visible_tile37_counts();
+        let breakdown_counts = self.visible_tile37_breakdown_counts();
+
+        (0..VISIBLE_TILE_COUNT_TOKENS)
+            .map(|tile37| {
+                let mut row = [0u16; VISIBLE_TILE_COUNT_WIDTH];
+                row[0] = tile37 as u16;
+                row[1] = total_counts[tile37].min(4);
+                for field_idx in 0..VISIBLE_TILE_COUNT_BREAKDOWN_FIELDS {
+                    row[2 + field_idx] = breakdown_counts[field_idx][tile37].min(4);
+                }
+                row
+            })
             .collect()
     }
 
@@ -1336,7 +1392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_seq_visible_tile_counts_uses_tile37_and_skips_called_meld_tile() {
+    fn test_encode_seq_visible_tile_counts_includes_breakdown_fields() {
         let obs = Observation::new(
             0,
             [vec![16, 17], vec![], vec![], vec![]],
@@ -1372,11 +1428,14 @@ mod tests {
         for (tile37, row) in counts.iter().enumerate() {
             assert_eq!(row[0], tile37 as u16);
         }
-        assert_eq!(counts[0], [0, 1]); // red 5m in self hand
-        assert_eq!(counts[1], [1, 3]); // discard + two consumed pon tiles; called tile is skipped in meld
-        assert_eq!(counts[2], [2, 1]); // visible dora indicator 2m
-        assert_eq!(counts[5], [5, 1]); // normal 5m in self hand
+        assert_eq!(counts[0], [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]); // red 5m in self hand
+        assert_eq!(counts[1], [1, 3, 0, 0, 0, 3, 0, 0, 1, 0, 0]); // called tile included in meld field
+        assert_eq!(counts[2], [2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // visible dora indicator 2m
+        assert_eq!(counts[5], [5, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]); // normal 5m in self hand
         assert_eq!(counts.iter().map(|row| row[1]).sum::<u16>(), 6);
+        assert_eq!(counts.iter().map(|row| row[2]).sum::<u16>(), 2);
+        assert_eq!(counts.iter().map(|row| row[5]).sum::<u16>(), 3);
+        assert_eq!(counts.iter().map(|row| row[8]).sum::<u16>(), 1);
     }
 
     #[test]

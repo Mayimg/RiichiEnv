@@ -1418,9 +1418,9 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode visible tile counts as 37 × 2 u16 tuples.
+    /// Encode visible tile counts as 37 × 11 u16 tuples.
     ///
-    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(37, 2)`.
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(37, 11)`.
     #[pyo3(name = "encode_seq_visible_tile_counts")]
     pub fn encode_seq_visible_tile_counts_py<'py>(
         &self,

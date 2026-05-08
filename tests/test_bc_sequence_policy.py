@@ -100,13 +100,14 @@ def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int 
         [[0, 0, 0, 0, 0], [1, 0, 0, 0, 0], [2, 0, 0, 0, 0], [3, 0, 0, 0, 0]],
         dtype=torch.long,
     )
-    visible_tile_counts = torch.stack(
-        [
-            torch.arange(SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS, dtype=torch.long),
-            torch.zeros(SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS, dtype=torch.long),
-        ],
-        dim=1,
+    visible_tile_counts = torch.zeros(
+        (
+            SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS,
+            SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH,
+        ),
+        dtype=torch.long,
     )
+    visible_tile_counts[:, 0] = torch.arange(SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS, dtype=torch.long)
     batch = {
         "sparse": torch.full((batch_size, SequenceFeatureEncoder.MAX_SPARSE_LEN), SequenceFeatureEncoder.SPARSE_PAD),
         "dealer": torch.zeros(batch_size, dtype=torch.long),
@@ -502,11 +503,26 @@ def test_sequence_feature_encoder_includes_visible_tile_counts_by_tile37():
         SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH,
     )
     assert counts[:, 0].tolist() == list(range(SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS))
-    assert counts[0].tolist() == [0, 1]  # red 5m in self hand
-    assert counts[1].tolist() == [1, 3]  # discard + two consumed pon tiles; called tile skipped in meld
-    assert counts[2].tolist() == [2, 1]  # visible dora indicator 2m
-    assert counts[5].tolist() == [5, 1]  # normal 5m in self hand
+    assert counts[0].tolist() == [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  # red 5m in self hand
+    assert counts[1].tolist() == [
+        1,
+        3,
+        0,
+        0,
+        0,
+        3,
+        0,
+        0,
+        1,
+        0,
+        0,
+    ]  # discard + two consumed pon tiles in total; called tile included in shimocha meld
+    assert counts[2].tolist() == [2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # visible dora indicator 2m
+    assert counts[5].tolist() == [5, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]  # normal 5m in self hand
     assert counts[:, 1].sum().item() == 6
+    assert counts[:, 2].sum().item() == 2
+    assert counts[:, 5].sum().item() == 3
+    assert counts[:, 8].sum().item() == 1
 
 
 def test_sequence_progression_includes_dora_reveals():
@@ -966,7 +982,10 @@ def test_transformer_visible_tile_count_embedding_uses_shared_tile_table():
         round_wind,
         model.relative_seat_embed,
     )
-    visible_counts = torch.tensor([[[0, 1], [5, 2], [36, 0]]], dtype=torch.long)
+    visible_counts = torch.zeros((1, 3, SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH), dtype=torch.long)
+    visible_counts[0, :, 0] = torch.tensor([0, 5, 36])
+    visible_counts[0, :, 1] = torch.tensor([1, 2, 0])
+    visible_counts[0, :, 2] = torch.tensor([1, 0, 0])
 
     table_emb = model._embed_visible_tile_counts(visible_counts, dora_tile34, tile37_table, dealer, round_wind)
     direct_emb = model._embed_visible_tile_counts(visible_counts, dora_tile34, None, dealer, round_wind)

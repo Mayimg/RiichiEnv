@@ -16,7 +16,7 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
-| **Visible Tile Counts** | `(37, 2)` | int64 | Per-tile37 visible counts as `(tile37, visible_count)` tuples |
+| **Visible Tile Counts** | `(37, 11)` | int64 | Per-tile37 visible counts and zone breakdowns |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Agari Overtakes** | `(4, 96, 4)` | float32 | Pairwise rank-overtake flags for standard 4P win patterns |
 | **Progression** | `(P, 5)` | int64 | Action history and dora-reveal history as 5-tuple sequences |
@@ -28,7 +28,7 @@ Progression and candidate groups stay variable-length for a single observation a
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes visible tile-count tokens with the shared tile embedding plus a count embedding shared by all tile types, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens. Sinusoidal positional encoding is applied only to progression tokens, starting at position 0 for the first progression row.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes visible tile-count tokens with the shared tile embedding plus per-field count embeddings shared by all tile types, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens. Sinusoidal positional encoding is applied only to progression tokens, starting at position 0 for the first progression row.
 
 The feature vocabulary and external MJAI log format are independent of the projection implementation described here. The optimized transformer follows the encoded feature groups and vocabularies listed in this document, but evaluates several projections with fixed-shape table/gather operations to reduce small CUDA kernels and GPU-to-CPU synchronization points.
 
@@ -73,7 +73,7 @@ The shared tile embedding is applied to single-tile fields and to the tile slots
 | Feature group | Field / token range | Uses shared tile embedding |
 |---------------|---------------------|----------------------------|
 | Hand | `tile37` | Yes |
-| Visible Tile Counts | `tile37` | Yes, with an extra shared count embedding |
+| Visible Tile Counts | `tile37` | Yes, with extra per-field shared count embeddings |
 | Sparse | dora-indicator tokens (`75-259`) | Yes, with an extra dora-slot embedding |
 | Progression | discard and dora-reveal type ranges | Yes |
 | Candidates | discard type range | Yes |
@@ -282,12 +282,37 @@ hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable len
 
 **Fixed 37 tuple tokens**
 
-Each tile37 id is encoded as a 2-tuple `(tile37, visible_count)`.
+Each tile37 id is encoded as an 11-tuple:
+
+```text
+(
+  tile37,
+  total_visible_count,
+  self_hand_count,
+  self_meld_count,
+  self_discard_count,
+  shimocha_meld_count,
+  shimocha_discard_count,
+  toimen_meld_count,
+  toimen_discard_count,
+  kamicha_meld_count,
+  kamicha_discard_count
+)
+```
 
 | Field | Vocab | Values |
 |-------|-------|--------|
 | tile37 | 37 | 0-36 = kan37 tile |
-| visible_count | 5 | 0-4 visible copies, clipped at 4 |
+| total_visible_count | 5 | 0-4 visible copies, clipped at 4 |
+| self_hand_count | 5 | 0-4 copies in the observing player's hand, clipped at 4 |
+| self_meld_count | 5 | 0-4 copies in the observing player's melds, clipped at 4 |
+| self_discard_count | 5 | 0-4 copies in the observing player's discards, clipped at 4 |
+| shimocha_meld_count | 5 | 0-4 copies in shimocha's melds, clipped at 4 |
+| shimocha_discard_count | 5 | 0-4 copies in shimocha's discards, clipped at 4 |
+| toimen_meld_count | 5 | 0-4 copies in toimen's melds, clipped at 4 |
+| toimen_discard_count | 5 | 0-4 copies in toimen's discards, clipped at 4 |
+| kamicha_meld_count | 5 | 0-4 copies in kamicha's melds, clipped at 4 |
+| kamicha_discard_count | 5 | 0-4 copies in kamicha's discards, clipped at 4 |
 
 Rows are always ordered by `tile37 = 0..36`. Counts are tile37-specific, so red fives are counted separately from normal fives. For example, red 5m (`tile37=0`) has its own count and normal 5m (`tile37=5`) has a separate count; no combined "all 5m" count is included.
 
@@ -298,12 +323,12 @@ Visible counts include:
 - all players' discards
 - currently visible dora indicators
 
-For chi/pon/daiminkan/kakan, the claimed tile is counted from the discard river and skipped once inside the meld row, so a consumed/called tile is not double-counted. For kakan, the added tile is counted as visible. Dora indicators count only the indicator tiles currently revealed in the observation, not hidden kan-dora or ura-dora indicators.
+For `total_visible_count`, chi/pon/daiminkan/kakan claimed tiles are counted from the discard river and skipped once inside the meld row, so a consumed/called tile is not double-counted. For the per-seat meld breakdown fields, all tiles in the meld are counted, including the called tile and closed-kan tiles. Therefore a called tile can contribute both to the caller's meld field and to the discarder-relative discard field. Dora indicators contribute only to `total_visible_count`; they do not contribute to any per-seat breakdown field. Dora indicators count only the indicator tiles currently revealed in the observation, not hidden kan-dora or ura-dora indicators.
 
-The transformer embeds each row by combining the shared tile embedding for `tile37` with a shared `visible_count` embedding:
+The transformer embeds each row by combining the shared tile embedding for `tile37` with one count embedding per count field. Each count embedding table is shared across all tile types inside that field, but different count fields use different embedding tables:
 
 ```text
-shared tile embedding + count embedding -> field-wise projected component sum -> LayerNorm
+shared tile embedding + per-field count embeddings -> field-wise projected component sum -> LayerNorm
 ```
 
 External MJAI logs are unchanged; this is an internal observation feature derived from the current visible state.
@@ -311,14 +336,14 @@ External MJAI logs are unchanged; this is an internal observation feature derive
 ### Rust API
 
 ```rust
-obs.encode_seq_visible_tile_counts() -> Vec<[u16; 2]>  // length 37
+obs.encode_seq_visible_tile_counts() -> Vec<[u16; 11]>  // length 37
 ```
 
 ### Python API (raw)
 
 ```python
 count_bytes = obs.encode_seq_visible_tile_counts()
-visible_counts = np.frombuffer(count_bytes, dtype=np.uint16).reshape(37, 2)
+visible_counts = np.frombuffer(count_bytes, dtype=np.uint16).reshape(37, 11)
 ```
 
 ## 3. Numeric Features
@@ -538,7 +563,7 @@ for pid, obs in obs_dict.items():
     # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
-    # features["visible_tile_counts"] -- (37, 2) int64, rows (tile37, visible_count)
+    # features["visible_tile_counts"] -- (37, 11) int64, rows are tile37 plus count fields
     # features["numeric"]     -- (6,) float32
     # features["agari_overtakes"] -- (1536,) float32, reshapeable to (4, 96, 4)
     # features["progression"] -- (P, 5) int64
@@ -566,9 +591,9 @@ SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10
 SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS  # 5
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
-SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS    # (37, 5)
+SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS    # (37, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5)
 SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS  # 37
-SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH   # 2
+SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH   # 11
 SequenceFeatureEncoder.NUM_NUMERIC         # 6
 SequenceFeatureEncoder.AGARI_OVERTAKE_DIMS # (4, 96, 4)
 SequenceFeatureEncoder.AGARI_OVERTAKE_DIM  # 1536

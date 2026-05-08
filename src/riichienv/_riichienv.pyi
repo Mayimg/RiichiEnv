@@ -500,10 +500,10 @@ class Observation:
     def encode_seq_visible_tile_counts(self) -> bytes:
         """Encode visible tile counts for all tile37 ids.
 
-        Shape: ``(37, 2)`` / dtype: ``uint16``.
+        Shape: ``(37, 11)`` / dtype: ``uint16``.
 
-        Each row is ``(tile37, visible_count)``. Counts include self hand,
-        visible meld tiles, discards, and visible dora indicators.
+        Each row contains ``tile37``, total visible count, and per-zone counts
+        for self hand, self melds/discards, and each opponent's melds/discards.
         """
         ...
     def encode_seq_numeric(self) -> bytes:

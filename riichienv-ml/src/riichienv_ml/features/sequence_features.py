@@ -22,7 +22,7 @@ class SequenceFeatureEncoder:
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
-        visible_tile_counts: (37, 2)     int64   fixed tile37 visible-count tuples
+        visible_tile_counts: (37, 11)    int64   fixed tile37 visible-count tuples
         numeric:     (NUM_NUMERIC,)      float32
         agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
                          reshapeable to (AGARI_OVERTAKE_TOKENS, AGARI_OVERTAKE_TOKEN_DIM)
@@ -59,7 +59,7 @@ class SequenceFeatureEncoder:
     HAND_PAD = (37, 2)
     MAX_HAND_LEN = 14
 
-    VISIBLE_TILE_COUNT_DIMS = (37, 5)
+    VISIBLE_TILE_COUNT_DIMS = (37, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5)
     VISIBLE_TILE_COUNT_TOKENS = 37
     VISIBLE_TILE_COUNT_WIDTH = len(VISIBLE_TILE_COUNT_DIMS)
 

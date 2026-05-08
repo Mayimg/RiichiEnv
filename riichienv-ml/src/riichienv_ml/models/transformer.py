@@ -13,7 +13,7 @@ Agari-overtake features are reshaped into four winner-relative-seat tokens
 with a shared projection and the shared relative-seat embedding.
 
 Visible tile-count tokens embed each tile37 id through the shared tile embedding
-and combine it with a count embedding shared by all tile types.
+and combine it with per-field count embeddings shared by all tile types.
 
 Output: (logits, value) — same interface as ActorCriticNetwork.
 
@@ -672,7 +672,7 @@ class TransformerActorCritic(nn.Module):
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 260
         player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,13,13)
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
-        visible_tile_count_dims: tuple = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS,  # (37,5)
+        visible_tile_count_dims: tuple = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS,  # (37,5,...)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,80,3,3,5)
         cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (47,3,5)
         **kwargs,
@@ -733,8 +733,10 @@ class TransformerActorCritic(nn.Module):
         self.hand_draw_state_embed = nn.Embedding(hand_dims[1], d_other)
         self.hand_proj = SplitLinearLayerNorm(hand_sub_dims, d_model)
 
-        self.visible_tile_count_embed = nn.Embedding(self.visible_tile_count_dims[1], d_other)
-        self.visible_tile_count_proj = SplitLinearLayerNorm([d_type, d_other], d_model)
+        self.visible_tile_count_embeds = nn.ModuleList(
+            nn.Embedding(dim, d_other) for dim in self.visible_tile_count_dims[1:]
+        )
+        self.visible_tile_count_proj = SplitLinearLayerNorm([d_type] + [d_other] * (self._VCW - 1), d_model)
 
         self.numeric_proj = nn.Sequential(
             nn.Linear(self._N, d_model),
@@ -1164,10 +1166,6 @@ class TransformerActorCritic(nn.Module):
         round_wind: torch.Tensor | None = None,
     ) -> torch.Tensor:
         tile37 = visible_tile_counts[:, :, 0]
-        counts = visible_tile_counts[:, :, 1].clamp(
-            min=0,
-            max=self.visible_tile_count_dims[1] - 1,
-        )
         if tile37_table is None:
             tile_emb = self.tile_embed.embed_tile37(
                 tile37,
@@ -1181,11 +1179,17 @@ class TransformerActorCritic(nn.Module):
         raw = self.visible_tile_count_proj.project_part(
             0,
             tile_emb,
-        ) + self.visible_tile_count_proj.project_embedding(
-            1,
-            self.visible_tile_count_embed,
-            counts,
         )
+        for field_idx, count_embed in enumerate(self.visible_tile_count_embeds, start=1):
+            counts = visible_tile_counts[:, :, field_idx].clamp(
+                min=0,
+                max=self.visible_tile_count_dims[field_idx] - 1,
+            )
+            raw = raw + self.visible_tile_count_proj.project_embedding(
+                field_idx,
+                count_embed,
+                counts,
+            )
         return self.visible_tile_count_proj.finish(raw)
 
     def _embed_progression(
@@ -1418,7 +1422,7 @@ class TransformerActorCritic(nn.Module):
         cls = self.cls_token.expand(batch_size, -1, -1)
 
         # Concatenate: [CLS, sparse(S), dealer(1), player_info(4), sparse_meld(SM), hand(H),
-        # visible_count(37), numeric(1), agari_overtake(4), prog(P), cand(C)]
+        # visible_counts(37), numeric(1), agari_overtake(4), prog(P), cand(C)]
         tokens = torch.cat(
             [
                 cls,
