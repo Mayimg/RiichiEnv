@@ -16,6 +16,7 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
+| **Shanten** | `(3,)` | int64 | Self shanten fields for normal, chiitoitsu, and kokushi forms |
 | **Visible Tile Counts** | `(37, 2)` | int64 | Per-tile37 visible counts as `(tile37, visible_count)` tuples |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Agari Overtakes** | `(4, 96, 4)` | float32 | Pairwise rank-overtake flags for standard 4P win patterns |
@@ -28,7 +29,7 @@ Progression and candidate groups stay variable-length for a single observation a
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes visible tile-count tokens with the shared tile embedding plus a count embedding shared by all tile types, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens. Sinusoidal positional encoding is applied only to progression tokens, starting at position 0 for the first progression row.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes visible tile-count tokens with the shared tile embedding plus a count embedding shared by all tile types, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, embeds one self-shanten token from three form-specific fields, and reshapes agari-overtake features into four winner-relative-seat tokens. Sinusoidal positional encoding is applied only to progression tokens, starting at position 0 for the first progression row.
 
 The feature vocabulary and external MJAI log format are independent of the projection implementation described here. The optimized transformer follows the encoded feature groups and vocabularies listed in this document, but evaluates several projections with fixed-shape table/gather operations to reduce small CUDA kernels and GPU-to-CPU synchronization points.
 
@@ -278,7 +279,44 @@ hand_bytes = obs.encode_seq_hand()
 hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable length
 ```
 
-## 2a. Visible Tile Count Features
+## 2a. Shanten Features
+
+**Fixed one tuple token**
+
+The observing player's current shanten is encoded as a single 3-field token:
+
+```text
+(normal, chiitoitsu, kokushi)
+```
+
+Each field uses categorical values, not normalized floats:
+
+| Encoded value | Meaning |
+|---------------|---------|
+| 0 | raw shanten `-1` (agari) |
+| 1 | raw shanten `0` (tenpai) |
+| 2-6 | raw shanten `1-5` |
+| 7 | raw shanten `6` or greater, clipped |
+| 8 | N/A for special hands only |
+
+The normal field has vocabulary size 8 (`0..7`). The chiitoitsu and kokushi fields have vocabulary size 9 (`0..8`) and use `8` when the current self hand contains any call or kan, because those special forms can no longer be completed. The transformer uses separate embeddings for normal, chiitoitsu, and kokushi valid values; the N/A embedding is shared by chiitoitsu and kokushi.
+
+External MJAI logs are unchanged. This is an internal observation feature derived from the current self hand and meld state.
+
+### Rust API
+
+```rust
+obs.encode_seq_shanten() -> [u16; 3]
+```
+
+### Python API (raw)
+
+```python
+shanten_bytes = obs.encode_seq_shanten()
+shanten = np.frombuffer(shanten_bytes, dtype=np.uint16)  # shape (3,)
+```
+
+## 2b. Visible Tile Count Features
 
 **Fixed 37 tuple tokens**
 
@@ -538,6 +576,7 @@ for pid, obs in obs_dict.items():
     # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (14, 2) int64, padded with (37, 2)
+    # features["shanten"]     -- (3,) int64, fields (normal, chiitoitsu, kokushi)
     # features["visible_tile_counts"] -- (37, 2) int64, rows (tile37, visible_count)
     # features["numeric"]     -- (6,) float32
     # features["agari_overtakes"] -- (1536,) float32, reshapeable to (4, 96, 4)
@@ -566,6 +605,9 @@ SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10
 SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS  # 5
 SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
 SequenceFeatureEncoder.MAX_HAND_LEN       # 14
+SequenceFeatureEncoder.SHANTEN_DIMS       # (8, 9, 9)
+SequenceFeatureEncoder.SHANTEN_WIDTH      # 3
+SequenceFeatureEncoder.SHANTEN_NA         # 8
 SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS    # (37, 5)
 SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS  # 37
 SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH   # 2

@@ -497,6 +497,14 @@ class Observation:
         optional drawn tile last.
         """
         ...
+    def encode_seq_shanten(self) -> bytes:
+        """Encode self shanten as one 3-field token.
+
+        Shape: ``(3,)`` / dtype: ``uint16``. Fields are
+        ``(normal, chiitoitsu, kokushi)``. Values ``0..7`` represent raw
+        shanten ``-1..6`` with +1 offset; value ``8`` is N/A for special hands.
+        """
+        ...
     def encode_seq_visible_tile_counts(self) -> bytes:
         """Encode visible tile counts for all tile37 ids.
 

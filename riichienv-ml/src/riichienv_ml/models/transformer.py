@@ -13,7 +13,9 @@ Agari-overtake features are reshaped into four winner-relative-seat tokens
 with a shared projection and the shared relative-seat embedding.
 
 Visible tile-count tokens embed each tile37 id through the shared tile embedding
-and combine it with a count embedding shared by all tile types.
+and combine it with a count embedding shared by all tile types. The self
+shanten token embeds normal, chiitoitsu, and kokushi shanten fields separately,
+with a shared N/A embedding for impossible special-hand fields.
 
 Output: (logits, value) — same interface as ActorCriticNetwork.
 
@@ -103,6 +105,8 @@ _SEAT_PAD_OR_NA = 4
 _ROUND_WIND_FLAG_YES = 0
 _ROUND_WIND_FLAG_NO = 1
 _ROUND_WIND_FLAG_PAD = 2
+
+_SHANTEN_NA = SequenceFeatureEncoder.SHANTEN_NA
 
 
 class SplitLinearLayerNorm(nn.Module):
@@ -672,6 +676,7 @@ class TransformerActorCritic(nn.Module):
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 260
         player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,13,13)
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
+        shanten_dims: tuple = SequenceFeatureEncoder.SHANTEN_DIMS,  # (8,9,9)
         visible_tile_count_dims: tuple = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS,  # (37,5)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,80,3,3,5)
         cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (47,3,5)
@@ -696,6 +701,7 @@ class TransformerActorCritic(nn.Module):
         self._SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
         self._MW = SequenceFeatureEncoder.MELD_WIDTH
         self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
+        self._SHW = SequenceFeatureEncoder.SHANTEN_WIDTH
         self._VC = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS
         self._VCW = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH
         self._N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
@@ -707,6 +713,11 @@ class TransformerActorCritic(nn.Module):
         if len(player_info_dims) != self._PIW:
             raise ValueError(f"player_info_dims must have {self._PIW} entries")
         self.player_info_dims = tuple(int(v) for v in player_info_dims)
+        if len(shanten_dims) != self._SHW:
+            raise ValueError(f"shanten_dims must have {self._SHW} entries")
+        self.shanten_dims = tuple(int(v) for v in shanten_dims)
+        if self.shanten_dims != SequenceFeatureEncoder.SHANTEN_DIMS:
+            raise ValueError(f"shanten_dims must be {SequenceFeatureEncoder.SHANTEN_DIMS}")
         if len(visible_tile_count_dims) != self._VCW:
             raise ValueError(f"visible_tile_count_dims must have {self._VCW} entries")
         self.visible_tile_count_dims = tuple(int(v) for v in visible_tile_count_dims)
@@ -732,6 +743,12 @@ class TransformerActorCritic(nn.Module):
         hand_sub_dims = [d_type, d_other]
         self.hand_draw_state_embed = nn.Embedding(hand_dims[1], d_other)
         self.hand_proj = SplitLinearLayerNorm(hand_sub_dims, d_model)
+
+        self.normal_shanten_embed = nn.Embedding(self.shanten_dims[0], d_other)
+        self.chiitoi_shanten_embed = nn.Embedding(self.shanten_dims[0], d_other)
+        self.kokushi_shanten_embed = nn.Embedding(self.shanten_dims[0], d_other)
+        self.special_shanten_na_embed = nn.Embedding(1, d_other)
+        self.shanten_proj = SplitLinearLayerNorm([d_other] * self._SHW, d_model)
 
         self.visible_tile_count_embed = nn.Embedding(self.visible_tile_count_dims[1], d_other)
         self.visible_tile_count_proj = SplitLinearLayerNorm([d_type, d_other], d_model)
@@ -766,8 +783,9 @@ class TransformerActorCritic(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.normal_(self.cls_token, std=0.02)
 
-        # --- Segment embeddings (8 groups: sparse / player / hand / visible-count / numeric / agari / prog / cand) ---
-        self.segment_embed = nn.Embedding(8, d_model)
+        # --- Segment embeddings ---
+        # Groups: sparse / player / hand / shanten / visible-count / numeric / agari / prog / cand.
+        self.segment_embed = nn.Embedding(9, d_model)
 
         # --- Progression-only positional encoding (sinusoidal) ---
         inv_freq = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
@@ -845,11 +863,12 @@ class TransformerActorCritic(nn.Module):
                 torch.full((self._PI,), 1, dtype=torch.long, device=device),
                 torch.zeros(self._SM, dtype=torch.long, device=device),
                 torch.full((self._H,), 2, dtype=torch.long, device=device),
-                torch.full((self._VC,), 3, dtype=torch.long, device=device),
-                torch.full((1,), 4, dtype=torch.long, device=device),
-                torch.full((self._AT,), 5, dtype=torch.long, device=device),
-                torch.full((prog_len,), 6, dtype=torch.long, device=device),
-                torch.full((cand_len,), 7, dtype=torch.long, device=device),
+                torch.full((1,), 3, dtype=torch.long, device=device),
+                torch.full((self._VC,), 4, dtype=torch.long, device=device),
+                torch.full((1,), 5, dtype=torch.long, device=device),
+                torch.full((self._AT,), 6, dtype=torch.long, device=device),
+                torch.full((prog_len,), 7, dtype=torch.long, device=device),
+                torch.full((cand_len,), 8, dtype=torch.long, device=device),
             ],
             dim=0,
         ).unsqueeze(0)
@@ -897,6 +916,7 @@ class TransformerActorCritic(nn.Module):
         sparse_melds = take((self._SM, self._MW), "long")
         sparse_meld_owners = take((self._SM,), "long")
         hand = take((self._H, 2), "long")
+        shanten = take((self._SHW,), "long")
         visible_tile_counts = take((self._VC, self._VCW), "long")
         numeric = take((self._N,), "float")
         agari_overtakes = take((self._A,), "float")
@@ -919,6 +939,7 @@ class TransformerActorCritic(nn.Module):
             sparse_melds,
             sparse_meld_owners,
             hand,
+            shanten,
             visible_tile_counts,
             numeric,
             agari_overtakes,
@@ -946,6 +967,7 @@ class TransformerActorCritic(nn.Module):
             x["sparse_melds"].long(),
             x["sparse_meld_owners"].long(),
             x["hand"].long(),
+            x["shanten"].long(),
             x["visible_tile_counts"].long(),
             x["numeric"].float(),
             x["agari_overtakes"].float(),
@@ -1155,6 +1177,28 @@ class TransformerActorCritic(nn.Module):
         )
         return self.hand_proj.finish(raw)
 
+    def _embed_special_shanten_field(self, values: torch.Tensor, embedding: nn.Embedding) -> torch.Tensor:
+        valid = embedding(values.clamp(min=0, max=self.shanten_dims[0] - 1))
+        na = self.special_shanten_na_embed(torch.zeros_like(values))
+        return torch.where((values == _SHANTEN_NA).unsqueeze(-1), na, valid)
+
+    def _embed_shanten(self, shanten: torch.Tensor) -> torch.Tensor:
+        normal = shanten[:, 0].clamp(min=0, max=self.shanten_dims[0] - 1)
+        chiitoi = shanten[:, 1].clamp(min=0, max=_SHANTEN_NA)
+        kokushi = shanten[:, 2].clamp(min=0, max=_SHANTEN_NA)
+        raw = (
+            self.shanten_proj.project_part(0, self.normal_shanten_embed(normal))
+            + self.shanten_proj.project_part(
+                1,
+                self._embed_special_shanten_field(chiitoi, self.chiitoi_shanten_embed),
+            )
+            + self.shanten_proj.project_part(
+                2,
+                self._embed_special_shanten_field(kokushi, self.kokushi_shanten_embed),
+            )
+        )
+        return self.shanten_proj.finish(raw).unsqueeze(1)
+
     def _embed_visible_tile_counts(
         self,
         visible_tile_counts: torch.Tensor,
@@ -1307,6 +1351,7 @@ class TransformerActorCritic(nn.Module):
             sparse_melds,
             sparse_meld_owners,
             hand,
+            shanten,
             visible_tile_counts,
             numeric,
             agari_overtakes,
@@ -1372,6 +1417,9 @@ class TransformerActorCritic(nn.Module):
         # Embed hand tuples: (B, H, d)
         hand_emb = self._embed_hand(hand, dora_tile34, tile37_table, dealer, round_wind)
 
+        # Embed current self shanten token: (B, 1, d)
+        shanten_emb = self._embed_shanten(shanten)
+
         # Embed visible tile-count tokens: (B, 37, d)
         visible_tile_count_emb = self._embed_visible_tile_counts(
             visible_tile_counts,
@@ -1418,7 +1466,7 @@ class TransformerActorCritic(nn.Module):
         cls = self.cls_token.expand(batch_size, -1, -1)
 
         # Concatenate: [CLS, sparse(S), dealer(1), player_info(4), sparse_meld(SM), hand(H),
-        # visible_count(37), numeric(1), agari_overtake(4), prog(P), cand(C)]
+        # shanten(1), visible_count(37), numeric(1), agari_overtake(4), prog(P), cand(C)]
         tokens = torch.cat(
             [
                 cls,
@@ -1427,6 +1475,7 @@ class TransformerActorCritic(nn.Module):
                 player_info_emb,
                 sparse_meld_emb,
                 hand_emb,
+                shanten_emb,
                 visible_tile_count_emb,
                 numeric_emb,
                 agari_overtake_emb,
@@ -1444,6 +1493,7 @@ class TransformerActorCritic(nn.Module):
         cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         player_info_valid = torch.zeros(batch_size, self._PI, dtype=torch.bool, device=device)
+        shanten_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         visible_tile_count_valid = torch.zeros(batch_size, self._VC, dtype=torch.bool, device=device)
         agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=device)
@@ -1455,6 +1505,7 @@ class TransformerActorCritic(nn.Module):
                 player_info_valid,  # player summaries are always valid
                 ~sparse_meld_mask,  # True where current visible meld is padding
                 ~hand_mask,  # True where hand is padding
+                shanten_valid,  # self shanten token is always valid
                 visible_tile_count_valid,  # visible tile-count tokens are always valid
                 numeric_valid,  # numeric is always valid
                 agari_overtake_valid,  # agari-overtake token is always valid
@@ -1471,7 +1522,19 @@ class TransformerActorCritic(nn.Module):
         # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
 
-        cand_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT + prog_len
+        cand_offset = (
+            1
+            + self._S
+            + self._D
+            + self._PI
+            + self._SM
+            + self._H
+            + 1
+            + self._VC
+            + 1
+            + self._AT
+            + prog_len
+        )
         cand_out = output[:, cand_offset : cand_offset + cand_len]  # (B, C, d_model)
 
         # Policy head

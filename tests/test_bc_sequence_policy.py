@@ -36,7 +36,7 @@ from riichienv_ml.models.transformer import (
 )
 from riichienv_ml.utils import build_encoder
 
-from riichienv import Action, ActionType, Meld, MeldType, MjaiReplay, Observation
+from riichienv import Action, ActionType, Meld, MeldType, MjaiReplay, Observation, parse_hand
 
 
 class DummyEncoder:
@@ -126,6 +126,7 @@ def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int 
             SequenceFeatureEncoder.MAX_HAND_LEN,
             1,
         ),
+        "shanten": torch.zeros(batch_size, SequenceFeatureEncoder.SHANTEN_WIDTH, dtype=torch.long),
         "visible_tile_counts": visible_tile_counts.unsqueeze(0).expand(batch_size, -1, -1).clone(),
         "numeric": torch.zeros(batch_size, SequenceFeatureEncoder.NUM_NUMERIC),
         "agari_overtakes": torch.zeros(batch_size, SequenceFeatureEncoder.AGARI_OVERTAKE_DIM),
@@ -142,6 +143,32 @@ def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int 
     batch["sparse"][:, :3] = torch.tensor([1, 2, 74])
     batch["sparse_mask"][:, :3] = True
     return batch
+
+
+def _obs_with_self_hand(tiles: list[int], melds: list[Meld] | None = None) -> Observation:
+    return Observation(
+        0,
+        [tiles, [], [], []],
+        [melds or [], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+        None,
+        None,
+    )
 
 
 def test_behavior_cloning_dataset_yields_legal_action_labels(tmp_path):
@@ -318,6 +345,30 @@ def test_sequence_feature_encoder_factorizes_hand_draw_state():
     assert valid_hand.shape[1] == 2
     assert torch.count_nonzero(valid_hand[:, 1] == 1) == 1
     assert torch.count_nonzero(valid_hand[:, 1] == 0) == len(valid_hand) - 1
+
+
+def test_sequence_feature_encoder_includes_closed_shanten_components():
+    tiles, _ = parse_hand("1199m1199p1199s1z")
+    features = SequenceFeatureEncoder().encode(_obs_with_self_hand(tiles))
+    shanten = features["shanten"]
+
+    assert shanten.shape == (SequenceFeatureEncoder.SHANTEN_WIDTH,)
+    assert shanten[1].item() == 1  # chiitoitsu tenpai: raw 0 shifted to 1
+    assert shanten[1].item() != SequenceFeatureEncoder.SHANTEN_NA
+    assert shanten[2].item() != SequenceFeatureEncoder.SHANTEN_NA
+
+
+def test_sequence_feature_encoder_marks_special_shanten_na_after_meld():
+    tiles, _ = parse_hand("123456789m1p")
+    meld = Meld(MeldType.Pon, [108, 109, 110], True, 1, 108)
+
+    features = SequenceFeatureEncoder().encode(_obs_with_self_hand(tiles, [meld]))
+
+    assert features["shanten"][0].item() < SequenceFeatureEncoder.SHANTEN_NA
+    assert features["shanten"][1:].tolist() == [
+        SequenceFeatureEncoder.SHANTEN_NA,
+        SequenceFeatureEncoder.SHANTEN_NA,
+    ]
 
 
 def test_sequence_numeric_features_use_current_normalized_scores_only():

@@ -238,6 +238,14 @@ pub fn calc_shanten_from_counts(tehai: &[u8; TILE_MAX], tehai_len_div3: u8) -> i
     }
 }
 
+pub fn calc_shanten_components_from_counts(tehai: &[u8; TILE_MAX], tehai_len_div3: u8) -> [i8; 3] {
+    [
+        calc_normal(tehai, tehai_len_div3),
+        calc_chitoi(tehai),
+        calc_kokushi(tehai),
+    ]
+}
+
 /// Valid tile types for 3-player mahjong (sanma): 1m, 9m, 1-9p, 1-9s, 7 honor tiles.
 /// Excludes 2m-8m (tile types 1-7) which don't exist in sanma.
 #[cfg(feature = "python")]
@@ -258,6 +266,19 @@ pub fn calculate_shanten(hand_tiles: &[u32]) -> i32 {
     let num_tiles: u8 = tile_counts.iter().sum();
     let len_div3 = num_tiles / 3;
     calc_shanten_from_counts(&tile_counts, len_div3) as i32
+}
+
+pub fn calculate_shanten_components(hand_tiles: &[u32]) -> [i32; 3] {
+    let mut tile_counts = [0u8; TILE_MAX];
+    for &tile in hand_tiles {
+        let tile_type = (tile / 4) as usize;
+        if tile_type < TILE_MAX {
+            tile_counts[tile_type] += 1;
+        }
+    }
+    let num_tiles: u8 = tile_counts.iter().sum();
+    let len_div3 = num_tiles / 3;
+    calc_shanten_components_from_counts(&tile_counts, len_div3).map(i32::from)
 }
 
 /// Calculate effective tiles (tiles that reduce shanten when drawn)

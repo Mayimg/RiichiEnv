@@ -1418,6 +1418,22 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
+    /// Encode self shanten fields as one 3-field u16 token.
+    ///
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16)` returns
+    /// `(normal, chiitoitsu, kokushi)`.
+    #[pyo3(name = "encode_seq_shanten")]
+    pub fn encode_seq_shanten_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let shanten = self.encode_seq_shanten();
+        let byte_len = shanten.len() * std::mem::size_of::<u16>();
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(shanten.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
     /// Encode visible tile counts as 37 × 2 u16 tuples.
     ///
     /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(37, 2)`.

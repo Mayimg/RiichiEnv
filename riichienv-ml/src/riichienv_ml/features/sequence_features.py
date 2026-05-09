@@ -22,6 +22,7 @@ class SequenceFeatureEncoder:
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
+        shanten:     (SHANTEN_WIDTH,)    int64   current self shanten token fields
         visible_tile_counts: (37, 2)     int64   fixed tile37 visible-count tuples
         numeric:     (NUM_NUMERIC,)      float32
         agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
@@ -58,6 +59,10 @@ class SequenceFeatureEncoder:
     HAND_DIMS = (38, 3)
     HAND_PAD = (37, 2)
     MAX_HAND_LEN = 14
+
+    SHANTEN_DIMS = (8, 9, 9)
+    SHANTEN_WIDTH = len(SHANTEN_DIMS)
+    SHANTEN_NA = 8
 
     VISIBLE_TILE_COUNT_DIMS = (37, 5)
     VISIBLE_TILE_COUNT_TOKENS = 37
@@ -147,6 +152,13 @@ class SequenceFeatureEncoder:
             hand[:n_hand] = raw_hand[:n_hand]
         hand_mask = np.zeros(self.MAX_HAND_LEN, dtype=np.bool_)
         hand_mask[:n_hand] = True
+
+        # Current self shanten token fields: (normal, chiitoitsu, kokushi)
+        shanten_bytes = obs.encode_seq_shanten()
+        shanten = np.frombuffer(shanten_bytes, dtype=np.uint16).copy()
+        if shanten.shape[0] != self.SHANTEN_WIDTH:
+            raise ValueError(f"encode_seq_shanten returned {shanten.shape[0]} fields; expected {self.SHANTEN_WIDTH}")
+        shanten = shanten.astype(np.int64, copy=False)
 
         # Visible tile counts
         visible_count_bytes = obs.encode_seq_visible_tile_counts()
@@ -240,6 +252,7 @@ class SequenceFeatureEncoder:
             "sparse_melds": torch.from_numpy(sparse_melds),
             "sparse_meld_owners": torch.from_numpy(sparse_meld_owners),
             "hand": torch.from_numpy(hand),
+            "shanten": torch.from_numpy(shanten),
             "visible_tile_counts": torch.from_numpy(visible_tile_counts),
             "numeric": torch.from_numpy(numeric),
             "agari_overtakes": torch.from_numpy(agari_overtakes),
@@ -262,6 +275,7 @@ PACKED_FIXED_SIZE = (
     + SequenceFeatureEncoder.MAX_SPARSE_MELDS * SequenceFeatureEncoder.MELD_WIDTH
     + SequenceFeatureEncoder.MAX_SPARSE_MELDS
     + SequenceFeatureEncoder.MAX_HAND_LEN * len(SequenceFeatureEncoder.HAND_DIMS)
+    + SequenceFeatureEncoder.SHANTEN_WIDTH
     + SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS * SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH
     + SequenceFeatureEncoder.NUM_NUMERIC
     + SequenceFeatureEncoder.AGARI_OVERTAKE_DIM
@@ -338,6 +352,7 @@ def collate_sequence_features(features: list[dict[str, torch.Tensor]]) -> dict[s
         "sparse_melds",
         "sparse_meld_owners",
         "hand",
+        "shanten",
         "visible_tile_counts",
         "numeric",
         "agari_overtakes",
@@ -408,6 +423,7 @@ def pack_sequence_features(features: list[dict[str, torch.Tensor]]) -> tuple[tor
         "sparse_melds",
         "sparse_meld_owners",
         "hand",
+        "shanten",
         "visible_tile_counts",
         "numeric",
         "agari_overtakes",

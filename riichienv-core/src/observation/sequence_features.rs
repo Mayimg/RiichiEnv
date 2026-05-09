@@ -41,6 +41,18 @@ pub const MAX_HAND_LEN: usize = 14;
 #[allow(dead_code)]
 pub const HAND_PAD: [u16; 2] = [37, 2];
 
+/// Shanten tuple dimensions: (normal, chiitoitsu, kokushi).
+///
+/// Values 0-7 encode raw shanten -1..6, clipped at 6. Value 8 is N/A and is
+/// used for special hands that cannot be completed after a call or kan.
+#[allow(dead_code)]
+pub const SHANTEN_DIMS: [u16; 3] = [8, 9, 9];
+#[allow(dead_code)]
+pub const SHANTEN_FEATURE_WIDTH: usize = 3;
+#[allow(dead_code)]
+pub const SHANTEN_NA: u16 = 8;
+const SHANTEN_MAX: i32 = 6;
+
 /// Visible tile count tuple dimensions: (tile37, visible_count)
 #[allow(dead_code)]
 pub const VISIBLE_TILE_COUNT_DIMS: [u16; 2] = [37, 5];
@@ -670,6 +682,33 @@ impl Observation {
         hand
     }
 
+    fn encode_shanten_value(shanten: i32) -> u16 {
+        (shanten.clamp(-1, SHANTEN_MAX) + 1) as u16
+    }
+
+    /// Encode current self shanten as one three-field token.
+    ///
+    /// Fields are `(normal, chiitoitsu, kokushi)`. Values 0-7 represent
+    /// shanten -1..6 with +1 offset. Seven-pairs and kokushi use N/A when the
+    /// current hand already contains any call or kan.
+    pub fn encode_seq_shanten(&self) -> [u16; SHANTEN_FEATURE_WIDTH] {
+        let pid = self.player_id as usize;
+        let components = crate::shanten::calculate_shanten_components(&self.hands[pid]);
+        let special = if self.melds[pid].is_empty() {
+            [
+                Self::encode_shanten_value(components[1]),
+                Self::encode_shanten_value(components[2]),
+            ]
+        } else {
+            [SHANTEN_NA, SHANTEN_NA]
+        };
+        [
+            Self::encode_shanten_value(components[0]),
+            special[0],
+            special[1],
+        ]
+    }
+
     fn visible_tile37_counts(&self) -> [u16; VISIBLE_TILE_COUNT_TOKENS] {
         let mut counts = [0u16; VISIBLE_TILE_COUNT_TOKENS];
 
@@ -1121,6 +1160,32 @@ mod tests {
     use super::*;
     use crate::types::{Meld, MeldType};
 
+    fn observation_with_self_hand(hand: Vec<u8>, self_melds: Vec<Meld>) -> Observation {
+        Observation::new(
+            0,
+            [hand, vec![], vec![], vec![]],
+            [self_melds, vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false; 4],
+            vec![],
+            vec![],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+            None,
+            None,
+        )
+    }
+
     #[test]
     fn test_tile_id_to_kan37() {
         // Red fives
@@ -1174,6 +1239,29 @@ mod tests {
         assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
 
         assert_eq!(SPARSE_PAD as usize + 1, SPARSE_VOCAB_SIZE);
+    }
+
+    #[test]
+    fn test_encode_seq_shanten_offsets_closed_components() {
+        let hand = vec![0, 1, 32, 33, 36, 37, 68, 69, 72, 73, 104, 105, 108];
+        let obs = observation_with_self_hand(hand, vec![]);
+        let shanten = obs.encode_seq_shanten();
+
+        assert_eq!(shanten[1], 1); // chiitoitsu tenpai: raw 0 shifted to 1
+        assert_ne!(shanten[1], SHANTEN_NA);
+        assert_ne!(shanten[2], SHANTEN_NA);
+    }
+
+    #[test]
+    fn test_encode_seq_shanten_uses_na_for_special_hands_after_meld() {
+        let hand = vec![0, 4, 8, 12, 16, 20, 24, 28, 32, 36];
+        let meld = Meld::new(MeldType::Pon, vec![108, 109, 110], true, 1, Some(108));
+        let obs = observation_with_self_hand(hand, vec![meld]);
+        let shanten = obs.encode_seq_shanten();
+
+        assert!(shanten[0] < SHANTEN_NA);
+        assert_eq!(shanten[1], SHANTEN_NA);
+        assert_eq!(shanten[2], SHANTEN_NA);
     }
 
     #[test]
