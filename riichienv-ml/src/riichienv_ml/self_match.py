@@ -6,13 +6,15 @@ import gzip
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
 from riichienv import GameRule, MjaiReplay, RiichiEnv
-
-from riichienv_ml.agents import Agent
+from riichienv_ml.agents import Agent, PolicyDecision
 from riichienv_ml.config import SelfMatchConfig
+
+PolicyDecisionStep = tuple[int, int, list[PolicyDecision]]
 
 
 def _make_rule(rule_name: str) -> GameRule:
@@ -24,7 +26,11 @@ def _make_rule(rule_name: str) -> GameRule:
 
 
 class SelfMatchRunner:
+    _RESPONSE_SOURCE_TYPES = {"dahai", "kakan", "ankan"}
+
     def __init__(self, cfg: SelfMatchConfig):
+        if cfg.log_policy_meta and cfg.skip_mjai_logging:
+            raise ValueError("self_match.log_policy_meta requires skip_mjai_logging=false")
         self.cfg = cfg
         self.output_dir = Path(cfg.output_dir)
         self.summary_path = Path(cfg.summary_path) if cfg.summary_path else self.output_dir / "summary.json"
@@ -91,6 +97,96 @@ class SelfMatchRunner:
     def _validate_log(self, path: Path) -> None:
         MjaiReplay.from_jsonl(str(path), rule=self.cfg.game.replay_rule)
 
+    @staticmethod
+    def _event_matches_policy(event: dict[str, Any], decision: PolicyDecision) -> bool:
+        chosen = decision.meta.get("chosen_action", {}).get("mjai", {})
+        if event.get("type") != chosen.get("type"):
+            return False
+        if "actor" in chosen and event.get("actor") != chosen.get("actor"):
+            return event.get("type") == "ryukyoku"
+        if event.get("type") == "dahai" and chosen.get("pai") is not None:
+            return event.get("pai") == chosen.get("pai")
+        return True
+
+    @staticmethod
+    def _ensure_meta(event: dict[str, Any]) -> dict[str, Any]:
+        meta = event.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+            event["meta"] = meta
+        return meta
+
+    @staticmethod
+    def _decision_chosen_type(decision: PolicyDecision) -> str | None:
+        chosen = decision.meta.get("chosen_action", {}).get("mjai", {})
+        action_type = chosen.get("type")
+        return action_type if isinstance(action_type, str) else None
+
+    @classmethod
+    def _attach_policy_to_event(
+        cls,
+        event: dict[str, Any],
+        decision: PolicyDecision,
+    ) -> None:
+        meta = cls._ensure_meta(event)
+        meta["policy"] = decision.meta
+
+    @classmethod
+    def _attach_response_policies(
+        cls,
+        source_event: dict[str, Any],
+        decisions: list[PolicyDecision],
+    ) -> None:
+        response_decisions = [
+            decision.meta for decision in decisions
+            if decision.meta.get("response_decision")
+        ]
+        if not response_decisions:
+            return
+
+        meta = cls._ensure_meta(source_event)
+        meta.setdefault("response_policies", []).extend(response_decisions)
+
+    @classmethod
+    def _annotate_policy_log(
+        cls,
+        mjai_log: list[dict[str, Any]],
+        decision_steps: list[PolicyDecisionStep],
+    ) -> None:
+        last_response_source_idx: int | None = None
+
+        for start, end, decisions in decision_steps:
+            if any(decision.meta.get("response_decision") for decision in decisions):
+                if last_response_source_idx is not None:
+                    cls._attach_response_policies(mjai_log[last_response_source_idx], decisions)
+
+            step_start = max(0, min(start, len(mjai_log)))
+            step_end = max(step_start, min(end, len(mjai_log)))
+            step_pos = step_start
+            for decision in decisions:
+                if cls._decision_chosen_type(decision) == "none":
+                    continue
+
+                for idx in range(step_pos, step_end):
+                    event = mjai_log[idx]
+                    if not cls._event_matches_policy(event, decision):
+                        continue
+
+                    cls._attach_policy_to_event(event, decision)
+                    step_pos = idx + 1
+                    break
+
+            for idx in range(step_start, step_end):
+                if mjai_log[idx].get("type") in cls._RESPONSE_SOURCE_TYPES:
+                    last_response_source_idx = idx
+
+    @staticmethod
+    def _mjai_log_len(env: RiichiEnv) -> int:
+        value = getattr(env, "mjai_log_len", None)
+        if isinstance(value, int):
+            return value
+        return len(env.mjai_log)
+
     def _play_one_game(self, game_idx: int) -> dict:
         seed = self.cfg.base_seed + game_idx * self.cfg.seed_stride
         env = RiichiEnv(
@@ -102,16 +198,35 @@ class SelfMatchRunner:
         for agent in self._shared_agents:
             agent.reset()
         obs_dict = env.reset(scores=list(self.starting_scores))
+        decision_steps: list[PolicyDecisionStep] = []
 
         while not env.done():
-            actions = {
-                pid: self.seat_agents[pid].act(obs)
-                for pid, obs in obs_dict.items()
-            }
+            if self.cfg.log_policy_meta:
+                start_log_len = self._mjai_log_len(env)
+                decisions_by_pid = {
+                    pid: self.seat_agents[pid].act_with_policy(obs)
+                    for pid, obs in obs_dict.items()
+                }
+                actions = {
+                    pid: decision.action
+                    for pid, decision in decisions_by_pid.items()
+                }
+                decisions = list(decisions_by_pid.values())
+            else:
+                actions = {
+                    pid: self.seat_agents[pid].act(obs)
+                    for pid, obs in obs_dict.items()
+                }
+
             obs_dict = env.step(actions)
+            if self.cfg.log_policy_meta:
+                decision_steps.append((start_log_len, self._mjai_log_len(env), decisions))
 
         log_path = self._log_path(game_idx)
-        self._write_log(log_path, env.mjai_log)
+        mjai_log = env.mjai_log
+        if self.cfg.log_policy_meta:
+            self._annotate_policy_log(mjai_log, decision_steps)
+        self._write_log(log_path, mjai_log)
         if self.cfg.validate_saved_logs:
             self._validate_log(log_path)
 
@@ -121,7 +236,7 @@ class SelfMatchRunner:
             "log_path": str(log_path),
             "ranks": env.ranks(),
             "scores": env.scores(),
-            "num_events": len(env.mjai_log),
+            "num_events": len(mjai_log),
         }
 
     def _write_summary(self, summary: dict) -> None:
@@ -172,6 +287,7 @@ class SelfMatchRunner:
             "replay_rule": self.cfg.game.replay_rule,
             "base_seed": self.cfg.base_seed,
             "seed_stride": self.cfg.seed_stride,
+            "log_policy_meta": self.cfg.log_policy_meta,
             "average_rank_by_seat": [
                 rank_total / self.cfg.num_games for rank_total in rank_totals
             ],
