@@ -49,6 +49,18 @@ They are represented as strict candidate rows:
 
 This pointer candidate space distinguishes red-five discards, tedashi/tsumogiri discards, and red/non-red consumed chi/pon variants. Physical copies with the same visible semantics still collapse.
 
+Self-match policy logging (`self_match.log_policy_meta=true`) serializes this same candidate order into
+`meta.policy.candidates` on the selected MJAI action event. It also writes `meta.policy.legal_actions`, where
+each legal action is mapped back to the pointer `candidate_index`; collapsed physical copies therefore share
+the same logit and probability. The policy logging feature does not add tokens or change the sequence feature
+vocabulary.
+For discard actions, the serialized action payload includes both `tsumogiri` and the candidate `moqie` value
+(`moqie_id`: `0` tedashi, `1` tsumogiri, `2` N/A) so viewer panels can show the hand-discard vs drawn-discard
+distinction directly.
+
+For reaction windows, pass choices do not appear as separate saved MJAI events. The runner therefore attaches
+all responding actors' policy outputs to the source discard/kan event as `meta.response_policies`.
+
 ## Fixed ActionEncoder Limitations
 
 ### Red 5 Ambiguity in Calls (Chi/Pon)

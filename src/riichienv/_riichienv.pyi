@@ -878,6 +878,7 @@ class RiichiEnv:
     wall: list[int]
     discards: list[list[int]]
     mjai_log: list[dict[str, Any]]
+    mjai_log_len: int
     _custom_honba: int
     _custom_round_wind: int
 

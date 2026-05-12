@@ -738,6 +738,11 @@ impl RiichiEnv {
         Ok(list.unbind().into())
     }
 
+    #[getter]
+    pub fn mjai_log_len(&self) -> usize {
+        with_variant!(self, |s| s.mjai_log.len())
+    }
+
     #[pyo3(signature = (players=None))]
     pub fn get_observations<'py>(
         &mut self,

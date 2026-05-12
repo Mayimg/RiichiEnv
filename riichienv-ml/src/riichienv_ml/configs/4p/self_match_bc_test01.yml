@@ -17,3 +17,4 @@ self_match:
   compress_logs: false
   skip_mjai_logging: false
   validate_saved_logs: false
+  log_policy_meta: true

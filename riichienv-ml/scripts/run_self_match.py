@@ -13,9 +13,9 @@ except ModuleNotFoundError:
 
 load_dotenv()
 
-from riichienv_ml.config import SelfMatchAgentConfig, load_config
-from riichienv_ml.self_match import SelfMatchRunner
-from riichienv_ml.utils import setup_logging
+from riichienv_ml.config import SelfMatchAgentConfig, load_config  # noqa: E402
+from riichienv_ml.self_match import SelfMatchRunner  # noqa: E402
+from riichienv_ml.utils import setup_logging  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--compress_logs", action="store_true")
     parser.add_argument("--validate_saved_logs", action="store_true")
+    parser.add_argument("--log_policy_meta", action="store_true")
     parser.add_argument("--agent_model_path", type=str, default=None)
     parser.add_argument("--agent_device", type=str, default=None)
     return parser.parse_args()
@@ -49,6 +50,8 @@ def main() -> None:
         overrides["compress_logs"] = True
     if args.validate_saved_logs:
         overrides["validate_saved_logs"] = True
+    if args.log_policy_meta:
+        overrides["log_policy_meta"] = True
 
     if args.agent_model_path is not None or args.agent_device is not None:
         updated_agents = []

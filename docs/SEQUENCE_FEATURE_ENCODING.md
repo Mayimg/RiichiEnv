@@ -518,6 +518,11 @@ cand_melds = np.frombuffer(obs.encode_seq_candidate_melds(), dtype=np.uint16).re
 
 BC training uses `pack_sequence_features()` as the DataLoader fast path. It applies the same batch-local P/C padding, then flattens the batch into one `float32` tensor plus `(prog_len, cand_len)` metadata so worker IPC, pinned-memory handling, and host-to-device transfer do not move many small tensors per batch. The transformer accepts both this packed tuple and the collated dictionary form.
 
+Self-match policy annotations reuse the encoded candidate order for reporting only. Enabling
+`self_match.log_policy_meta` writes model logits/probabilities to MJAI `meta` fields and does not change any
+feature tensors, candidate vocabularies, or BC training labels. Discard action payloads also expose the
+candidate `moqie` field and a boolean `tsumogiri` flag derived from the observation's drawn tile.
+
 `SequenceFeaturePackedEncoder` remains as a deprecated config alias, but it now returns the same dynamic feature dictionary rather than a flat packed tensor.
 
 ### Usage

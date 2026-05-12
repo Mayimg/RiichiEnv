@@ -283,6 +283,7 @@ class SelfMatchConfig(BaseModel):
     compress_logs: bool = False
     skip_mjai_logging: bool = False
     validate_saved_logs: bool = False
+    log_policy_meta: bool = False
 
     @model_validator(mode="after")
     def validate_agents(self) -> SelfMatchConfig:
@@ -297,6 +298,8 @@ class SelfMatchConfig(BaseModel):
             raise ValueError("self_match.num_games must be > 0")
         if self.progress_interval <= 0:
             raise ValueError("self_match.progress_interval must be > 0")
+        if self.log_policy_meta and self.skip_mjai_logging:
+            raise ValueError("self_match.log_policy_meta requires skip_mjai_logging=false")
         return self
 
 
