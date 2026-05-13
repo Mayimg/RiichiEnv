@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import torch
-from riichienv_ml.belief_log_sampling import BeliefLogSampler
+from riichienv_ml.belief_log_sampling import BeliefLogSampler, _event_matches_action
 from riichienv_ml.config import BeliefLogSamplingConfig, GameConfig, ModelConfig
 from riichienv_ml.datasets.belief_allocation import BeliefAllocationDataset
 from riichienv_ml.features.belief_features import (
@@ -179,3 +179,18 @@ def test_belief_log_sampler_writes_mjai_hand_metadata(tmp_path):
     assert len(meta["samples"]) == 2
     assert all(len(sample) == 3 for sample in meta["samples"])
     assert all(isinstance(tile, str) for sample in meta["samples"] for hand in sample for tile in hand)
+
+
+def test_belief_log_sampler_matches_kan_and_red_call_events():
+    assert _event_matches_action(
+        {"type": "ankan", "actor": 2, "consumed": ["8s", "8s", "8s", "8s"]},
+        {"type": "ankan", "actor": 2, "pai": "8s", "consumed": ["8s", "8s", "8s", "8s"]},
+    )
+    assert _event_matches_action(
+        {"type": "pon", "actor": 0, "target": 1, "pai": "5m", "consumed": ["5m", "5mr"]},
+        {"type": "pon", "actor": 0, "pai": "5m", "consumed": ["5mr", "5m"]},
+    )
+    assert _event_matches_action(
+        {"type": "daiminkan", "actor": 0, "target": 1, "pai": "5m", "consumed": ["5m", "5m", "5mr"]},
+        {"type": "daiminkan", "actor": 0, "pai": "5m", "consumed": ["5mr", "5m", "5m"]},
+    )

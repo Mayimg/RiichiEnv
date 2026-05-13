@@ -6,6 +6,7 @@ import glob
 import gzip
 import json
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -117,14 +118,35 @@ def _action_to_mjai(action, observer: int) -> dict[str, Any]:
     return payload
 
 
+def _normalize_mjai_tile(tile: Any) -> Any:
+    if not isinstance(tile, str):
+        return tile
+    if tile in {"5mr", "5pr", "5sr"}:
+        return tile[:2]
+    return tile
+
+
+def _same_mjai_tile(a: Any, b: Any) -> bool:
+    return _normalize_mjai_tile(a) == _normalize_mjai_tile(b)
+
+
+def _same_consumed_tiles(event_consumed: Any, action_consumed: Any) -> bool:
+    if not isinstance(event_consumed, list) or not isinstance(action_consumed, list):
+        return event_consumed == action_consumed
+    event_counts = Counter(_normalize_mjai_tile(tile) for tile in event_consumed)
+    action_counts = Counter(_normalize_mjai_tile(tile) for tile in action_consumed)
+    return event_counts == action_counts
+
+
 def _event_matches_action(event: dict[str, Any], action_mjai: dict[str, Any]) -> bool:
     if event.get("type") != action_mjai.get("type"):
         return False
-    for key in ("actor", "pai"):
-        if key in action_mjai and event.get(key) != action_mjai[key]:
-            return False
-    if "consumed" in action_mjai and event.get("consumed") != action_mjai["consumed"]:
+    if "actor" in action_mjai and event.get("actor") != action_mjai["actor"]:
         return False
+    if "pai" in action_mjai and "pai" in event and not _same_mjai_tile(event.get("pai"), action_mjai["pai"]):
+        return False
+    if "consumed" in action_mjai and event.get("consumed") != action_mjai["consumed"]:
+        return _same_consumed_tiles(event.get("consumed"), action_mjai["consumed"])
     return True
 
 
