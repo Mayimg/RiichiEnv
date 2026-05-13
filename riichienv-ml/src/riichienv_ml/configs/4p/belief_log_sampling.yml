@@ -1,0 +1,29 @@
+belief_log_sampling:
+  game:
+    n_players: 4
+    replay_rule: tenhou
+  input_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
+  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_samples/test01
+  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_samples/test01/summary.json
+  model_path: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test01/model.pth
+  device: cuda
+  num_logs: 10
+  num_samples: 10
+  batch_size: 32
+  skip_single_action: true
+  overwrite: false
+  compress_output: true
+  seed: null
+  temperature: 1.0
+  matmul_precision: high
+  metadata_key: belief_allocation
+  response_metadata_key: belief_response_allocations
+  model_class: riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler
+  encoder_class: riichienv_ml.features.belief_features.BeliefFeatureEncoder
+  model:
+    d_model: 256
+    nhead: 8
+    num_layers: 4
+    dim_feedforward: 1024
+    dropout: 0.1
+    decoder_hidden_dim: 256

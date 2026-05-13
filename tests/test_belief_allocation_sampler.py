@@ -1,6 +1,9 @@
+import json
 from pathlib import Path
 
 import torch
+from riichienv_ml.belief_log_sampling import BeliefLogSampler
+from riichienv_ml.config import BeliefLogSamplingConfig, GameConfig, ModelConfig
 from riichienv_ml.datasets.belief_allocation import BeliefAllocationDataset
 from riichienv_ml.features.belief_features import (
     TOTAL_TILE_COUNTS37,
@@ -119,3 +122,60 @@ def test_belief_model_skips_invalid_targets_without_huge_loss():
     assert out["loss"].isfinite()
     assert out["loss"].item() == 0.0
     assert out["invalid_target_rate"].item() == 1.0
+
+
+def test_belief_log_sampler_writes_mjai_hand_metadata(tmp_path):
+    model_path = tmp_path / "belief_model.pth"
+    output_dir = tmp_path / "annotated"
+    original_text = DATA_PATH.read_text(encoding="utf-8")
+    model_config = {
+        "d_model": 64,
+        "nhead": 4,
+        "num_layers": 1,
+        "dim_feedforward": 128,
+        "decoder_hidden_dim": 64,
+        "dropout": 0.0,
+    }
+    model = JointHiddenAllocationSampler(**model_config)
+    torch.save(model.state_dict(), model_path)
+
+    cfg = BeliefLogSamplingConfig(
+        game=GameConfig(n_players=4, replay_rule="tenhou"),
+        input_glob=str(DATA_PATH),
+        output_dir=str(output_dir),
+        summary_path=str(output_dir / "summary.json"),
+        model_path=str(model_path),
+        device="cpu",
+        num_logs=1,
+        num_samples=2,
+        batch_size=8,
+        skip_single_action=True,
+        overwrite=False,
+        compress_output=False,
+        seed=7,
+        model=ModelConfig(**model_config),
+    )
+
+    summary = BeliefLogSampler(cfg).run()
+
+    assert DATA_PATH.read_text(encoding="utf-8") == original_text
+    output_path = output_dir / DATA_PATH.name
+    assert summary["num_logs"] == 1
+    assert output_path.exists()
+    replay = MjaiReplay.from_jsonl(str(output_path), rule="tenhou")
+    assert replay.num_rounds() > 0
+
+    events = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    belief_events = [
+        event
+        for event in events
+        if isinstance(event.get("meta"), dict) and "belief_allocation" in event["meta"]
+    ]
+    assert belief_events
+    meta = belief_events[0]["meta"]["belief_allocation"]
+    assert meta["tile_format"] == "mjai"
+    assert meta["sample_count"] == 2
+    assert len(meta["opponent_seats"]) == 3
+    assert len(meta["samples"]) == 2
+    assert all(len(sample) == 3 for sample in meta["samples"])
+    assert all(isinstance(tile, str) for sample in meta["samples"] for hand in sample for tile in hand)

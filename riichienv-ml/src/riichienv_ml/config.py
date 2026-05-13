@@ -288,6 +288,31 @@ class BeliefSamplerConfig(WandbConfig):
     encoder_class: str = "riichienv_ml.features.belief_features.BeliefFeatureEncoder"
 
 
+class BeliefLogSamplingConfig(BaseModel):
+    """Config for annotating MJAI logs with belief-sampler hidden hand samples."""
+
+    game: GameConfig = GameConfig(n_players=4, replay_rule="tenhou")
+    input_glob: str = "data/self_match/BC/test10/game_*.jsonl"
+    output_dir: str = "data/belief_samples/test01"
+    summary_path: str | None = None
+    model_path: str = "models/belief_sampler/test01/model.pth"
+    device: str = "cuda"
+    num_logs: int = 10
+    num_samples: int = 10
+    batch_size: int = 32
+    skip_single_action: bool = True
+    overwrite: bool = False
+    compress_output: bool = True
+    seed: int | None = None
+    temperature: float = 1.0
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
+    metadata_key: str = "belief_allocation"
+    response_metadata_key: str = "belief_response_allocations"
+    model: ModelConfig = ModelConfig()
+    model_class: str = "riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler"
+    encoder_class: str = "riichienv_ml.features.belief_features.BeliefFeatureEncoder"
+
+
 class SelfMatchAgentConfig(BaseModel):
     config_path: str
     model_path: str
@@ -335,6 +360,7 @@ class Config(BaseModel):
     ppo: PpoConfig = PpoConfig()
     hand_pred: HandPredConfig = HandPredConfig()
     belief_sampler: BeliefSamplerConfig = BeliefSamplerConfig()
+    belief_log_sampling: BeliefLogSamplingConfig = BeliefLogSamplingConfig()
     self_match: SelfMatchConfig = SelfMatchConfig(
         agents=[
             SelfMatchAgentConfig(

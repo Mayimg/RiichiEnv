@@ -109,3 +109,40 @@ allocation = model.sample_allocations(batch, num_samples=8)
 ```
 
 `allocation` has shape `(batch, samples, 4, 37)`.
+
+## Log Annotation
+
+`BeliefLogSampler` runs the trained sampler on existing MJAI logs and writes
+annotated copies.  The original logs are not modified.
+
+```bash
+uv run python riichienv-ml/scripts/sample_belief_logs.py \
+  -c riichienv-ml/src/riichienv_ml/configs/4p/belief_log_sampling.yml
+```
+
+Input files are selected by sorted `input_glob` order and truncated to
+`num_logs`.  By default, the sampler uses `skip_single_action=true`, so forced
+single-action replay states are not annotated.
+
+Actual MJAI decision events receive:
+
+```json
+"meta": {
+  "belief_allocation": {
+    "observer": 0,
+    "opponent_seats": [1, 2, 3],
+    "bucket_order": ["shimocha", "toimen", "kamicha"],
+    "tile_format": "mjai",
+    "tile_space": "tile37",
+    "sample_count": 10,
+    "samples": [
+      [["1m", "5pr"], ["E"], ["9s"]]
+    ]
+  }
+}
+```
+
+Each `samples[i]` contains three hidden hands in `opponent_seats` order.  The
+residual wall bucket is intentionally omitted from log metadata.  Response
+decisions that do not have their own MJAI event, such as `none`, are attached to
+the preceding discard or kan event under `meta.belief_response_allocations`.
