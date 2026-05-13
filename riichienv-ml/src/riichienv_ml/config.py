@@ -263,6 +263,31 @@ class HandPredConfig(WandbConfig):
     val_step_interval: int = 20000  # run validation & save checkpoint every N steps
 
 
+class BeliefSamplerConfig(WandbConfig):
+    """Config for the joint hidden-allocation belief sampler."""
+
+    game: GameConfig = GameConfig(n_players=4, replay_rule="tenhou")
+    data_glob: str = "data/self_match/BC/test10/game_*.jsonl"
+    val_data_glob: str = ""
+    output: str = "models/belief_sampler/test01/model.pth"
+    load_model: str | None = None
+    device: str = "cuda"
+    batch_size: int = 32
+    lr: float = 1e-4
+    lr_min: float = 1e-6
+    num_epochs: int = 3
+    num_workers: int = 8
+    limit: int = 1000000
+    weight_decay: float = 0.01
+    max_grad_norm: float = 10.0
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
+    skip_single_action: bool = True
+    model: ModelConfig = ModelConfig()
+    model_class: str = "riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler"
+    dataset_class: str = "riichienv_ml.datasets.belief_allocation.BeliefAllocationDataset"
+    encoder_class: str = "riichienv_ml.features.belief_features.BeliefFeatureEncoder"
+
+
 class SelfMatchAgentConfig(BaseModel):
     config_path: str
     model_path: str
@@ -309,6 +334,7 @@ class Config(BaseModel):
     cql: CqlConfig = CqlConfig()
     ppo: PpoConfig = PpoConfig()
     hand_pred: HandPredConfig = HandPredConfig()
+    belief_sampler: BeliefSamplerConfig = BeliefSamplerConfig()
     self_match: SelfMatchConfig = SelfMatchConfig(
         agents=[
             SelfMatchAgentConfig(
