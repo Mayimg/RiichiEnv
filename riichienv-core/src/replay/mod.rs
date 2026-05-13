@@ -104,6 +104,7 @@ pub struct KyokuStepIterator {
     pending_action: Option<(u8, EnvAction)>,
     filter_seat: Option<u8>,
     skip_single_action: bool,
+    include_hidden: bool,
     /// Queued (pid, observation) pairs for players who implicitly passed
     /// on a claim opportunity (pon/chi/ron) that existed in the log.
     pending_pass_obs: Vec<(u8, crate::observation::Observation)>,
@@ -299,6 +300,34 @@ fn resolve_replay_action_4p(
 
 #[cfg(feature = "python")]
 impl KyokuStepIterator {
+    fn current_hidden_hands(&self) -> Vec<Vec<u8>> {
+        self.state
+            .players
+            .iter()
+            .map(|player| player.hand.clone())
+            .collect()
+    }
+
+    fn make_py_step(
+        &self,
+        py: Python<'_>,
+        pid: u8,
+        obs: crate::observation::Observation,
+        action: EnvAction,
+        hidden_hands: Vec<Vec<u8>>,
+    ) -> PyResult<Py<PyAny>> {
+        if self.include_hidden {
+            return Ok((pid, obs, action, hidden_hands)
+                .into_pyobject(py)?
+                .unbind()
+                .into());
+        }
+        if self.filter_seat.is_some() {
+            return Ok((obs, action).into_pyobject(py)?.unbind().into());
+        }
+        Ok((pid, obs, action).into_pyobject(py)?.unbind().into())
+    }
+
     /// After a discard is applied, check which other players could have
     /// claimed (chi/pon/ron) but didn't. For each such player, generate a
     /// pass observation so that "none" actions appear in the training data.
@@ -392,14 +421,26 @@ impl KyokuStepIterator {
                             continue;
                         }
                         let py = slf.py();
-                        return Ok(Some((obs, pass_action).into_pyobject(py)?.unbind().into()));
+                        let hidden_hands = slf.current_hidden_hands();
+                        return Ok(Some(slf.make_py_step(
+                            py,
+                            pid,
+                            obs,
+                            pass_action,
+                            hidden_hands,
+                        )?));
                     }
                     continue;
                 } else {
                     let py = slf.py();
-                    return Ok(Some(
-                        (pid, obs, pass_action).into_pyobject(py)?.unbind().into(),
-                    ));
+                    let hidden_hands = slf.current_hidden_hands();
+                    return Ok(Some(slf.make_py_step(
+                        py,
+                        pid,
+                        obs,
+                        pass_action,
+                        hidden_hands,
+                    )?));
                 }
             }
 
@@ -431,6 +472,7 @@ impl KyokuStepIterator {
 
                 let discard_tile_for_pass = action.tile;
                 let discarder_for_pass = pid;
+                let hidden_hands = slf.current_hidden_hands();
 
                 slf.state.apply_log_action(current_log_action);
                 slf.idx += 1;
@@ -451,12 +493,24 @@ impl KyokuStepIterator {
                         }
 
                         let py = slf.py();
-                        return Ok(Some((obs, action).into_pyobject(py)?.unbind().into()));
+                        return Ok(Some(slf.make_py_step(
+                            py,
+                            pid,
+                            obs,
+                            action,
+                            hidden_hands,
+                        )?));
                     }
                     continue;
                 } else {
                     let py = slf.py();
-                    return Ok(Some((pid, obs, action).into_pyobject(py)?.unbind().into()));
+                    return Ok(Some(slf.make_py_step(
+                        py,
+                        pid,
+                        obs,
+                        action,
+                        hidden_hands,
+                    )?));
                 }
             }
 
@@ -513,19 +567,28 @@ impl KyokuStepIterator {
                         )?;
 
                         slf.pending_action = Some((pid, env_action));
+                        let hidden_hands = slf.current_hidden_hands();
 
                         if let Some(target) = slf.filter_seat {
                             if pid == target {
                                 let py = slf.py();
-                                return Ok(Some(
-                                    (obs, riichi_action).into_pyobject(py)?.unbind().into(),
-                                ));
+                                return Ok(Some(slf.make_py_step(
+                                    py,
+                                    pid,
+                                    obs,
+                                    riichi_action,
+                                    hidden_hands,
+                                )?));
                             }
                         } else {
                             let py = slf.py();
-                            return Ok(Some(
-                                (pid, obs, riichi_action).into_pyobject(py)?.unbind().into(),
-                            ));
+                            return Ok(Some(slf.make_py_step(
+                                py,
+                                pid,
+                                obs,
+                                riichi_action,
+                                hidden_hands,
+                            )?));
                         }
                     } else {
                         let obs = slf.state.get_observation_for_replay(
@@ -535,6 +598,7 @@ impl KyokuStepIterator {
                         )?;
                         let env_action = resolve_replay_action_4p(&obs, &env_action, *tsumogiri);
                         let discard_tile = env_action.tile.unwrap_or(replay_tile);
+                        let hidden_hands = slf.current_hidden_hands();
 
                         slf.state.apply_log_action(action);
                         slf.idx += 1;
@@ -551,15 +615,23 @@ impl KyokuStepIterator {
                                 }
 
                                 let py = slf.py();
-                                return Ok(Some(
-                                    (obs, env_action).into_pyobject(py)?.unbind().into(),
-                                ));
+                                return Ok(Some(slf.make_py_step(
+                                    py,
+                                    pid,
+                                    obs,
+                                    env_action,
+                                    hidden_hands,
+                                )?));
                             }
                         } else {
                             let py = slf.py();
-                            return Ok(Some(
-                                (pid, obs, env_action).into_pyobject(py)?.unbind().into(),
-                            ));
+                            return Ok(Some(slf.make_py_step(
+                                py,
+                                pid,
+                                obs,
+                                env_action,
+                                hidden_hands,
+                            )?));
                         }
                     }
                 }
@@ -594,6 +666,7 @@ impl KyokuStepIterator {
                         &format!("{:?}", action),
                     )?;
                     let env_action = resolve_replay_action_4p(&obs, &env_action, None);
+                    let hidden_hands = slf.current_hidden_hands();
 
                     slf.state.apply_log_action(action);
                     slf.idx += 1;
@@ -604,13 +677,23 @@ impl KyokuStepIterator {
                                 continue;
                             }
                             let py = slf.py();
-                            return Ok(Some((obs, env_action).into_pyobject(py)?.unbind().into()));
+                            return Ok(Some(slf.make_py_step(
+                                py,
+                                pid,
+                                obs,
+                                env_action,
+                                hidden_hands,
+                            )?));
                         }
                     } else {
                         let py = slf.py();
-                        return Ok(Some(
-                            (pid, obs, env_action).into_pyobject(py)?.unbind().into(),
-                        ));
+                        return Ok(Some(slf.make_py_step(
+                            py,
+                            pid,
+                            obs,
+                            env_action,
+                            hidden_hands,
+                        )?));
                     }
                 }
                 Action::AnGangAddGang {
@@ -658,6 +741,7 @@ impl KyokuStepIterator {
                         &format!("{:?}", action),
                     )?;
                     let env_action = resolve_replay_action_4p(&obs, &env_action, None);
+                    let hidden_hands = slf.current_hidden_hands();
 
                     slf.state.apply_log_action(action);
                     slf.idx += 1;
@@ -668,13 +752,23 @@ impl KyokuStepIterator {
                                 continue;
                             }
                             let py = slf.py();
-                            return Ok(Some((obs, env_action).into_pyobject(py)?.unbind().into()));
+                            return Ok(Some(slf.make_py_step(
+                                py,
+                                pid,
+                                obs,
+                                env_action,
+                                hidden_hands,
+                            )?));
                         }
                     } else {
                         let py = slf.py();
-                        return Ok(Some(
-                            (pid, obs, env_action).into_pyobject(py)?.unbind().into(),
-                        ));
+                        return Ok(Some(slf.make_py_step(
+                            py,
+                            pid,
+                            obs,
+                            env_action,
+                            hidden_hands,
+                        )?));
                     }
                 }
                 Action::Hule { hules } => {
@@ -703,6 +797,7 @@ impl KyokuStepIterator {
                         &env_action,
                         &format!("{:?}", action),
                     )?;
+                    let hidden_hands = slf.current_hidden_hands();
 
                     slf.state.apply_log_action(action);
                     slf.idx += 1;
@@ -713,13 +808,23 @@ impl KyokuStepIterator {
                                 continue;
                             }
                             let py = slf.py();
-                            return Ok(Some((obs, env_action).into_pyobject(py)?.unbind().into()));
+                            return Ok(Some(slf.make_py_step(
+                                py,
+                                pid,
+                                obs,
+                                env_action,
+                                hidden_hands,
+                            )?));
                         }
                     } else {
                         let py = slf.py();
-                        return Ok(Some(
-                            (pid, obs, env_action).into_pyobject(py)?.unbind().into(),
-                        ));
+                        return Ok(Some(slf.make_py_step(
+                            py,
+                            pid,
+                            obs,
+                            env_action,
+                            hidden_hands,
+                        )?));
                     }
                 }
             }
@@ -1288,16 +1393,18 @@ impl LogKyoku {
         Ok(WinResultContextIterator::new(self.clone()))
     }
 
-    #[pyo3(signature = (seat=None, rule=None, skip_single_action=None))]
+    #[pyo3(signature = (seat=None, rule=None, skip_single_action=None, include_hidden=None))]
     fn steps(
         &self,
         py: Python<'_>,
         seat: Option<u8>,
         rule: Option<crate::rule::GameRule>,
         skip_single_action: Option<bool>,
+        include_hidden: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
         let rule = rule.unwrap_or(self.rule);
         let skip_single_action = skip_single_action.unwrap_or(true);
+        let include_hidden = include_hidden.unwrap_or(false);
         let is_3p = self.scores.len() == 3;
 
         let bakaze = match self.chang {
@@ -1328,6 +1435,11 @@ impl LogKyoku {
         let oya = oya_idx as u8;
 
         if is_3p {
+            if include_hidden {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "include_hidden is only supported for 4-player replays",
+                ));
+            }
             let mut state = crate::state_3p::GameState3P::new(0, false, None, 0, rule);
             let initial_scores: [i32; 3] = self.scores.clone().try_into().unwrap_or([35000; 3]);
 
@@ -1508,6 +1620,7 @@ impl LogKyoku {
                 filter_seat: seat,
                 pending_pass_obs: Vec::new(),
                 skip_single_action,
+                include_hidden,
             };
             Ok(Py::new(py, iter)?.into_any())
         }
