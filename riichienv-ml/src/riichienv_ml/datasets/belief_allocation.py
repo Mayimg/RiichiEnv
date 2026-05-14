@@ -22,14 +22,52 @@ class BeliefAllocationDataset(BaseDataset):
     with an additional teacher-only hidden hand snapshot.
     """
 
-    def __init__(self, *args, skip_single_action: bool = True, **kwargs):
+    def __init__(
+        self,
+        *args,
+        skip_single_action: bool = True,
+        shuffle_buffer_files: int = 1,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.skip_single_action = skip_single_action
+        self.shuffle_buffer_files = int(shuffle_buffer_files)
+        if self.shuffle_buffer_files < 1:
+            raise ValueError("shuffle_buffer_files must be >= 1")
         if self.n_players != 4:
             raise ValueError("BeliefAllocationDataset currently supports 4-player mahjong only")
 
+    def _load_file_samples(self, file_path: str):
+        try:
+            replay = MjaiReplay.from_jsonl(file_path, rule=self.replay_rule)
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Skipping unparseable replay: %s: %s", file_path, e)
+            return None
+
+        buffer = []
+        try:
+            for kyoku in replay.take_kyokus():
+                for _pid, obs, _action, hidden_hands in kyoku.steps(
+                    skip_single_action=self.skip_single_action,
+                    include_hidden=True,
+                ):
+                    features = self.encoder.encode(obs)
+                    target = make_hidden_allocation_target(obs, hidden_hands, features)
+                    buffer.append((features, target))
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Skipping replay due to error: %s: %s", file_path, e)
+            return None
+
+        return buffer
+
+    @staticmethod
+    def _yield_shuffled(buffer: list):
+        random.shuffle(buffer)
+        while buffer:
+            yield buffer.pop()
+
     def __iter__(self):
-        files = self._get_files()
+        files = list(self._get_files())
         if self.is_train:
             random.shuffle(files)
 
@@ -40,33 +78,35 @@ class BeliefAllocationDataset(BaseDataset):
         skipped = 0
         total = len(files)
 
+        if self.is_train:
+            shuffle_buffer = []
+            buffered_files = 0
+            for file_path in files:
+                samples = self._load_file_samples(file_path)
+                if samples is None:
+                    skipped += 1
+                    continue
+
+                shuffle_buffer.extend(samples)
+                buffered_files += 1
+                if buffered_files >= self.shuffle_buffer_files:
+                    yield from self._yield_shuffled(shuffle_buffer)
+                    shuffle_buffer = []
+                    buffered_files = 0
+
+            if shuffle_buffer:
+                yield from self._yield_shuffled(shuffle_buffer)
+
+            if skipped > 0:
+                logger.warning("Skipped %d / %d replay files due to errors", skipped, total)
+            return
+
         for file_path in files:
-            try:
-                replay = MjaiReplay.from_jsonl(file_path, rule=self.replay_rule)
-            except (RuntimeError, ValueError) as e:
-                logger.warning("Skipping unparseable replay: %s: %s", file_path, e)
+            samples = self._load_file_samples(file_path)
+            if samples is None:
                 skipped += 1
                 continue
-
-            buffer = []
-            try:
-                for kyoku in replay.take_kyokus():
-                    for _pid, obs, _action, hidden_hands in kyoku.steps(
-                        skip_single_action=self.skip_single_action,
-                        include_hidden=True,
-                    ):
-                        features = self.encoder.encode(obs)
-                        target = make_hidden_allocation_target(obs, hidden_hands, features)
-                        buffer.append((features, target))
-            except (RuntimeError, ValueError) as e:
-                logger.warning("Skipping replay due to error: %s: %s", file_path, e)
-                skipped += 1
-                continue
-
-            if self.is_train:
-                random.shuffle(buffer)
-
-            yield from buffer
+            yield from samples
 
         if skipped > 0:
             logger.warning("Skipped %d / %d replay files due to errors", skipped, total)

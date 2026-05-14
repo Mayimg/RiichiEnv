@@ -47,6 +47,7 @@ class BeliefAllocationTrainer:
         replay_rule: str = "tenhou",
         tile_dim: int = 34,
         skip_single_action: bool = True,
+        shuffle_buffer_files: int = 1,
     ):
         if n_players != 4:
             raise ValueError("BeliefAllocationTrainer currently supports 4-player mahjong only")
@@ -70,6 +71,7 @@ class BeliefAllocationTrainer:
         self.replay_rule = replay_rule
         self.tile_dim = tile_dim
         self.skip_single_action = skip_single_action
+        self.shuffle_buffer_files = int(shuffle_buffer_files)
 
     def _create_dataloader(self, dataset, *, is_train: bool) -> DataLoader:
         kwargs: dict[str, Any] = {
@@ -95,6 +97,7 @@ class BeliefAllocationTrainer:
             replay_rule=self.replay_rule,
             encoder=encoder,
             skip_single_action=self.skip_single_action,
+            shuffle_buffer_files=self.shuffle_buffer_files,
         )
 
     def train(self, output_path: str) -> None:
@@ -127,10 +130,21 @@ class BeliefAllocationTrainer:
         best_val_loss = float("inf")
         latest_path = _with_suffix(output_path, "latest")
         model.train()
+        invalid_sum = 0.0
+        invalid_count = 0
 
         try:
             for epoch in range(self.num_epochs):
-                train_metrics, step = self._train_epoch(model, train_loader, optimizer, scheduler, step, epoch)
+                train_metrics, step, epoch_invalid_sum, epoch_invalid_count = self._train_epoch(
+                    model,
+                    train_loader,
+                    optimizer,
+                    scheduler,
+                    step,
+                    epoch,
+                )
+                invalid_sum += epoch_invalid_sum
+                invalid_count += epoch_invalid_count
                 metrics = {"epoch": epoch, **train_metrics, "lr": optimizer.param_groups[0]["lr"]}
 
                 if val_loader is not None:
@@ -150,6 +164,9 @@ class BeliefAllocationTrainer:
                 wandb.log(metrics, step=step)
                 if step >= self.limit:
                     break
+
+            if invalid_count > 0:
+                logger.info("Training complete: train/invalid_target_rate={:.6f}", invalid_sum / invalid_count)
         finally:
             wandb.finish()
 
@@ -161,10 +178,12 @@ class BeliefAllocationTrainer:
         scheduler: optim.lr_scheduler.LRScheduler,
         step: int,
         epoch: int,
-    ) -> tuple[dict[str, float], int]:
+    ) -> tuple[dict[str, float], int, float, int]:
         loss_meter = AverageMeter("loss", ":.4f")
         acc_meter = AverageMeter("acc", ":.4f")
         invalid_meter = AverageMeter("invalid", ":.4f")
+        window_loss_meter = AverageMeter("window_loss", ":.4f")
+        window_acc_meter = AverageMeter("window_acc", ":.4f")
         log_interval = 100
 
         for batch_idx, (batch_features, batch_targets) in enumerate(dataloader):
@@ -183,18 +202,23 @@ class BeliefAllocationTrainer:
             loss_meter.update(float(loss.item()), batch_size)
             acc_meter.update(float(out["acc"].item()), batch_size)
             invalid_meter.update(float(out.get("invalid_target_rate", torch.tensor(0.0)).item()), batch_size)
+            window_loss_meter.update(float(loss.item()), batch_size)
+            window_acc_meter.update(float(out["acc"].item()), batch_size)
 
             if step % log_interval == 0:
                 logger.info(
                     "Epoch {} Step {} Batch {}: train/loss={:.4f} train/tile_acc={:.4f} "
-                    "train/invalid_target_rate={:.6f}",
+                    "train/window100_loss={:.4f} train/window100_tile_acc={:.4f}",
                     epoch,
                     step,
                     batch_idx,
                     loss_meter.avg,
                     acc_meter.avg,
-                    invalid_meter.avg,
+                    window_loss_meter.avg,
+                    window_acc_meter.avg,
                 )
+                window_loss_meter.reset()
+                window_acc_meter.reset()
 
             step += 1
             if step >= self.limit:
@@ -203,16 +227,14 @@ class BeliefAllocationTrainer:
         metrics = {
             "train/loss": loss_meter.avg,
             "train/tile_acc": acc_meter.avg,
-            "train/invalid_target_rate": invalid_meter.avg,
         }
         logger.info(
-            "Epoch {} train complete: loss={:.4f} tile_acc={:.4f} invalid_target_rate={:.6f}",
+            "Epoch {} train complete: loss={:.4f} tile_acc={:.4f}",
             epoch,
             metrics["train/loss"],
             metrics["train/tile_acc"],
-            metrics["train/invalid_target_rate"],
         )
-        return metrics, step
+        return metrics, step, float(invalid_meter.sum), int(invalid_meter.count)
 
     @torch.inference_mode()
     def _eval_epoch(self, model: torch.nn.Module, dataloader: DataLoader, epoch: int) -> dict[str, float]:

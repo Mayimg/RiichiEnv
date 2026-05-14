@@ -11,6 +11,7 @@ belief_sampler:
   lr_min: 0.000001
   num_epochs: 1
   num_workers: 8
+  shuffle_buffer_files: 16
   limit: 10000
   weight_decay: 0.01
   max_grad_norm: 10.0

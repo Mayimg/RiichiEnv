@@ -88,6 +88,19 @@ For each decision point:
 
 Training uses teacher forcing over the 37 tile ids with cross entropy per tile.
 
+For training, `BeliefAllocationDataset` can shuffle across more than one replay
+file before yielding samples.  Set `shuffle_buffer_files` in the belief sampler
+config to the number of half-game files each worker should accumulate before
+shuffling and emitting samples.  The default is `1`, which preserves the original
+per-file behavior; `riichienv_ml/configs/4p/belief_allocation.yml` uses `16` for
+better batch diversity.
+
+Training logs include both epoch-running metrics and recent-window metrics:
+
+- `train/loss`, `train/tile_acc`: running averages from the start of the epoch.
+- `train/window100_loss`, `train/window100_tile_acc`: averages since the previous
+  100-step log line.
+
 ## Commands
 
 Train with:
