@@ -27,13 +27,17 @@ class BeliefAllocationDataset(BaseDataset):
         *args,
         skip_single_action: bool = True,
         shuffle_buffer_files: int = 1,
+        sample_keep_prob: float = 1.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.skip_single_action = skip_single_action
         self.shuffle_buffer_files = int(shuffle_buffer_files)
+        self.sample_keep_prob = float(sample_keep_prob)
         if self.shuffle_buffer_files < 1:
             raise ValueError("shuffle_buffer_files must be >= 1")
+        if not 0.0 < self.sample_keep_prob <= 1.0:
+            raise ValueError("sample_keep_prob must be in (0, 1]")
         if self.n_players != 4:
             raise ValueError("BeliefAllocationDataset currently supports 4-player mahjong only")
 
@@ -60,8 +64,9 @@ class BeliefAllocationDataset(BaseDataset):
 
         return buffer
 
-    @staticmethod
-    def _yield_shuffled(buffer: list):
+    def _yield_shuffled(self, buffer: list):
+        if self.sample_keep_prob < 1.0:
+            buffer = [sample for sample in buffer if random.random() < self.sample_keep_prob]
         random.shuffle(buffer)
         while buffer:
             yield buffer.pop()

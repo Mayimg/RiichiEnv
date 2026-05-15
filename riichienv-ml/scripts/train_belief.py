@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_epochs", type=int, default=None)
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--shuffle_buffer_files", type=int, default=None)
+    parser.add_argument("--sample_keep_prob", type=float, default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--matmul_precision", choices=["highest", "high", "medium"], default=None)
     return parser.parse_args()
@@ -56,6 +57,7 @@ def main() -> None:
         "num_epochs",
         "num_workers",
         "shuffle_buffer_files",
+        "sample_keep_prob",
         "limit",
         "matmul_precision",
     ):
@@ -92,6 +94,7 @@ def main() -> None:
         tile_dim=game.tile_dim,
         skip_single_action=cfg.skip_single_action,
         shuffle_buffer_files=cfg.shuffle_buffer_files,
+        sample_keep_prob=cfg.sample_keep_prob,
     )
     trainer.train(cfg.output)
 

@@ -48,6 +48,7 @@ class BeliefAllocationTrainer:
         tile_dim: int = 34,
         skip_single_action: bool = True,
         shuffle_buffer_files: int = 1,
+        sample_keep_prob: float = 1.0,
     ):
         if n_players != 4:
             raise ValueError("BeliefAllocationTrainer currently supports 4-player mahjong only")
@@ -72,6 +73,7 @@ class BeliefAllocationTrainer:
         self.tile_dim = tile_dim
         self.skip_single_action = skip_single_action
         self.shuffle_buffer_files = int(shuffle_buffer_files)
+        self.sample_keep_prob = float(sample_keep_prob)
 
     def _create_dataloader(self, dataset, *, is_train: bool) -> DataLoader:
         kwargs: dict[str, Any] = {
@@ -98,6 +100,7 @@ class BeliefAllocationTrainer:
             encoder=encoder,
             skip_single_action=self.skip_single_action,
             shuffle_buffer_files=self.shuffle_buffer_files,
+            sample_keep_prob=self.sample_keep_prob,
         )
 
     def train(self, output_path: str) -> None:
