@@ -131,6 +131,10 @@ allocation = model.sample_allocations(batch, num_samples=8)
 ```
 
 `allocation` has shape `(batch, samples, 4, 37)`.
+During inference sampling, `sample_allocations` runs the transformer observation
+encoder once for the input batch, then repeats the resulting context for the
+autoregressive decoder.  Increasing `num_samples` therefore scales the decoder
+work, not the heavy observation-encoder work.
 
 ## Log Annotation
 

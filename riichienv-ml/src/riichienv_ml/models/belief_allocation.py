@@ -329,6 +329,25 @@ class JointHiddenAllocationSampler(nn.Module):
         context = self.encoder.forward_context(features)
         unseen_counts = self._unseen_counts(features)
         rem = self._initial_rem(features, unseen_counts)
+        return self._decode_allocations(
+            context,
+            unseen_counts,
+            rem,
+            target_counts=target_counts,
+            sample=sample,
+            temperature=temperature,
+        )
+
+    def _decode_allocations(  # noqa: PLR0915
+        self,
+        context: torch.Tensor,
+        unseen_counts: torch.Tensor,
+        rem: torch.Tensor,
+        target_counts: torch.Tensor | None = None,
+        *,
+        sample: bool = False,
+        temperature: float = 1.0,
+    ) -> dict[str, torch.Tensor]:
         target_sample_valid = None
         target_teacher_path_valid = None
         invalid_target_count = None
@@ -418,10 +437,18 @@ class JointHiddenAllocationSampler(nn.Module):
     ) -> torch.Tensor:
         if num_samples <= 0:
             raise ValueError("num_samples must be positive")
-        expanded = {
-            key: value.repeat_interleave(num_samples, dim=0) if isinstance(value, torch.Tensor) else value
-            for key, value in features.items()
-        }
-        sampled = self.forward(expanded, sample=True, temperature=temperature)["allocation"]
+        context = self.encoder.forward_context(features)
+        unseen_counts = self._unseen_counts(features)
+        rem = self._initial_rem(features, unseen_counts)
+        context = context.repeat_interleave(num_samples, dim=0)
+        unseen_counts = unseen_counts.repeat_interleave(num_samples, dim=0)
+        rem = rem.repeat_interleave(num_samples, dim=0)
+        sampled = self._decode_allocations(
+            context,
+            unseen_counts,
+            rem,
+            sample=True,
+            temperature=temperature,
+        )["allocation"]
         batch_size = features["visible_tile_counts"].shape[0]
         return sampled.reshape(batch_size, num_samples, BUCKET_COUNT, TILE37_COUNT)
