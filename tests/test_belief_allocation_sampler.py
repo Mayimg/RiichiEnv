@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import torch
 from riichienv_ml.belief_log_sampling import BeliefLogSampler, _event_matches_action
 from riichienv_ml.config import BeliefLogSamplingConfig, GameConfig, ModelConfig
@@ -62,6 +63,79 @@ def test_belief_dataset_public_capacities_match_targets():
         assert torch.equal(capacities, target_sizes)
         steps += 1
     assert steps > 0
+
+
+def test_belief_dataset_buffers_configured_number_of_files_before_yield(monkeypatch):
+    monkeypatch.setattr("riichienv_ml.datasets.belief_allocation.random.shuffle", lambda values: None)
+
+    class DummyBeliefDataset(BeliefAllocationDataset):
+        def __init__(self):
+            super().__init__(
+                ["a", "b", "c"],
+                is_train=True,
+                n_players=4,
+                replay_rule="tenhou",
+                encoder=None,
+                shuffle_buffer_files=2,
+            )
+            self.loaded_files = []
+
+        def _load_file_samples(self, file_path: str):
+            self.loaded_files.append(file_path)
+            return [(file_path, torch.zeros(4, 37, dtype=torch.long))]
+
+    dataset = DummyBeliefDataset()
+    next(iter(dataset))
+
+    assert dataset.loaded_files == ["a", "b"]
+
+
+def test_belief_dataset_applies_sample_keep_prob_after_buffering(monkeypatch):
+    monkeypatch.setattr("riichienv_ml.datasets.belief_allocation.random.shuffle", lambda values: None)
+    random_values = iter([0.0, 0.9, 0.2, 0.8])
+    monkeypatch.setattr("riichienv_ml.datasets.belief_allocation.random.random", lambda: next(random_values))
+
+    class DummyBeliefDataset(BeliefAllocationDataset):
+        def __init__(self):
+            super().__init__(
+                ["a", "b", "c", "d"],
+                is_train=True,
+                n_players=4,
+                replay_rule="tenhou",
+                encoder=None,
+                shuffle_buffer_files=2,
+                sample_keep_prob=0.5,
+            )
+
+        def _load_file_samples(self, file_path: str):
+            return [(file_path, torch.zeros(4, 37, dtype=torch.long))]
+
+    assert [sample_id for sample_id, _target in DummyBeliefDataset()] == ["a", "c"]
+
+
+def test_belief_dataset_rejects_invalid_shuffle_buffer_files():
+    with pytest.raises(ValueError, match="shuffle_buffer_files"):
+        BeliefAllocationDataset(
+            [str(DATA_PATH)],
+            is_train=True,
+            n_players=4,
+            replay_rule="tenhou",
+            encoder=BeliefFeatureEncoder(),
+            shuffle_buffer_files=0,
+        )
+
+
+@pytest.mark.parametrize("sample_keep_prob", [0.0, 1.1])
+def test_belief_dataset_rejects_invalid_sample_keep_prob(sample_keep_prob):
+    with pytest.raises(ValueError, match="sample_keep_prob"):
+        BeliefAllocationDataset(
+            [str(DATA_PATH)],
+            is_train=True,
+            n_players=4,
+            replay_rule="tenhou",
+            encoder=BeliefFeatureEncoder(),
+            sample_keep_prob=sample_keep_prob,
+        )
 
 
 def test_belief_model_trains_and_samples_legal_allocations():

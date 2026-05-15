@@ -282,6 +282,8 @@ class BeliefSamplerConfig(WandbConfig):
     max_grad_norm: float = 10.0
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     skip_single_action: bool = True
+    shuffle_buffer_files: int = 1
+    sample_keep_prob: float = 1.0
     model: ModelConfig = ModelConfig()
     model_class: str = "riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler"
     dataset_class: str = "riichienv_ml.datasets.belief_allocation.BeliefAllocationDataset"
