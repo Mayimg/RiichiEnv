@@ -169,6 +169,40 @@ def test_belief_model_trains_and_samples_legal_allocations():
     assert torch.equal(samples.sum(dim=2), unseen.unsqueeze(1).expand(-1, 2, -1))
 
 
+def test_belief_model_samples_reuse_single_encoder_context():
+    dataset = BeliefAllocationDataset(
+        [str(DATA_PATH)],
+        is_train=False,
+        n_players=4,
+        replay_rule="tenhou",
+        encoder=BeliefFeatureEncoder(),
+    )
+    items = [next(iter(dataset)) for _ in range(2)]
+    features = collate_belief_features([item[0] for item in items])
+
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        decoder_hidden_dim=64,
+        dropout=0.0,
+    )
+    original_forward_context = model.encoder.forward_context
+    encoder_batch_sizes = []
+
+    def wrapped_forward_context(batch):
+        encoder_batch_sizes.append(batch["visible_tile_counts"].shape[0])
+        return original_forward_context(batch)
+
+    model.encoder.forward_context = wrapped_forward_context
+
+    samples = model.sample_allocations(features, num_samples=3)
+
+    assert encoder_batch_sizes == [2]
+    assert samples.shape == (2, 3, 4, 37)
+
+
 def test_belief_model_skips_invalid_targets_without_huge_loss():
     dataset = BeliefAllocationDataset(
         [str(DATA_PATH)],
