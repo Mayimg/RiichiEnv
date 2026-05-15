@@ -7,6 +7,8 @@ from riichienv_ml.belief_log_sampling import BeliefLogSampler, _event_matches_ac
 from riichienv_ml.config import BeliefLogSamplingConfig, GameConfig, ModelConfig
 from riichienv_ml.datasets.belief_allocation import BeliefAllocationDataset
 from riichienv_ml.features.belief_features import (
+    BUCKET_COUNT,
+    TILE37_COUNT,
     TOTAL_TILE_COUNTS37,
     BeliefFeatureEncoder,
     collate_belief_features,
@@ -16,6 +18,7 @@ from riichienv_ml.models.belief_allocation import JointHiddenAllocationSampler
 from riichienv import MjaiReplay
 
 DATA_PATH = Path(__file__).parent / "data" / "126_204_0_mjai.jsonl"
+TILE34_COUNT = 34
 
 
 def test_mjai_steps_can_return_teacher_hidden_hands():
@@ -167,6 +170,23 @@ def test_belief_model_trains_and_samples_legal_allocations():
     unseen = torch.tensor(TOTAL_TILE_COUNTS37, dtype=torch.long).unsqueeze(0) - visible
     assert samples.shape == (2, 2, 4, 37)
     assert torch.equal(samples.sum(dim=2), unseen.unsqueeze(1).expand(-1, 2, -1))
+
+
+def test_belief_model_decoder_uses_count37_plus_count34_partial_state():
+    d_model = 64
+    model = JointHiddenAllocationSampler(
+        d_model=d_model,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        decoder_hidden_dim=64,
+        dropout=0.0,
+    )
+
+    assert model.decoder[0].in_features == d_model * 2 + BUCKET_COUNT * (TILE37_COUNT + TILE34_COUNT) + 5
+    assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
+    assert model.tile37_to_tile34[10] == model.tile37_to_tile34[15] == 13
+    assert model.tile37_to_tile34[20] == model.tile37_to_tile34[25] == 22
 
 
 def test_belief_model_samples_reuse_single_encoder_context():

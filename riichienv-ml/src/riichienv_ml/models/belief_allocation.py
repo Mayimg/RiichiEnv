@@ -24,6 +24,7 @@ from riichienv_ml.models.transformer import (
 )
 
 _MAX_CANDIDATES = 35
+_TILE34_COUNT = 34
 
 
 def _build_candidate_tuples() -> tuple[torch.Tensor, torch.Tensor]:
@@ -35,6 +36,21 @@ def _build_candidate_tuples() -> tuple[torch.Tensor, torch.Tensor]:
             tuples[u, idx] = torch.tensor(row, dtype=torch.long)
             mask[u, idx] = True
     return tuples, mask
+
+
+def _build_tile37_to_tile34() -> torch.Tensor:
+    tile34 = torch.empty(TILE37_COUNT, dtype=torch.long)
+    tile34[0] = 4
+    tile34[1:10] = torch.arange(9, dtype=torch.long)
+    tile34[10] = 13
+    tile34[11:20] = torch.arange(9, 18, dtype=torch.long)
+    tile34[20] = 22
+    tile34[21:30] = torch.arange(18, 27, dtype=torch.long)
+    tile34[30:37] = torch.arange(27, 34, dtype=torch.long)
+    return tile34
+
+
+_TILE37_TO_TILE34 = tuple(int(tile34) for tile34 in _build_tile37_to_tile34().tolist())
 
 
 class BeliefObservationEncoder(TransformerActorCritic):
@@ -247,8 +263,9 @@ class JointHiddenAllocationSampler(nn.Module):
         hidden = int(decoder_hidden_dim or d_model)
         self.alloc_tile_embed = nn.Embedding(TILE37_COUNT, d_model)
         self.alloc_u_embed = nn.Embedding(5, d_model)
+        partial_count_dim = BUCKET_COUNT * (TILE37_COUNT + _TILE34_COUNT)
         self.decoder = nn.Sequential(
-            nn.Linear(d_model * 6 + 5, hidden),
+            nn.Linear(d_model * 2 + partial_count_dim + 5, hidden),
             nn.GELU(),
             nn.Linear(hidden, _MAX_CANDIDATES),
         )
@@ -261,6 +278,7 @@ class JointHiddenAllocationSampler(nn.Module):
             torch.tensor(TOTAL_TILE_COUNTS37, dtype=torch.long),
             persistent=False,
         )
+        self.tile37_to_tile34 = _TILE37_TO_TILE34
 
     def _unseen_counts(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         visible = features["visible_tile_counts"][:, :, 1].long()
@@ -295,7 +313,8 @@ class JointHiddenAllocationSampler(nn.Module):
     def _step_logits(
         self,
         context: torch.Tensor,
-        partial: torch.Tensor,
+        partial37: torch.Tensor,
+        partial34: torch.Tensor,
         rem: torch.Tensor,
         tile37: int,
         unseen_for_tile: torch.Tensor,
@@ -313,7 +332,14 @@ class JointHiddenAllocationSampler(nn.Module):
         tile_ids = torch.full((context.shape[0],), int(tile37), dtype=torch.long, device=context.device)
         tile_emb = self.alloc_tile_embed(tile_ids) + self.alloc_u_embed(unseen_for_tile)
         rem_features = torch.cat([rem.float() / 70.0, unseen_for_tile.float().unsqueeze(1) / 4.0], dim=1)
-        decoder_input = torch.cat([context, tile_emb, partial.reshape(context.shape[0], -1), rem_features], dim=1)
+        partial_features = torch.cat(
+            [
+                partial37.reshape(context.shape[0], -1),
+                partial34.reshape(context.shape[0], -1),
+            ],
+            dim=1,
+        ) / 4.0
+        decoder_input = torch.cat([context, tile_emb, partial_features, rem_features], dim=1)
         logits = self._base_logits(rem, candidates) + self.decoder(decoder_input)
         logits = logits.masked_fill(~feasible, torch.finfo(logits.dtype).min)
         return logits, feasible, candidates
@@ -363,7 +389,20 @@ class JointHiddenAllocationSampler(nn.Module):
             use_target_rem = (~target_sample_valid & target_teacher_path_valid).unsqueeze(1)
             rem = torch.where(use_target_rem, target_rem, rem)
 
-        partial = torch.zeros(context.shape[0], BUCKET_COUNT, self.d_model, device=context.device, dtype=context.dtype)
+        partial37 = torch.zeros(
+            context.shape[0],
+            BUCKET_COUNT,
+            TILE37_COUNT,
+            device=context.device,
+            dtype=context.dtype,
+        )
+        partial34 = torch.zeros(
+            context.shape[0],
+            BUCKET_COUNT,
+            _TILE34_COUNT,
+            device=context.device,
+            dtype=context.dtype,
+        )
         allocation = torch.zeros(context.shape[0], BUCKET_COUNT, TILE37_COUNT, device=context.device, dtype=torch.long)
 
         losses = []
@@ -378,7 +417,8 @@ class JointHiddenAllocationSampler(nn.Module):
                 future_total = torch.zeros_like(unseen_for_tile)
             logits, feasible, candidates = self._step_logits(
                 context,
-                partial,
+                partial37,
+                partial34,
                 rem,
                 tile37,
                 unseen_for_tile,
@@ -408,10 +448,10 @@ class JointHiddenAllocationSampler(nn.Module):
                 chosen = candidates[torch.arange(context.shape[0], device=context.device), idx]
 
             rem = rem - chosen
-            tile_emb = self.alloc_tile_embed(
-                torch.full((context.shape[0],), int(tile37), dtype=torch.long, device=context.device)
-            )
-            partial = partial + chosen.to(context.dtype).unsqueeze(-1) * tile_emb.unsqueeze(1)
+            chosen_f = chosen.to(context.dtype)
+            partial37[:, :, tile37] = chosen_f
+            tile34 = self.tile37_to_tile34[int(tile37)]
+            partial34[:, :, tile34] = partial34[:, :, tile34] + chosen_f
             allocation[:, :, tile37] = chosen
 
         out = {"allocation": allocation}
