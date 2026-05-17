@@ -70,7 +70,8 @@ logit = sum_b log C(rem_b, x_b) + neural_residual
 
 The first term is the multivariate hypergeometric prior.  The neural residual is
 conditioned on the observation CLS context, current tile id, remaining capacity,
-unseen count, and partial allocations generated so far.
+unseen count, partial allocations generated so far, and tile-bucket public
+memory context.
 
 The partial allocation state is passed to the decoder as explicit count
 matrices instead of an embedding sum:
@@ -85,8 +86,26 @@ partial_count34: (4, 34)
 slot, so local number-tile structures such as adjacent shapes can be easier for
 the decoder MLP to use.
 
+Before autoregressive decoding, the model builds `37 x 4` tile-bucket queries:
+
+```text
+query(tile37, bucket) = tile37 embedding + bucket embedding + unseen-count embedding
+```
+
+These queries cross-attend to selected public encoder tokens:
+
+- `player_info` tokens;
+- `visible_tile_counts` tokens;
+- `progression` tokens.
+
+The resulting `(37, 4, d_model)` context is computed once per observation and
+then reused at each tile decoding step.  In multi-sample inference, the encoder
+and this cross-attention cache are computed once for the input batch before
+being repeated across samples.
+
 Because this changes the decoder input dimension, checkpoints trained with the
-previous embedding-sum partial state must be retrained.
+previous embedding-sum partial state or without tile-bucket cross-attention must
+be retrained.
 
 ## Training Data
 

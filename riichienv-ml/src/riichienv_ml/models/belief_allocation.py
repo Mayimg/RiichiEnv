@@ -85,7 +85,14 @@ class BeliefObservationEncoder(TransformerActorCritic):
         )
         return self.belief_hand_size_proj.finish(raw)
 
-    def forward_context(self, x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int]) -> torch.Tensor:  # noqa: PLR0915
+    def forward_context(self, x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int]) -> torch.Tensor:
+        context, _memory, _memory_padding_mask = self.forward_context_and_memory(x)
+        return context
+
+    def forward_context_and_memory(  # noqa: PLR0915
+        self,
+        x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         (
             sparse,
             dealer,
@@ -240,7 +247,29 @@ class BeliefObservationEncoder(TransformerActorCritic):
 
         output = self.transformer(tokens, src_key_padding_mask=pad_mask)
         output = self.final_norm(output)
-        return output[:, 0]
+
+        cls_out = output[:, 0]
+        player_offset = 1 + self._S + self._D
+        visible_offset = player_offset + self._PI + self._SM + self._H
+        prog_offset = visible_offset + self._VC + 1 + self._AT + 6
+        memory = torch.cat(
+            [
+                output[:, player_offset : player_offset + self._PI],
+                output[:, visible_offset : visible_offset + self._VC],
+                output[:, prog_offset : prog_offset + prog_len],
+            ],
+            dim=1,
+        )
+        memory_padding_mask = torch.cat(
+            [
+                player_info_valid,
+                visible_tile_count_valid,
+                ~prog_mask,
+            ],
+            dim=1,
+        )
+        return cls_out, memory, memory_padding_mask
+
 
 class JointHiddenAllocationSampler(nn.Module):
     """Autoregressive legal sampler over opponent hands and residual wall counts."""
@@ -261,11 +290,21 @@ class JointHiddenAllocationSampler(nn.Module):
             raise ValueError("tile_order must be a permutation of 0..36")
 
         hidden = int(decoder_hidden_dim or d_model)
+        cross_attn_heads = int(encoder_kwargs.get("nhead", 8))
+        dropout = float(encoder_kwargs.get("dropout", 0.1))
         self.alloc_tile_embed = nn.Embedding(TILE37_COUNT, d_model)
         self.alloc_u_embed = nn.Embedding(5, d_model)
+        self.alloc_bucket_embed = nn.Embedding(BUCKET_COUNT, d_model)
+        self.alloc_cross_attn = nn.MultiheadAttention(
+            d_model,
+            cross_attn_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.alloc_cross_attn_norm = nn.LayerNorm(d_model)
         partial_count_dim = BUCKET_COUNT * (TILE37_COUNT + _TILE34_COUNT)
         self.decoder = nn.Sequential(
-            nn.Linear(d_model * 2 + partial_count_dim + 5, hidden),
+            nn.Linear(d_model * (2 + BUCKET_COUNT) + partial_count_dim + 5, hidden),
             nn.GELU(),
             nn.Linear(hidden, _MAX_CANDIDATES),
         )
@@ -310,9 +349,40 @@ class JointHiddenAllocationSampler(nn.Module):
         remaining = (rem_f - cand_f).clamp_min(0)
         return (torch.lgamma(rem_f + 1) - torch.lgamma(cand_f + 1) - torch.lgamma(remaining + 1)).sum(dim=-1)
 
+    def _tile_bucket_context(
+        self,
+        unseen_counts: torch.Tensor,
+        memory: torch.Tensor,
+        memory_padding_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size = unseen_counts.shape[0]
+        tile_ids = torch.arange(TILE37_COUNT, dtype=torch.long, device=unseen_counts.device)
+        bucket_ids = torch.arange(BUCKET_COUNT, dtype=torch.long, device=unseen_counts.device)
+        tile_query = self.alloc_tile_embed(tile_ids).unsqueeze(0) + self.alloc_u_embed(unseen_counts.long())
+        bucket_query = self.alloc_bucket_embed(bucket_ids).view(1, 1, BUCKET_COUNT, self.d_model)
+        query = (tile_query.unsqueeze(2) + bucket_query).reshape(
+            batch_size,
+            TILE37_COUNT * BUCKET_COUNT,
+            self.d_model,
+        )
+        attended, _weights = self.alloc_cross_attn(
+            query,
+            memory,
+            memory,
+            key_padding_mask=memory_padding_mask,
+            need_weights=False,
+        )
+        return self.alloc_cross_attn_norm(query + attended).reshape(
+            batch_size,
+            TILE37_COUNT,
+            BUCKET_COUNT,
+            self.d_model,
+        )
+
     def _step_logits(
         self,
         context: torch.Tensor,
+        tile_bucket_context: torch.Tensor,
         partial37: torch.Tensor,
         partial34: torch.Tensor,
         rem: torch.Tensor,
@@ -339,7 +409,16 @@ class JointHiddenAllocationSampler(nn.Module):
             ],
             dim=1,
         ) / 4.0
-        decoder_input = torch.cat([context, tile_emb, partial_features, rem_features], dim=1)
+        decoder_input = torch.cat(
+            [
+                context,
+                tile_emb,
+                tile_bucket_context.reshape(context.shape[0], -1),
+                partial_features,
+                rem_features,
+            ],
+            dim=1,
+        )
         logits = self._base_logits(rem, candidates) + self.decoder(decoder_input)
         logits = logits.masked_fill(~feasible, torch.finfo(logits.dtype).min)
         return logits, feasible, candidates
@@ -352,11 +431,13 @@ class JointHiddenAllocationSampler(nn.Module):
         sample: bool = False,
         temperature: float = 1.0,
     ) -> dict[str, torch.Tensor]:
-        context = self.encoder.forward_context(features)
+        context, memory, memory_padding_mask = self.encoder.forward_context_and_memory(features)
         unseen_counts = self._unseen_counts(features)
+        tile_bucket_context = self._tile_bucket_context(unseen_counts, memory, memory_padding_mask)
         rem = self._initial_rem(features, unseen_counts)
         return self._decode_allocations(
             context,
+            tile_bucket_context,
             unseen_counts,
             rem,
             target_counts=target_counts,
@@ -367,6 +448,7 @@ class JointHiddenAllocationSampler(nn.Module):
     def _decode_allocations(  # noqa: PLR0915
         self,
         context: torch.Tensor,
+        tile_bucket_context: torch.Tensor,
         unseen_counts: torch.Tensor,
         rem: torch.Tensor,
         target_counts: torch.Tensor | None = None,
@@ -417,6 +499,7 @@ class JointHiddenAllocationSampler(nn.Module):
                 future_total = torch.zeros_like(unseen_for_tile)
             logits, feasible, candidates = self._step_logits(
                 context,
+                tile_bucket_context[:, tile37],
                 partial37,
                 partial34,
                 rem,
@@ -477,14 +560,17 @@ class JointHiddenAllocationSampler(nn.Module):
     ) -> torch.Tensor:
         if num_samples <= 0:
             raise ValueError("num_samples must be positive")
-        context = self.encoder.forward_context(features)
+        context, memory, memory_padding_mask = self.encoder.forward_context_and_memory(features)
         unseen_counts = self._unseen_counts(features)
+        tile_bucket_context = self._tile_bucket_context(unseen_counts, memory, memory_padding_mask)
         rem = self._initial_rem(features, unseen_counts)
         context = context.repeat_interleave(num_samples, dim=0)
+        tile_bucket_context = tile_bucket_context.repeat_interleave(num_samples, dim=0)
         unseen_counts = unseen_counts.repeat_interleave(num_samples, dim=0)
         rem = rem.repeat_interleave(num_samples, dim=0)
         sampled = self._decode_allocations(
             context,
+            tile_bucket_context,
             unseen_counts,
             rem,
             sample=True,
