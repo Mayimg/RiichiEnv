@@ -132,6 +132,10 @@ Separate parallel implementations exist for 4-player and 3-player: `state/` vs `
 
 Conventional Commits: `<type>(<scope>): <subject>` (e.g., `feat(env): add event serialization`, `fix(score): correct ura dora calculation`).
 
+### Pull Requests
+
+Unless explicitly instructed otherwise, create pull requests against `Mayimg/RiichiEnv`.
+
 ## Toolchain
 
 - Rust 1.92.0 (Edition 2024), pinned in `rust-toolchain.toml`
