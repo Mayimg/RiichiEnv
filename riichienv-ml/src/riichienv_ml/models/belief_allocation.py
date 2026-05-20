@@ -25,6 +25,7 @@ from riichienv_ml.models.transformer import (
 
 _MAX_CANDIDATES = 35
 _TILE34_COUNT = 34
+_CONTEXT_BUCKET_COUNT = BUCKET_COUNT - 1
 
 
 def _build_candidate_tuples() -> tuple[torch.Tensor, torch.Tensor]:
@@ -297,7 +298,7 @@ class JointHiddenAllocationSampler(nn.Module):
         dropout = float(encoder_kwargs.get("dropout", 0.1))
         self.alloc_tile_embed = nn.Embedding(TILE37_COUNT, d_model)
         self.alloc_u_embed = nn.Embedding(5, d_model)
-        self.alloc_bucket_embed = nn.Embedding(BUCKET_COUNT, d_model)
+        self.alloc_bucket_embed = nn.Embedding(_CONTEXT_BUCKET_COUNT, d_model)
         self.alloc_cross_attn = nn.MultiheadAttention(
             d_model,
             cross_attn_heads,
@@ -307,7 +308,7 @@ class JointHiddenAllocationSampler(nn.Module):
         self.alloc_cross_attn_norm = nn.LayerNorm(d_model)
         partial_count_dim = BUCKET_COUNT * (TILE37_COUNT + _TILE34_COUNT)
         self.decoder = nn.Sequential(
-            nn.Linear(d_model * (2 + BUCKET_COUNT) + partial_count_dim + 5, hidden),
+            nn.Linear(d_model * (2 + _CONTEXT_BUCKET_COUNT) + partial_count_dim + 5, hidden),
             nn.GELU(),
             nn.Linear(hidden, _MAX_CANDIDATES),
         )
@@ -360,12 +361,12 @@ class JointHiddenAllocationSampler(nn.Module):
     ) -> torch.Tensor:
         batch_size = unseen_counts.shape[0]
         tile_ids = torch.arange(TILE37_COUNT, dtype=torch.long, device=unseen_counts.device)
-        bucket_ids = torch.arange(BUCKET_COUNT, dtype=torch.long, device=unseen_counts.device)
+        bucket_ids = torch.arange(_CONTEXT_BUCKET_COUNT, dtype=torch.long, device=unseen_counts.device)
         tile_query = self.alloc_tile_embed(tile_ids).unsqueeze(0) + self.alloc_u_embed(unseen_counts.long())
-        bucket_query = self.alloc_bucket_embed(bucket_ids).view(1, 1, BUCKET_COUNT, self.d_model)
+        bucket_query = self.alloc_bucket_embed(bucket_ids).view(1, 1, _CONTEXT_BUCKET_COUNT, self.d_model)
         query = (tile_query.unsqueeze(2) + bucket_query).reshape(
             batch_size,
-            TILE37_COUNT * BUCKET_COUNT,
+            TILE37_COUNT * _CONTEXT_BUCKET_COUNT,
             self.d_model,
         )
         attended, _weights = self.alloc_cross_attn(
@@ -378,7 +379,7 @@ class JointHiddenAllocationSampler(nn.Module):
         return self.alloc_cross_attn_norm(query + attended).reshape(
             batch_size,
             TILE37_COUNT,
-            BUCKET_COUNT,
+            _CONTEXT_BUCKET_COUNT,
             self.d_model,
         )
 

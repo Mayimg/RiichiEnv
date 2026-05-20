@@ -70,8 +70,8 @@ logit = sum_b log C(rem_b, x_b) + neural_residual
 
 The first term is the multivariate hypergeometric prior.  The neural residual is
 conditioned on the observation CLS context, current tile id, remaining capacity,
-unseen count, partial allocations generated so far, and tile-bucket public
-memory context.
+unseen count, partial allocations generated so far, and opponent tile-bucket
+public memory context.
 
 The partial allocation state is passed to the decoder as explicit count
 matrices instead of an embedding sum:
@@ -86,10 +86,11 @@ partial_count34: (4, 34)
 slot, so local number-tile structures such as adjacent shapes can be easier for
 the decoder MLP to use.
 
-Before autoregressive decoding, the model builds `37 x 4` tile-bucket queries:
+Before autoregressive decoding, the model builds `37 x 3` opponent tile-bucket
+queries:
 
 ```text
-query(tile37, bucket) = tile37 embedding + bucket embedding + unseen-count embedding
+query(tile37, opponent bucket) = tile37 embedding + bucket embedding + unseen-count embedding
 ```
 
 These queries cross-attend to selected public encoder tokens:
@@ -99,12 +100,14 @@ These queries cross-attend to selected public encoder tokens:
 - `visible_tile_counts` tokens;
 - `progression` tokens.
 
-The resulting `(37, 4, d_model)` context is computed once per observation and
-then reused at each tile decoding step.  In multi-sample inference, the encoder
-and this cross-attention cache are computed once for the input batch before
-being repeated across samples.
+The resulting `(37, 3, d_model)` context is computed once per observation and
+then reused at each tile decoding step.  The residual wall bucket remains part
+of the allocation tuple, remaining-capacity state, and partial-count state, but
+it does not receive its own cross-attended public memory context.  In
+multi-sample inference, the encoder and this cross-attention cache are computed
+once for the input batch before being repeated across samples.
 
-Current sparse meld memory is a soft public-state signal.  It lets each
+Current sparse meld memory is a soft public-state signal.  It lets each opponent
 tile-bucket query attend directly to owner-aligned chi/pon/kan structures without
 adding hard allocation constraints beyond the existing unseen-count legality
 mask.
