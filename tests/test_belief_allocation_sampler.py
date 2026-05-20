@@ -213,12 +213,16 @@ def test_belief_encoder_returns_public_cross_attention_memory():
 
     context, memory, memory_padding_mask = model.encoder.forward_context_and_memory(features)
     prog_len = features["progression"].shape[1]
+    sparse_meld_len = features["sparse_meld_mask"].shape[1]
+    static_memory_len = 4 + sparse_meld_len + TILE37_COUNT
 
     assert context.shape == (2, 64)
-    assert memory.shape == (2, 4 + 37 + prog_len, 64)
-    assert memory_padding_mask.shape == (2, 4 + 37 + prog_len)
-    assert not memory_padding_mask[:, : 4 + 37].any()
-    assert torch.equal(memory_padding_mask[:, 4 + 37 :], ~features["prog_mask"])
+    assert memory.shape == (2, static_memory_len + prog_len, 64)
+    assert memory_padding_mask.shape == (2, static_memory_len + prog_len)
+    assert not memory_padding_mask[:, :4].any()
+    assert torch.equal(memory_padding_mask[:, 4 : 4 + sparse_meld_len], ~features["sparse_meld_mask"])
+    assert not memory_padding_mask[:, 4 + sparse_meld_len : static_memory_len].any()
+    assert torch.equal(memory_padding_mask[:, static_memory_len:], ~features["prog_mask"])
 
 
 def test_belief_model_samples_reuse_single_encoder_context():

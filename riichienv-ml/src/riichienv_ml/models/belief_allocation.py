@@ -250,11 +250,13 @@ class BeliefObservationEncoder(TransformerActorCritic):
 
         cls_out = output[:, 0]
         player_offset = 1 + self._S + self._D
+        sparse_meld_offset = player_offset + self._PI
         visible_offset = player_offset + self._PI + self._SM + self._H
         prog_offset = visible_offset + self._VC + 1 + self._AT + 6
         memory = torch.cat(
             [
                 output[:, player_offset : player_offset + self._PI],
+                output[:, sparse_meld_offset : sparse_meld_offset + self._SM],
                 output[:, visible_offset : visible_offset + self._VC],
                 output[:, prog_offset : prog_offset + prog_len],
             ],
@@ -263,6 +265,7 @@ class BeliefObservationEncoder(TransformerActorCritic):
         memory_padding_mask = torch.cat(
             [
                 player_info_valid,
+                ~sparse_meld_mask,
                 visible_tile_count_valid,
                 ~prog_mask,
             ],
