@@ -183,7 +183,9 @@ def test_belief_model_decoder_uses_cross_attention_and_count_partial_state():
         dropout=0.0,
     )
 
-    assert model.decoder[0].in_features == d_model * (2 + BUCKET_COUNT) + BUCKET_COUNT * (
+    context_bucket_count = BUCKET_COUNT - 1
+    assert model.alloc_bucket_embed.num_embeddings == context_bucket_count
+    assert model.decoder[0].in_features == d_model * (2 + context_bucket_count) + BUCKET_COUNT * (
         TILE37_COUNT + TILE34_COUNT
     ) + 5
     assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
@@ -223,6 +225,8 @@ def test_belief_encoder_returns_public_cross_attention_memory():
     assert torch.equal(memory_padding_mask[:, 4 : 4 + sparse_meld_len], ~features["sparse_meld_mask"])
     assert not memory_padding_mask[:, 4 + sparse_meld_len : static_memory_len].any()
     assert torch.equal(memory_padding_mask[:, static_memory_len:], ~features["prog_mask"])
+    tile_bucket_context = model._tile_bucket_context(model._unseen_counts(features), memory, memory_padding_mask)
+    assert tile_bucket_context.shape == (2, TILE37_COUNT, BUCKET_COUNT - 1, 64)
 
 
 def test_belief_model_samples_reuse_single_encoder_context():
