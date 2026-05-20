@@ -95,6 +95,7 @@ query(tile37, bucket) = tile37 embedding + bucket embedding + unseen-count embed
 These queries cross-attend to selected public encoder tokens:
 
 - `player_info` tokens;
+- current `sparse_melds` tokens, including owner seats;
 - `visible_tile_counts` tokens;
 - `progression` tokens.
 
@@ -103,9 +104,14 @@ then reused at each tile decoding step.  In multi-sample inference, the encoder
 and this cross-attention cache are computed once for the input batch before
 being repeated across samples.
 
-Because this changes the decoder input dimension, checkpoints trained with the
-previous embedding-sum partial state or without tile-bucket cross-attention must
-be retrained.
+Current sparse meld memory is a soft public-state signal.  It lets each
+tile-bucket query attend directly to owner-aligned chi/pon/kan structures without
+adding hard allocation constraints beyond the existing unseen-count legality
+mask.
+
+The explicit partial-count decoder input and tile-bucket cross-attention design
+changed the architecture relative to earlier sampler variants, so checkpoints
+from those variants must be retrained.
 
 ## Training Data
 
