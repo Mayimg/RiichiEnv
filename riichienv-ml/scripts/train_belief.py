@@ -95,6 +95,8 @@ def main() -> None:
         skip_single_action=cfg.skip_single_action,
         shuffle_buffer_files=cfg.shuffle_buffer_files,
         sample_keep_prob=cfg.sample_keep_prob,
+        eval_num_samples=cfg.eval_num_samples,
+        eval_sample_batches=cfg.eval_sample_batches,
     )
     trainer.train(cfg.output)
 

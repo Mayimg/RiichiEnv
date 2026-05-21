@@ -231,6 +231,8 @@ class BeliefLogSampler:
         self.summary_path = Path(cfg.summary_path) if cfg.summary_path else self.output_dir / "summary.json"
         self.encoder = self._build_encoder()
         self.model = self._build_model()
+        self._diagnostic_sums: dict[str, float] = {}
+        self._diagnostic_count = 0
 
     def _build_encoder(self) -> BeliefFeatureEncoder:
         encoder_cls = import_class(self.cfg.encoder_class)
@@ -336,11 +338,18 @@ class BeliefLogSampler:
             batch_records = records[start : start + self.cfg.batch_size]
             features = collate_belief_features([record.feature for record in batch_records])
             features = _to_device(features, self.device)
-            allocations = self.model.sample_allocations(
+            allocations_device = self.model.sample_allocations(
                 features,
                 num_samples=self.cfg.num_samples,
                 temperature=self.cfg.temperature,
-            ).cpu()
+            )
+            if hasattr(self.model, "allocation_diagnostics"):
+                diagnostics = self.model.allocation_diagnostics(features, allocations_device)
+                batch_size = len(batch_records)
+                for key, value in diagnostics.items():
+                    self._diagnostic_sums[key] = self._diagnostic_sums.get(key, 0.0) + float(value.item()) * batch_size
+                self._diagnostic_count += batch_size
+            allocations = allocations_device.cpu()
             for record, allocation in zip(batch_records, allocations, strict=True):
                 payload = _allocation_to_meta(
                     allocation,
@@ -414,6 +423,11 @@ class BeliefLogSampler:
             "elapsed_seconds": elapsed,
             "logs": logs,
         }
+        if self._diagnostic_count > 0:
+            summary["sample_diagnostics"] = {
+                key: value / self._diagnostic_count
+                for key, value in sorted(self._diagnostic_sums.items())
+            }
         self._write_summary(summary)
         logger.info("Saved belief sampling summary to {}", self.summary_path)
         return summary

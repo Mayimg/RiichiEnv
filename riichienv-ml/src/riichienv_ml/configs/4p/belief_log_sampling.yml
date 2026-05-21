@@ -3,9 +3,9 @@ belief_log_sampling:
     n_players: 4
     replay_rule: tenhou
   input_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
-  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_samples/test19
-  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_samples/test19/summary.json
-  model_path: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test09/model.pth
+  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_samples/maskgit01
+  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_samples/maskgit01/summary.json
+  model_path: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/maskgit01/model.pth
   device: cuda
   num_logs: 10
   num_samples: 50
@@ -26,4 +26,7 @@ belief_log_sampling:
     num_layers: 4
     dim_feedforward: 1024
     dropout: 0.1
-    decoder_hidden_dim: 256
+    denoise_num_layers: 3
+    denoise_dim_feedforward: 512
+    decode_steps: 8
+    confidence_method: max_prob

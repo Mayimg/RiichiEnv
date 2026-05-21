@@ -49,6 +49,8 @@ class BeliefAllocationTrainer:
         skip_single_action: bool = True,
         shuffle_buffer_files: int = 1,
         sample_keep_prob: float = 1.0,
+        eval_num_samples: int = 4,
+        eval_sample_batches: int = 2,
     ):
         if n_players != 4:
             raise ValueError("BeliefAllocationTrainer currently supports 4-player mahjong only")
@@ -74,6 +76,8 @@ class BeliefAllocationTrainer:
         self.skip_single_action = skip_single_action
         self.shuffle_buffer_files = int(shuffle_buffer_files)
         self.sample_keep_prob = float(sample_keep_prob)
+        self.eval_num_samples = int(eval_num_samples)
+        self.eval_sample_batches = int(eval_sample_batches)
 
     def _create_dataloader(self, dataset, *, is_train: bool) -> DataLoader:
         kwargs: dict[str, Any] = {
@@ -247,7 +251,13 @@ class BeliefAllocationTrainer:
         loss_meter = AverageMeter("loss", ":.4f")
         acc_meter = AverageMeter("acc", ":.4f")
         invalid_meter = AverageMeter("invalid", ":.4f")
-        for batch_features, batch_targets in dataloader:
+        sample_meters = {
+            "allocation_legal_rate": AverageMeter("allocation_legal_rate", ":.4f"),
+            "opponent_hand_size_exact_rate": AverageMeter("opponent_hand_size_exact_rate", ":.4f"),
+            "unique_sample_rate": AverageMeter("unique_sample_rate", ":.4f"),
+            "pairwise_l1_distance": AverageMeter("pairwise_l1_distance", ":.4f"),
+        }
+        for batch_idx, (batch_features, batch_targets) in enumerate(dataloader):
             features = _move_to_device(batch_features, self.device)
             targets = batch_targets.to(self.device, non_blocking=True)
             out = model(features, target_counts=targets)
@@ -255,6 +265,16 @@ class BeliefAllocationTrainer:
             loss_meter.update(float(out["loss"].item()), batch_size)
             acc_meter.update(float(out["acc"].item()), batch_size)
             invalid_meter.update(float(out.get("invalid_target_rate", torch.tensor(0.0)).item()), batch_size)
+            if (
+                self.eval_num_samples > 0
+                and self.eval_sample_batches > 0
+                and batch_idx < self.eval_sample_batches
+                and hasattr(model, "allocation_diagnostics")
+            ):
+                samples = model.sample_allocations(features, num_samples=self.eval_num_samples)
+                diagnostics = model.allocation_diagnostics(features, samples)
+                for name, meter in sample_meters.items():
+                    meter.update(float(diagnostics[name].item()), batch_size)
 
         if was_training:
             model.train()
@@ -264,6 +284,17 @@ class BeliefAllocationTrainer:
             "val/tile_acc": acc_meter.avg,
             "val/invalid_target_rate": invalid_meter.avg,
         }
+        if sample_meters["allocation_legal_rate"].count > 0:
+            metrics.update(
+                {
+                    "val/sample_allocation_legal_rate": sample_meters["allocation_legal_rate"].avg,
+                    "val/sample_opponent_hand_size_exact_rate": sample_meters[
+                        "opponent_hand_size_exact_rate"
+                    ].avg,
+                    "val/sample_unique_rate": sample_meters["unique_sample_rate"].avg,
+                    "val/sample_pairwise_l1_distance": sample_meters["pairwise_l1_distance"].avg,
+                }
+            )
         logger.info(
             "Epoch {} validation complete: loss={:.4f} tile_acc={:.4f} invalid_target_rate={:.6f}",
             epoch,
