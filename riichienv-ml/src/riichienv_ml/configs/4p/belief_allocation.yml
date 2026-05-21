@@ -4,7 +4,7 @@ belief_sampler:
     replay_rule: tenhou
   data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
   val_data_glob: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test11/game_*.jsonl
-  output: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test09/model.pth
+  output: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test16/model.pth
   device: cuda
   batch_size: 32
   lr: 0.0001
@@ -18,8 +18,10 @@ belief_sampler:
   max_grad_norm: 10.0
   matmul_precision: high
   skip_single_action: true
+  eval_num_samples: 4
+  eval_sample_batches: 2
   wandb_mode: offline
-  wandb_tags: [offline, belief_sampler, hidden_allocation, transformer]
+  wandb_tags: [offline, belief_sampler, hidden_allocation, maskgit]
   model_class: riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler
   dataset_class: riichienv_ml.datasets.belief_allocation.BeliefAllocationDataset
   encoder_class: riichienv_ml.features.belief_features.BeliefFeatureEncoder
@@ -29,4 +31,7 @@ belief_sampler:
     num_layers: 4
     dim_feedforward: 1024
     dropout: 0.1
-    decoder_hidden_dim: 256
+    denoise_num_layers: 3
+    denoise_dim_feedforward: 512
+    decode_steps: 8
+    confidence_method: max_prob

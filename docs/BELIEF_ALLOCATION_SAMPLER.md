@@ -52,15 +52,29 @@ consume candidate-action tokens in its context encoder.
 
 ## Decoder
 
-For each tile37 id, the decoder enumerates all count tuples
+For each tile37 id, the sampler enumerates all count tuples
 `(x_shimocha, x_toimen, x_kamicha, x_wall)` whose sum equals the unseen count for
 that tile.  The maximum class count is `C(7, 3)=35`.
 
-Every step applies a legality mask:
+The neural decoder is a MaskGIT-style denoising transformer over 37 tile tokens.
+Each token is the sum of:
+
+```text
+tile37 embedding + unseen-count embedding + current-state embedding
++ mask embedding + decode-step embedding
+```
+
+The current state is represented by the candidate tuple id for that tile, with a
+dedicated `[MASK]` state id.  The transformer uses bidirectional self-attention
+over the 37 tile tokens and cross-attention to cached public memory.  The public
+memory includes the encoder CLS token, the existing `(37, 3, d_model)`
+opponent tile-bucket context, and the selected encoder memory tokens.
+
+Every denoising step applies a legality mask:
 
 - tuple counts cannot exceed remaining bucket capacity;
-- after selecting the tuple, every bucket must still be fillable by future
-  unseen tiles.
+- after selecting the tuple, every bucket must still be fillable by currently
+  masked unseen tiles.
 
 The logit is:
 
@@ -68,25 +82,10 @@ The logit is:
 logit = sum_b log C(rem_b, x_b) + neural_residual
 ```
 
-The first term is the multivariate hypergeometric prior.  The neural residual is
-conditioned on the observation CLS context, current tile id, remaining capacity,
-unseen count, partial allocations generated so far, and opponent tile-bucket
-public memory context.
+The first term is the multivariate hypergeometric prior.  The transformer
+predicts only the neural residual.
 
-The partial allocation state is passed to the decoder as explicit count
-matrices instead of an embedding sum:
-
-```text
-partial_count37: (4, 37)
-partial_count34: (4, 34)
-```
-
-`partial_count37` preserves the exact generated tile37 counts for each bucket.
-`partial_count34` folds red fives into the corresponding normal five tile34
-slot, so local number-tile structures such as adjacent shapes can be easier for
-the decoder MLP to use.
-
-Before autoregressive decoding, the model builds `37 x 3` opponent tile-bucket
+Before denoising, the model builds `37 x 3` opponent tile-bucket
 queries:
 
 ```text
@@ -102,19 +101,19 @@ These queries cross-attend to selected public encoder tokens:
 
 The resulting `(37, 3, d_model)` context is computed once per observation and
 then reused at each tile decoding step.  The residual wall bucket remains part
-of the allocation tuple, remaining-capacity state, and partial-count state, but
-it does not receive its own cross-attended public memory context.  In
-multi-sample inference, the encoder and this cross-attention cache are computed
-once for the input batch before being repeated across samples.
+of the allocation tuple and remaining-capacity state, but it does not receive
+its own cross-attended public memory context.  In multi-sample inference, the
+encoder and this cross-attention cache are computed once for the input batch
+before being repeated across samples.
 
 Current sparse meld memory is a soft public-state signal.  It lets each opponent
 tile-bucket query attend directly to owner-aligned chi/pon/kan structures without
 adding hard allocation constraints beyond the existing unseen-count legality
 mask.
 
-The explicit partial-count decoder input and tile-bucket cross-attention design
-changed the architecture relative to earlier sampler variants, so checkpoints
-from those variants must be retrained.
+The denoising decoder replaces the earlier autoregressive MLP and explicit
+`partial_count37` / `partial_count34` inputs, so checkpoints from earlier
+sampler variants must be retrained.
 
 ## Training Data
 
@@ -130,7 +129,10 @@ For each decision point:
 3. compute unseen counts from visible counts;
 4. set the wall target as the residual.
 
-Training uses teacher forcing over the 37 tile ids with cross entropy per tile.
+Training uses random masking instead of teacher-forced tile-order decoding.  For
+each batch, the model samples a cosine-distributed mask ratio, replaces that many
+tile states with `[MASK]`, subtracts the unmasked ground-truth tuples from the
+bucket capacities, and applies cross entropy only on masked tile positions.
 
 For training, `BeliefAllocationDataset` can shuffle across more than one replay
 file before yielding samples.  Set `shuffle_buffer_files` in the belief sampler
@@ -153,6 +155,10 @@ Training logs include both epoch-running metrics and recent-window metrics:
 - `train/loss`, `train/tile_acc`: running averages from the start of the epoch.
 - `train/window100_loss`, `train/window100_tile_acc`: averages since the previous
   100-step log line.
+- validation can also log sampled-allocation diagnostics:
+  `val/sample_allocation_legal_rate`,
+  `val/sample_opponent_hand_size_exact_rate`, `val/sample_unique_rate`, and
+  `val/sample_pairwise_l1_distance`.
 
 ## Commands
 
@@ -177,8 +183,11 @@ allocation = model.sample_allocations(batch, num_samples=8)
 `allocation` has shape `(batch, samples, 4, 37)`.
 During inference sampling, `sample_allocations` runs the transformer observation
 encoder once for the input batch, then repeats the resulting context for the
-autoregressive decoder.  Increasing `num_samples` therefore scales the decoder
-work, not the heavy observation-encoder work.
+denoising decoder.  It starts from all `[MASK]` states and runs `decode_steps`
+iterations.  At each step, confidence selects the next tile positions in
+parallel; candidate tuple sampling for those selected tiles is then applied in
+confidence order while updating remaining bucket capacities.  This keeps the
+sample legal without rerunning the transformer for each selected tile.
 
 ## Log Annotation
 
@@ -216,3 +225,6 @@ Each `samples[i]` contains three hidden hands in `opponent_seats` order.  The
 residual wall bucket is intentionally omitted from log metadata.  Response
 decisions that do not have their own MJAI event, such as `none`, are attached to
 the preceding discard or kan event under `meta.belief_response_allocations`.
+The log-sampling summary includes `sample_diagnostics` with the same sampled
+allocation legality and diversity metrics used during validation.  Output logs
+are still ordinary MJAI JSONL files with belief samples stored only in `meta`.

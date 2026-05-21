@@ -18,7 +18,6 @@ from riichienv_ml.models.belief_allocation import JointHiddenAllocationSampler
 from riichienv import MjaiReplay
 
 DATA_PATH = Path(__file__).parent / "data" / "126_204_0_mjai.jsonl"
-TILE34_COUNT = 34
 
 
 def test_mjai_steps_can_return_teacher_hidden_hands():
@@ -158,7 +157,9 @@ def test_belief_model_trains_and_samples_legal_allocations():
         nhead=4,
         num_layers=1,
         dim_feedforward=128,
-        decoder_hidden_dim=64,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
         dropout=0.0,
     )
     out = model(features, target_counts=targets)
@@ -170,24 +171,32 @@ def test_belief_model_trains_and_samples_legal_allocations():
     unseen = torch.tensor(TOTAL_TILE_COUNTS37, dtype=torch.long).unsqueeze(0) - visible
     assert samples.shape == (2, 2, 4, 37)
     assert torch.equal(samples.sum(dim=2), unseen.unsqueeze(1).expand(-1, 2, -1))
+    diagnostics = model.allocation_diagnostics(features, samples)
+    assert diagnostics["allocation_legal_rate"].item() == 1.0
+    assert diagnostics["opponent_hand_size_exact_rate"].item() == 1.0
 
 
-def test_belief_model_decoder_uses_cross_attention_and_count_partial_state():
+def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     d_model = 64
     model = JointHiddenAllocationSampler(
         d_model=d_model,
         nhead=4,
         num_layers=1,
         dim_feedforward=128,
-        decoder_hidden_dim=64,
+        denoise_num_layers=2,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
         dropout=0.0,
     )
 
     context_bucket_count = BUCKET_COUNT - 1
     assert model.alloc_bucket_embed.num_embeddings == context_bucket_count
-    assert model.decoder[0].in_features == d_model * (2 + context_bucket_count) + BUCKET_COUNT * (
-        TILE37_COUNT + TILE34_COUNT
-    ) + 5
+    assert model.alloc_state_embed.num_embeddings == 36
+    assert model.mask_state_id == 35
+    assert model.alloc_mask_embed.num_embeddings == 2
+    assert model.alloc_time_embed.num_embeddings == 4
+    assert len(model.denoise_decoder.layers) == 2
+    assert model.denoise_decoder.head.out_features == 35
     assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
     assert model.tile37_to_tile34[10] == model.tile37_to_tile34[15] == 13
     assert model.tile37_to_tile34[20] == model.tile37_to_tile34[25] == 22
@@ -209,7 +218,9 @@ def test_belief_encoder_returns_public_cross_attention_memory():
         nhead=4,
         num_layers=1,
         dim_feedforward=128,
-        decoder_hidden_dim=64,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
         dropout=0.0,
     )
 
@@ -245,7 +256,9 @@ def test_belief_model_samples_reuse_single_encoder_context():
         nhead=4,
         num_layers=1,
         dim_feedforward=128,
-        decoder_hidden_dim=64,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
         dropout=0.0,
     )
     original_forward_context_and_memory = model.encoder.forward_context_and_memory
@@ -282,7 +295,9 @@ def test_belief_model_skips_invalid_targets_without_huge_loss():
         nhead=4,
         num_layers=1,
         dim_feedforward=128,
-        decoder_hidden_dim=64,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
         dropout=0.0,
     )
     out = model(batch, target_counts=targets)
@@ -301,7 +316,9 @@ def test_belief_log_sampler_writes_mjai_hand_metadata(tmp_path):
         "nhead": 4,
         "num_layers": 1,
         "dim_feedforward": 128,
-        "decoder_hidden_dim": 64,
+        "denoise_num_layers": 1,
+        "denoise_dim_feedforward": 128,
+        "decode_steps": 4,
         "dropout": 0.0,
     }
     model = JointHiddenAllocationSampler(**model_config)
@@ -329,6 +346,8 @@ def test_belief_log_sampler_writes_mjai_hand_metadata(tmp_path):
     assert DATA_PATH.read_text(encoding="utf-8") == original_text
     output_path = output_dir / DATA_PATH.name
     assert summary["num_logs"] == 1
+    assert summary["sample_diagnostics"]["allocation_legal_rate"] == 1.0
+    assert summary["sample_diagnostics"]["opponent_hand_size_exact_rate"] == 1.0
     assert output_path.exists()
     replay = MjaiReplay.from_jsonl(str(output_path), rule="tenhou")
     assert replay.num_rounds() > 0
