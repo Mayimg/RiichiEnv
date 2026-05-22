@@ -190,6 +190,9 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     )
 
     context_bucket_count = BUCKET_COUNT - 1
+    assert not hasattr(model, "alloc_tile_embed")
+    assert model.alloc_tile_proj[0].in_features == model.encoder.tile_embed.proj.weight.shape[0]
+    assert model.alloc_tile_proj[0].out_features == d_model
     assert model.alloc_bucket_embed.num_embeddings == context_bucket_count
     assert model.alloc_state_embed.num_embeddings == 36
     assert model.mask_state_id == 35
@@ -224,19 +227,30 @@ def test_belief_encoder_returns_public_cross_attention_memory():
         dropout=0.0,
     )
 
-    context, memory, memory_padding_mask = model.encoder.forward_context_and_memory(features)
+    context, memory, memory_padding_mask, tile37_table = model.encoder.forward_context_and_memory(
+        features,
+        return_tile37_table=True,
+    )
     prog_len = features["progression"].shape[1]
     sparse_meld_len = features["sparse_meld_mask"].shape[1]
     static_memory_len = 4 + sparse_meld_len + TILE37_COUNT
 
     assert context.shape == (2, 64)
+    assert tile37_table.shape == (2, TILE37_COUNT, model.encoder.tile_embed.proj.weight.shape[0])
     assert memory.shape == (2, static_memory_len + prog_len, 64)
     assert memory_padding_mask.shape == (2, static_memory_len + prog_len)
     assert not memory_padding_mask[:, :4].any()
     assert torch.equal(memory_padding_mask[:, 4 : 4 + sparse_meld_len], ~features["sparse_meld_mask"])
     assert not memory_padding_mask[:, 4 + sparse_meld_len : static_memory_len].any()
     assert torch.equal(memory_padding_mask[:, static_memory_len:], ~features["prog_mask"])
-    tile_bucket_context = model._tile_bucket_context(model._unseen_counts(features), memory, memory_padding_mask)
+    tile_emb = model._shared_alloc_tile_embeddings(tile37_table)
+    assert tile_emb.shape == (2, TILE37_COUNT, 64)
+    tile_bucket_context = model._tile_bucket_context(
+        model._unseen_counts(features),
+        tile_emb,
+        memory,
+        memory_padding_mask,
+    )
     assert tile_bucket_context.shape == (2, TILE37_COUNT, BUCKET_COUNT - 1, 64)
 
 
@@ -264,9 +278,9 @@ def test_belief_model_samples_reuse_single_encoder_context():
     original_forward_context_and_memory = model.encoder.forward_context_and_memory
     encoder_batch_sizes = []
 
-    def wrapped_forward_context_and_memory(batch):
+    def wrapped_forward_context_and_memory(batch, **kwargs):
         encoder_batch_sizes.append(batch["visible_tile_counts"].shape[0])
-        return original_forward_context_and_memory(batch)
+        return original_forward_context_and_memory(batch, **kwargs)
 
     model.encoder.forward_context_and_memory = wrapped_forward_context_and_memory
 
@@ -354,9 +368,7 @@ def test_belief_log_sampler_writes_mjai_hand_metadata(tmp_path):
 
     events = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     belief_events = [
-        event
-        for event in events
-        if isinstance(event.get("meta"), dict) and "belief_allocation" in event["meta"]
+        event for event in events if isinstance(event.get("meta"), dict) and "belief_allocation" in event["meta"]
     ]
     assert belief_events
     meta = belief_events[0]["meta"]["belief_allocation"]

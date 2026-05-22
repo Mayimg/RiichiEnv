@@ -192,7 +192,11 @@ class BeliefObservationEncoder(TransformerActorCritic):
     def forward_context_and_memory(  # noqa: PLR0915
         self,
         x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        *,
+        return_tile37_table: bool = False,
+    ) -> (
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    ):
         (
             sparse,
             dealer,
@@ -371,6 +375,8 @@ class BeliefObservationEncoder(TransformerActorCritic):
             ],
             dim=1,
         )
+        if return_tile37_table:
+            return cls_out, memory, memory_padding_mask, tile37_table[:, :TILE37_COUNT]
         return cls_out, memory, memory_padding_mask
 
 
@@ -411,7 +417,11 @@ class JointHiddenAllocationSampler(nn.Module):
 
         cross_attn_heads = int(encoder_kwargs.get("nhead", 8))
         dropout = float(encoder_kwargs.get("dropout", 0.1))
-        self.alloc_tile_embed = nn.Embedding(TILE37_COUNT, d_model)
+        shared_tile_dim = int(self.encoder.tile_embed.proj.weight.shape[0])
+        self.alloc_tile_proj = nn.Sequential(
+            nn.Linear(shared_tile_dim, d_model),
+            nn.LayerNorm(d_model),
+        )
         self.alloc_u_embed = nn.Embedding(5, d_model)
         self.alloc_bucket_embed = nn.Embedding(_CONTEXT_BUCKET_COUNT, d_model)
         self.alloc_cross_attn = nn.MultiheadAttention(
@@ -443,6 +453,9 @@ class JointHiddenAllocationSampler(nn.Module):
             persistent=False,
         )
         self.tile37_to_tile34 = _TILE37_TO_TILE34
+
+    def _shared_alloc_tile_embeddings(self, tile37_table: torch.Tensor) -> torch.Tensor:
+        return self.alloc_tile_proj(tile37_table[:, :TILE37_COUNT])
 
     def _unseen_counts(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         visible = features["visible_tile_counts"][:, :, 1].long()
@@ -479,13 +492,13 @@ class JointHiddenAllocationSampler(nn.Module):
     def _tile_bucket_context(
         self,
         unseen_counts: torch.Tensor,
+        tile_emb: torch.Tensor,
         memory: torch.Tensor,
         memory_padding_mask: torch.Tensor,
     ) -> torch.Tensor:
         batch_size = unseen_counts.shape[0]
-        tile_ids = torch.arange(TILE37_COUNT, dtype=torch.long, device=unseen_counts.device)
         bucket_ids = torch.arange(_CONTEXT_BUCKET_COUNT, dtype=torch.long, device=unseen_counts.device)
-        tile_query = self.alloc_tile_embed(tile_ids).unsqueeze(0) + self.alloc_u_embed(unseen_counts.long())
+        tile_query = tile_emb + self.alloc_u_embed(unseen_counts.long())
         bucket_query = self.alloc_bucket_embed(bucket_ids).view(1, 1, _CONTEXT_BUCKET_COUNT, self.d_model)
         query = (tile_query.unsqueeze(2) + bucket_query).reshape(
             batch_size,
@@ -532,13 +545,11 @@ class JointHiddenAllocationSampler(nn.Module):
     def _token_embeddings(
         self,
         unseen_counts: torch.Tensor,
+        tile_emb: torch.Tensor,
         state_ids: torch.Tensor,
         is_masked: torch.Tensor,
         step_ids: torch.Tensor,
     ) -> torch.Tensor:
-        batch_size = unseen_counts.shape[0]
-        tile_ids = torch.arange(TILE37_COUNT, dtype=torch.long, device=unseen_counts.device)
-        tile_emb = self.alloc_tile_embed(tile_ids).unsqueeze(0).expand(batch_size, -1, -1)
         unseen_emb = self.alloc_u_embed(unseen_counts.long())
         step_ids = step_ids.clamp(min=0, max=self.max_decode_steps - 1)
         return (
@@ -556,11 +567,12 @@ class JointHiddenAllocationSampler(nn.Module):
         memory: torch.Tensor,
         memory_padding_mask: torch.Tensor,
         unseen_counts: torch.Tensor,
+        tile_emb: torch.Tensor,
         state_ids: torch.Tensor,
         is_masked: torch.Tensor,
         step_ids: torch.Tensor,
     ) -> torch.Tensor:
-        tokens = self._token_embeddings(unseen_counts, state_ids, is_masked, step_ids)
+        tokens = self._token_embeddings(unseen_counts, tile_emb, state_ids, is_masked, step_ids)
         decoder_memory, decoder_memory_padding_mask = self._decoder_memory(
             context,
             tile_bucket_context,
@@ -584,9 +596,7 @@ class JointHiddenAllocationSampler(nn.Module):
         while future.dim() < candidates.dim():
             future = future.unsqueeze(-1)
         feasible = (
-            cand_mask
-            & (candidates <= rem_expanded).all(dim=-1)
-            & ((rem_expanded - candidates) <= future).all(dim=-1)
+            cand_mask & (candidates <= rem_expanded).all(dim=-1) & ((rem_expanded - candidates) <= future).all(dim=-1)
         )
         logits = self._base_logits(rem, candidates) + neural_logits
         return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible
@@ -697,9 +707,13 @@ class JointHiddenAllocationSampler(nn.Module):
         sample: bool = False,
         temperature: float = 1.0,
     ) -> dict[str, torch.Tensor]:
-        context, memory, memory_padding_mask = self.encoder.forward_context_and_memory(features)
+        context, memory, memory_padding_mask, tile37_table = self.encoder.forward_context_and_memory(
+            features,
+            return_tile37_table=True,
+        )
         unseen_counts = self._unseen_counts(features)
-        tile_bucket_context = self._tile_bucket_context(unseen_counts, memory, memory_padding_mask)
+        tile_emb = self._shared_alloc_tile_embeddings(tile37_table)
+        tile_bucket_context = self._tile_bucket_context(unseen_counts, tile_emb, memory, memory_padding_mask)
         rem = self._initial_rem(features, unseen_counts)
         if target_counts is not None:
             return self._training_forward(
@@ -708,6 +722,7 @@ class JointHiddenAllocationSampler(nn.Module):
                 memory,
                 memory_padding_mask,
                 unseen_counts,
+                tile_emb,
                 rem,
                 target_counts,
             )
@@ -717,6 +732,7 @@ class JointHiddenAllocationSampler(nn.Module):
             memory,
             memory_padding_mask,
             unseen_counts,
+            tile_emb,
             rem,
             sample=sample,
             temperature=temperature,
@@ -731,6 +747,7 @@ class JointHiddenAllocationSampler(nn.Module):
         memory: torch.Tensor,
         memory_padding_mask: torch.Tensor,
         unseen_counts: torch.Tensor,
+        tile_emb: torch.Tensor,
         rem: torch.Tensor,
         target_counts: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
@@ -758,6 +775,7 @@ class JointHiddenAllocationSampler(nn.Module):
             memory,
             memory_padding_mask,
             unseen_counts,
+            tile_emb,
             state_ids,
             mask,
             step_ids,
@@ -796,6 +814,7 @@ class JointHiddenAllocationSampler(nn.Module):
         memory: torch.Tensor,
         memory_padding_mask: torch.Tensor,
         unseen_counts: torch.Tensor,
+        tile_emb: torch.Tensor,
         rem: torch.Tensor,
         *,
         sample: bool,
@@ -830,6 +849,7 @@ class JointHiddenAllocationSampler(nn.Module):
                 memory,
                 memory_padding_mask,
                 unseen_counts,
+                tile_emb,
                 state_ids,
                 is_masked,
                 step_ids,
@@ -903,11 +923,16 @@ class JointHiddenAllocationSampler(nn.Module):
     ) -> torch.Tensor:
         if num_samples <= 0:
             raise ValueError("num_samples must be positive")
-        context, memory, memory_padding_mask = self.encoder.forward_context_and_memory(features)
+        context, memory, memory_padding_mask, tile37_table = self.encoder.forward_context_and_memory(
+            features,
+            return_tile37_table=True,
+        )
         unseen_counts = self._unseen_counts(features)
-        tile_bucket_context = self._tile_bucket_context(unseen_counts, memory, memory_padding_mask)
+        tile_emb = self._shared_alloc_tile_embeddings(tile37_table)
+        tile_bucket_context = self._tile_bucket_context(unseen_counts, tile_emb, memory, memory_padding_mask)
         rem = self._initial_rem(features, unseen_counts)
         context = context.repeat_interleave(num_samples, dim=0)
+        tile_emb = tile_emb.repeat_interleave(num_samples, dim=0)
         tile_bucket_context = tile_bucket_context.repeat_interleave(num_samples, dim=0)
         memory = memory.repeat_interleave(num_samples, dim=0)
         memory_padding_mask = memory_padding_mask.repeat_interleave(num_samples, dim=0)
@@ -919,6 +944,7 @@ class JointHiddenAllocationSampler(nn.Module):
             memory,
             memory_padding_mask,
             unseen_counts,
+            tile_emb,
             rem,
             sample=True,
             temperature=temperature,

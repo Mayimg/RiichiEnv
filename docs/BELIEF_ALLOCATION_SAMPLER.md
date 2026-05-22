@@ -60,9 +60,17 @@ The neural decoder is a MaskGIT-style denoising transformer over 37 tile tokens.
 Each token is the sum of:
 
 ```text
-tile37 embedding + unseen-count embedding + current-state embedding
-+ mask embedding + decode-step embedding
+token = projected shared tile embedding
+      + unseen-count embedding
+      + current-state embedding
+      + mask embedding
+      + decode-step embedding
 ```
+
+The tile component reuses the observation encoder's shared, attribute-based
+tile37 embedding table for the current public state, then projects it into the
+decoder width.  This keeps decoder tile tokens in the same tile representation
+space as encoder hand, visible-count, dora, progression, and meld tile fields.
 
 The current state is represented by the candidate tuple id for that tile, with a
 dedicated `[MASK]` state id.  The transformer uses bidirectional self-attention
@@ -92,6 +100,9 @@ queries:
 query(tile37, opponent bucket) = tile37 embedding + bucket embedding + unseen-count embedding
 ```
 
+Here `tile37 embedding` is the same projected shared tile embedding used by the
+37 denoising tokens, not a separate allocation-only tile id table.
+
 These queries cross-attend to selected public encoder tokens:
 
 - `player_info` tokens;
@@ -111,9 +122,9 @@ tile-bucket query attend directly to owner-aligned chi/pon/kan structures withou
 adding hard allocation constraints beyond the existing unseen-count legality
 mask.
 
-The denoising decoder replaces the earlier autoregressive MLP and explicit
-`partial_count37` / `partial_count34` inputs, so checkpoints from earlier
-sampler variants must be retrained.
+The denoising decoder replaces the earlier autoregressive MLP, explicit
+`partial_count37` / `partial_count34` inputs, and allocation-only tile id
+embedding. Checkpoints from earlier sampler variants must be retrained.
 
 ## Training Data
 
