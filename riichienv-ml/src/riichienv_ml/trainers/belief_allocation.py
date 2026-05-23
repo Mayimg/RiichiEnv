@@ -214,8 +214,8 @@ class BeliefAllocationTrainer:
 
             if step % log_interval == 0:
                 logger.info(
-                    "Epoch {} Step {} Batch {}: train/loss={:.4f} train/tile_acc={:.4f} "
-                    "train/window100_loss={:.4f} train/window100_tile_acc={:.4f}",
+                    "Epoch {} Step {} Batch {}: train/loss={:.4f} train/cell_acc={:.4f} "
+                    "train/window100_loss={:.4f} train/window100_cell_acc={:.4f}",
                     epoch,
                     step,
                     batch_idx,
@@ -233,13 +233,13 @@ class BeliefAllocationTrainer:
 
         metrics = {
             "train/loss": loss_meter.avg,
-            "train/tile_acc": acc_meter.avg,
+            "train/cell_acc": acc_meter.avg,
         }
         logger.info(
-            "Epoch {} train complete: loss={:.4f} tile_acc={:.4f}",
+            "Epoch {} train complete: loss={:.4f} cell_acc={:.4f}",
             epoch,
             metrics["train/loss"],
-            metrics["train/tile_acc"],
+            metrics["train/cell_acc"],
         )
         return metrics, step, float(invalid_meter.sum), int(invalid_meter.count)
 
@@ -281,25 +281,23 @@ class BeliefAllocationTrainer:
 
         metrics = {
             "val/loss": loss_meter.avg,
-            "val/tile_acc": acc_meter.avg,
+            "val/cell_acc": acc_meter.avg,
             "val/invalid_target_rate": invalid_meter.avg,
         }
         if sample_meters["allocation_legal_rate"].count > 0:
             metrics.update(
                 {
                     "val/sample_allocation_legal_rate": sample_meters["allocation_legal_rate"].avg,
-                    "val/sample_opponent_hand_size_exact_rate": sample_meters[
-                        "opponent_hand_size_exact_rate"
-                    ].avg,
+                    "val/sample_opponent_hand_size_exact_rate": sample_meters["opponent_hand_size_exact_rate"].avg,
                     "val/sample_unique_rate": sample_meters["unique_sample_rate"].avg,
                     "val/sample_pairwise_l1_distance": sample_meters["pairwise_l1_distance"].avg,
                 }
             )
         logger.info(
-            "Epoch {} validation complete: loss={:.4f} tile_acc={:.4f} invalid_target_rate={:.6f}",
+            "Epoch {} validation complete: loss={:.4f} cell_acc={:.4f} invalid_target_rate={:.6f}",
             epoch,
             metrics["val/loss"],
-            metrics["val/tile_acc"],
+            metrics["val/cell_acc"],
             metrics["val/invalid_target_rate"],
         )
         return metrics

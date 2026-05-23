@@ -52,18 +52,19 @@ consume candidate-action tokens in its context encoder.
 
 ## Decoder
 
-For each tile37 id, the sampler enumerates all count tuples
-`(x_shimocha, x_toimen, x_kamicha, x_wall)` whose sum equals the unseen count for
-that tile.  The maximum class count is `C(7, 3)=35`.
+For each `(tile37 id, opponent)` cell, the sampler predicts the number of copies
+of that tile in that opponent's concealed hand.  Each cell has five classes:
+`0, 1, 2, 3, 4`.
 
-The neural decoder is a MaskGIT-style denoising transformer over 37 tile tokens.
-Each token is the sum of:
+The neural decoder is a MaskGIT-style denoising transformer over
+`37 x 3 = 111` allocation-cell tokens.  Each token is the sum of:
 
 ```text
 token = projected shared tile embedding
-      + unseen-count embedding
-      + current-state embedding
-      + mask embedding
+      + shared relative-seat embedding
+      + current cell-state embedding
+      + tile-remaining-count embedding
+      + opponent remaining-slot embedding
       + decode-step embedding
 ```
 
@@ -71,56 +72,61 @@ The tile component reuses the observation encoder's shared, attribute-based
 tile37 embedding table for the current public state, then projects it into the
 decoder width.  This keeps decoder tile tokens in the same tile representation
 space as encoder hand, visible-count, dora, progression, and meld tile fields.
+The seat component reuses the observation encoder's shared observer-relative
+seat embedding.
 
-The current state is represented by the candidate tuple id for that tile, with a
-dedicated `[MASK]` state id.  The transformer uses bidirectional self-attention
-over the 37 tile tokens and cross-attention to cached public memory.  The public
-memory includes the encoder CLS token, the existing `(37, 3, d_model)`
-opponent tile-bucket context, and the selected encoder memory tokens.
+The current state is represented by the decided count `0..4`, with a dedicated
+`[MASK]` state id.  The transformer uses bidirectional self-attention over the
+111 allocation-cell tokens.  Each decoder layer cross-attends directly to cached
+public memory: the encoder CLS token plus selected encoder memory tokens.
 
-Every denoising step applies a legality mask:
+Every denoising step applies a legality mask.  A candidate count is allowed only
+if:
 
-- tuple counts cannot exceed remaining bucket capacity;
-- after selecting the tuple, every bucket must still be fillable by currently
-  masked unseen tiles.
+- it does not exceed the remaining count of that tile;
+- it does not exceed the remaining concealed-hand slots for that opponent;
+- after selecting it, the remaining masked cells can still fill every opponent's
+  remaining hand size.
 
-The logit is:
+The last condition is checked exactly for the three opponent seats using the
+seven non-empty seat subsets.  For every subset `S`, the remaining demand of
+seats in `S` must be no larger than the remaining tile capacity adjacent to at
+least one still-masked cell in `S`.  This prevents MaskGIT sampling from walking
+into a dead end.
+
+The logit for cell `(tile t, opponent b)` and count `k` is:
 
 ```text
-logit = sum_b log C(rem_b, x_b) + neural_residual
+logit = log Hypergeom(k; U_b_avail, u_t_rem, N_b_rem) + neural_residual
 ```
 
-The first term is the multivariate hypergeometric prior.  The transformer
-predicts only the neural residual.
+where `u_t_rem` is the currently unallocated count for tile `t`,
+`N_b_rem` is opponent `b`'s remaining hand slots, and `U_b_avail` is the sum of
+`u_t_rem` over tile cells that are still masked for opponent `b`.  This is a
+single-cell hypergeometric marginal conditioned on already decided cells.  The
+transformer predicts only the neural residual.
 
-Before denoising, the model builds `37 x 3` opponent tile-bucket
-queries:
-
-```text
-query(tile37, opponent bucket) = tile37 embedding + bucket embedding + unseen-count embedding
-```
-
-Here `tile37 embedding` is the same projected shared tile embedding used by the
-37 denoising tokens, not a separate allocation-only tile id table.
-
-These queries cross-attend to selected public encoder tokens:
+The public memory that decoder cells cross-attend to includes:
 
 - `player_info` tokens;
 - current `sparse_melds` tokens, including owner seats;
 - `visible_tile_counts` tokens;
 - `progression` tokens.
 
-The resulting `(37, 3, d_model)` context is computed once per observation and
-then reused at each tile decoding step.  The residual wall bucket remains part
-of the allocation tuple and remaining-capacity state, but it does not receive
-its own cross-attended public memory context.  In multi-sample inference, the
-encoder and this cross-attention cache are computed once for the input batch
-before being repeated across samples.
+The residual wall bucket is not decoded as tokens.  After all opponent cells are
+sampled, wall counts are reconstructed as:
+
+```text
+x_wall[t] = unseen[t] - x_shimocha[t] - x_toimen[t] - x_kamicha[t]
+```
+
+In multi-sample inference, the observation encoder is computed once for the
+input batch before its public memory is repeated across samples.
 
 Current sparse meld memory is a soft public-state signal.  It lets each opponent
-tile-bucket query attend directly to owner-aligned chi/pon/kan structures without
-adding hard allocation constraints beyond the existing unseen-count legality
-mask.
+allocation cell attend directly to owner-aligned chi/pon/kan structures without
+adding hard allocation constraints beyond the existing unseen-count legality and
+hand-size masks.
 
 The denoising decoder replaces the earlier autoregressive MLP, explicit
 `partial_count37` / `partial_count34` inputs, and allocation-only tile id
@@ -142,8 +148,9 @@ For each decision point:
 
 Training uses random masking instead of teacher-forced tile-order decoding.  For
 each batch, the model samples a cosine-distributed mask ratio, replaces that many
-tile states with `[MASK]`, subtracts the unmasked ground-truth tuples from the
-bucket capacities, and applies cross entropy only on masked tile positions.
+allocation-cell states with `[MASK]`, subtracts the unmasked ground-truth counts
+from tile and opponent remaining capacities, and applies cross entropy only on
+masked cells.
 
 For training, `BeliefAllocationDataset` can shuffle across more than one replay
 file before yielding samples.  Set `shuffle_buffer_files` in the belief sampler
@@ -163,8 +170,8 @@ sample_keep_prob: 0.1
 
 Training logs include both epoch-running metrics and recent-window metrics:
 
-- `train/loss`, `train/tile_acc`: running averages from the start of the epoch.
-- `train/window100_loss`, `train/window100_tile_acc`: averages since the previous
+- `train/loss`, `train/cell_acc`: running averages from the start of the epoch.
+- `train/window100_loss`, `train/window100_cell_acc`: averages since the previous
   100-step log line.
 - validation can also log sampled-allocation diagnostics:
   `val/sample_allocation_legal_rate`,
@@ -193,12 +200,13 @@ allocation = model.sample_allocations(batch, num_samples=8)
 
 `allocation` has shape `(batch, samples, 4, 37)`.
 During inference sampling, `sample_allocations` runs the transformer observation
-encoder once for the input batch, then repeats the resulting context for the
-denoising decoder.  It starts from all `[MASK]` states and runs `decode_steps`
-iterations.  At each step, confidence selects the next tile positions in
-parallel; candidate tuple sampling for those selected tiles is then applied in
-confidence order while updating remaining bucket capacities.  This keeps the
-sample legal without rerunning the transformer for each selected tile.
+encoder once for the input batch, then repeats the resulting public memory for
+the denoising decoder.  It starts from all `[MASK]` states and runs
+`decode_steps` iterations.  At each step, confidence selects the next
+allocation-cell positions in parallel; 5-way count sampling for those selected
+cells is then applied in confidence order while updating tile and opponent
+remaining capacities.  This keeps the sample legal without rerunning the
+transformer for each selected cell.
 
 ## Log Annotation
 
@@ -239,3 +247,33 @@ the preceding discard or kan event under `meta.belief_response_allocations`.
 The log-sampling summary includes `sample_diagnostics` with the same sampled
 allocation legality and diversity metrics used during validation.  Output logs
 are still ordinary MJAI JSONL files with belief samples stored only in `meta`.
+
+## Throughput Benchmark
+
+`BeliefSamplingBenchmark` measures sampler throughput without writing sampled
+allocations back to logs.  It replays input MJAI files in sorted `input_glob`
+order, collects the same decision observations used by log annotation, and runs
+fixed-observation sampling at each decision point.
+
+```bash
+uv run python riichienv-ml/scripts/benchmark_belief_sampling.py \
+  -c riichienv-ml/src/riichienv_ml/configs/4p/belief_sampling_benchmark.yml
+```
+
+The default benchmark uses `samples_per_call: 256` and
+`target_duration_ms: 100.0`.  Each measurement runs at least one
+`sample_allocations(..., num_samples=samples_per_call)` call; if that call
+already exceeds the target duration, the measured `actual_duration_ms` records
+the longer real elapsed time.  CUDA measurements synchronize the device around
+timed calls so the reported samples/sec includes actual GPU execution time.
+
+Outputs:
+
+- `summary.json`: config, device info, per-decision measurements, overall speed,
+  and aggregates by `prog_len`, `prog_len` bucket, phase, observer, and log.
+- `decisions.csv`: one row per measured decision, including `prog_len`,
+  `sparse_meld_len`, actual elapsed time, number of calls, total samples,
+  samples/sec, call durations, and peak CUDA memory when available.
+- `prog_len.csv`: exact `prog_len` speed aggregates.
+- `prog_len_buckets.csv`: bucketed `prog_len` speed aggregates for quick
+  comparison of early, middle, and late hand states.
