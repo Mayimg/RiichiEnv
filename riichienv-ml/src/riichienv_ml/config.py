@@ -122,6 +122,7 @@ class GrpConfig(WandbConfig):
 
 class OfflineTrainConfig(WandbConfig):
     """Shared config for offline BC and CQL training."""
+
     game: GameConfig = GameConfig()
     data_glob: str = "/data/mjsoul/mjsoul-4p/2024/**/*.jsonl.gz"
     val_data_glob: str = ""
@@ -156,15 +157,15 @@ class BcConfig(OfflineTrainConfig):
     # LR scheduler
     lr_min: float = 1e-5
     label_smoothing: float = 0.0
-    warmup_steps: int = 0               # linear warmup (in collection rounds, same unit as num_steps)
-    max_grad_norm: float = 10.0         # gradient clipping max norm
+    warmup_steps: int = 0  # linear warmup (in collection rounds, same unit as num_steps)
+    max_grad_norm: float = 10.0  # gradient clipping max norm
     # Online teacher settings (used when online=True)
-    teacher_model_name: Literal["kanachan", "mortal"] = "kanachan"     # model type ("kanachan", "mortal"...)
+    teacher_model_name: Literal["kanachan", "mortal"] = "kanachan"  # model type ("kanachan", "mortal"...)
     teacher_model_path: str | None = None
     num_ray_workers: int = 4
     num_envs_per_worker: int = 16
     num_steps: int = 500
-    train_epochs: int = 3                   # epochs per collection round
+    train_epochs: int = 3  # epochs per collection round
     worker_device: Literal["cpu", "cuda"] = "cpu"
     gpu_per_worker: float = 0.0
 
@@ -240,6 +241,7 @@ class PpoConfig(WandbConfig):
 
 class HandPredConfig(WandbConfig):
     """Config for hand prediction (opponent hand estimation)."""
+
     game: GameConfig = GameConfig()
     data_glob: str = "/data/mjsoul/mjsoul-4p/2024/**/*.jsonl.gz"
     val_data_glob: str = "/data/mjsoul/mjsoul-4p/2024/01/**/*.jsonl.gz"
@@ -317,6 +319,38 @@ class BeliefLogSamplingConfig(BaseModel):
     encoder_class: str = "riichienv_ml.features.belief_features.BeliefFeatureEncoder"
 
 
+class BeliefSamplingBenchmarkConfig(BaseModel):
+    """Config for fixed-observation belief-sampler throughput benchmarking."""
+
+    game: GameConfig = GameConfig(n_players=4, replay_rule="tenhou")
+    input_glob: str = "data/self_match/BC/test10/game_*.jsonl"
+    output_dir: str = "data/belief_sampling_benchmark/test01"
+    summary_path: str | None = None
+    decisions_csv_path: str | None = None
+    prog_len_csv_path: str | None = None
+    prog_len_bucket_csv_path: str | None = None
+    model_path: str = "models/belief_sampler/test01/model.pth"
+    device: str = "cuda"
+    num_logs: int = 10
+    max_decisions: int | None = None
+    decision_stride: int = 1
+    samples_per_call: int = 256
+    target_duration_ms: float = 100.0
+    warmup_calls: int = 1
+    warmup_samples_per_call: int | None = None
+    skip_single_action: bool = True
+    overwrite: bool = False
+    seed: int | None = None
+    temperature: float = 1.0
+    decode_steps: int | None = None
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
+    progress_interval: int = 50
+    include_decisions_in_summary: bool = True
+    model: ModelConfig = ModelConfig()
+    model_class: str = "riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler"
+    encoder_class: str = "riichienv_ml.features.belief_features.BeliefFeatureEncoder"
+
+
 class SelfMatchAgentConfig(BaseModel):
     config_path: str
     model_path: str
@@ -345,8 +379,7 @@ class SelfMatchConfig(BaseModel):
             raise ValueError("self_match.agents must contain at least one agent config")
         if len(self.agents) not in (1, self.game.n_players):
             raise ValueError(
-                f"self_match.agents must contain either 1 or {self.game.n_players} entries "
-                f"(got {len(self.agents)})"
+                f"self_match.agents must contain either 1 or {self.game.n_players} entries (got {len(self.agents)})"
             )
         if self.num_games <= 0:
             raise ValueError("self_match.num_games must be > 0")
@@ -365,6 +398,7 @@ class Config(BaseModel):
     hand_pred: HandPredConfig = HandPredConfig()
     belief_sampler: BeliefSamplerConfig = BeliefSamplerConfig()
     belief_log_sampling: BeliefLogSamplingConfig = BeliefLogSamplingConfig()
+    belief_sampling_benchmark: BeliefSamplingBenchmarkConfig = BeliefSamplingBenchmarkConfig()
     self_match: SelfMatchConfig = SelfMatchConfig(
         agents=[
             SelfMatchAgentConfig(

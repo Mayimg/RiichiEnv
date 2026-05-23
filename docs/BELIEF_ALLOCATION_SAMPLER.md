@@ -247,3 +247,33 @@ the preceding discard or kan event under `meta.belief_response_allocations`.
 The log-sampling summary includes `sample_diagnostics` with the same sampled
 allocation legality and diversity metrics used during validation.  Output logs
 are still ordinary MJAI JSONL files with belief samples stored only in `meta`.
+
+## Throughput Benchmark
+
+`BeliefSamplingBenchmark` measures sampler throughput without writing sampled
+allocations back to logs.  It replays input MJAI files in sorted `input_glob`
+order, collects the same decision observations used by log annotation, and runs
+fixed-observation sampling at each decision point.
+
+```bash
+uv run python riichienv-ml/scripts/benchmark_belief_sampling.py \
+  -c riichienv-ml/src/riichienv_ml/configs/4p/belief_sampling_benchmark.yml
+```
+
+The default benchmark uses `samples_per_call: 256` and
+`target_duration_ms: 100.0`.  Each measurement runs at least one
+`sample_allocations(..., num_samples=samples_per_call)` call; if that call
+already exceeds the target duration, the measured `actual_duration_ms` records
+the longer real elapsed time.  CUDA measurements synchronize the device around
+timed calls so the reported samples/sec includes actual GPU execution time.
+
+Outputs:
+
+- `summary.json`: config, device info, per-decision measurements, overall speed,
+  and aggregates by `prog_len`, `prog_len` bucket, phase, observer, and log.
+- `decisions.csv`: one row per measured decision, including `prog_len`,
+  `sparse_meld_len`, actual elapsed time, number of calls, total samples,
+  samples/sec, call durations, and peak CUDA memory when available.
+- `prog_len.csv`: exact `prog_len` speed aggregates.
+- `prog_len_buckets.csv`: bucketed `prog_len` speed aggregates for quick
+  comparison of early, middle, and late hand states.

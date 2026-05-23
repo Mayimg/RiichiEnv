@@ -1,0 +1,39 @@
+belief_sampling_benchmark:
+  game:
+    n_players: 4
+    replay_rule: tenhou
+  input_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
+  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test01
+  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test01/summary.json
+  decisions_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test01/decisions.csv
+  prog_len_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test01/prog_len.csv
+  prog_len_bucket_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test01/prog_len_buckets.csv
+  model_path: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test18/model.pth
+  device: cuda
+  num_logs: 10
+  max_decisions: null
+  decision_stride: 1
+  samples_per_call: 256
+  target_duration_ms: 100.0
+  warmup_calls: 1
+  warmup_samples_per_call: null
+  skip_single_action: true
+  overwrite: false
+  seed: null
+  temperature: 1.0
+  decode_steps: null
+  matmul_precision: high
+  progress_interval: 50
+  include_decisions_in_summary: true
+  model_class: riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler
+  encoder_class: riichienv_ml.features.belief_features.BeliefFeatureEncoder
+  model:
+    d_model: 256
+    nhead: 8
+    num_layers: 4
+    dim_feedforward: 1024
+    dropout: 0.1
+    denoise_num_layers: 3
+    denoise_dim_feedforward: 512
+    decode_steps: 12
+    confidence_method: max_prob
