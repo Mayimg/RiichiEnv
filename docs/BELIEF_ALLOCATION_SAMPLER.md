@@ -292,3 +292,32 @@ Outputs:
 - `prog_len.csv`: exact `prog_len` speed aggregates.
 - `prog_len_buckets.csv`: bucketed `prog_len` speed aggregates for quick
   comparison of early, middle, and late hand states.
+
+### Profiling
+
+Use the PyTorch profiler script to inspect one fixed decision observation in
+detail:
+
+```bash
+uv run python riichienv-ml/scripts/profile_belief_sampling.py \
+  -c riichienv-ml/src/riichienv_ml/configs/4p/belief_sampling_benchmark.yml \
+  --decision_index 0 \
+  --samples_per_call 256 \
+  --profile_calls 1
+```
+
+By default, profiling includes one encoder-context preparation followed by
+sampling from the cached context, matching the benchmark's intended online
+usage pattern.  The script writes:
+
+- `*.table.txt`: aggregated PyTorch operator timings sorted by CUDA time when
+  CUDA is active.
+- `*.trace.json`: Chrome trace file for `chrome://tracing` or Perfetto.
+- `*.metadata.json`: selected decision metadata, profiler settings, elapsed
+  time, and output paths.
+
+The sampler adds profiler ranges such as `belief/prepare_allocation_sampling_context`,
+`belief/denoise_decoder`, `belief/apply_prior_legality`, and
+`belief/cell_sampling_loop` so traces can be read at the model-operation level
+instead of only as raw PyTorch operators.  Use `--no-profile_context` to exclude
+encoder-context preparation from the profiled region when isolating decoder cost.
