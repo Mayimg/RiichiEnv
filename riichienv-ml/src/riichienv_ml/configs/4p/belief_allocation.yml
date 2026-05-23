@@ -4,7 +4,7 @@ belief_sampler:
     replay_rule: tenhou
   data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
   val_data_glob: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test11/game_*.jsonl
-  output: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test16/model.pth
+  output: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test18/model.pth
   device: cuda
   batch_size: 32
   lr: 0.0001
@@ -33,5 +33,5 @@ belief_sampler:
     dropout: 0.1
     denoise_num_layers: 3
     denoise_dim_feedforward: 512
-    decode_steps: 8
+    decode_steps: 12
     confidence_method: max_prob

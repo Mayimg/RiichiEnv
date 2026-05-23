@@ -189,17 +189,18 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
         dropout=0.0,
     )
 
-    context_bucket_count = BUCKET_COUNT - 1
     assert not hasattr(model, "alloc_tile_embed")
+    assert not hasattr(model, "alloc_bucket_embed")
+    assert not hasattr(model, "alloc_mask_embed")
     assert model.alloc_tile_proj[0].in_features == model.encoder.tile_embed.proj.weight.shape[0]
     assert model.alloc_tile_proj[0].out_features == d_model
-    assert model.alloc_bucket_embed.num_embeddings == context_bucket_count
-    assert model.alloc_state_embed.num_embeddings == 36
-    assert model.mask_state_id == 35
-    assert model.alloc_mask_embed.num_embeddings == 2
+    assert model.alloc_tile_remaining_embed.num_embeddings == 5
+    assert model.alloc_seat_remaining_embed.num_embeddings == BeliefFeatureEncoder.HAND_SIZE_DIMS
+    assert model.alloc_state_embed.num_embeddings == 6
+    assert model.mask_state_id == 5
     assert model.alloc_time_embed.num_embeddings == 4
     assert len(model.denoise_decoder.layers) == 2
-    assert model.denoise_decoder.head.out_features == 35
+    assert model.denoise_decoder.head.out_features == 5
     assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
     assert model.tile37_to_tile34[10] == model.tile37_to_tile34[15] == 13
     assert model.tile37_to_tile34[20] == model.tile37_to_tile34[25] == 22
@@ -245,13 +246,26 @@ def test_belief_encoder_returns_public_cross_attention_memory():
     assert torch.equal(memory_padding_mask[:, static_memory_len:], ~features["prog_mask"])
     tile_emb = model._shared_alloc_tile_embeddings(tile37_table)
     assert tile_emb.shape == (2, TILE37_COUNT, 64)
-    tile_bucket_context = model._tile_bucket_context(
-        model._unseen_counts(features),
-        tile_emb,
+    seat_emb = model._shared_alloc_seat_embeddings(context.device)
+    assert seat_emb.shape == (BUCKET_COUNT - 1, 64)
+    unseen_counts = model._unseen_counts(features)
+    rem = model._initial_rem(features, unseen_counts)
+    state_ids = torch.full((2, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id)
+    step_ids = torch.zeros(2, dtype=torch.long)
+    tokens = model._token_embeddings(tile_emb, seat_emb, unseen_counts, rem[:, :3], state_ids, step_ids)
+    assert tokens.shape == (2, TILE37_COUNT * (BUCKET_COUNT - 1), 64)
+    logits = model._denoise_neural_logits(
+        context,
         memory,
         memory_padding_mask,
+        tile_emb,
+        seat_emb,
+        unseen_counts,
+        rem[:, :3],
+        state_ids,
+        step_ids,
     )
-    assert tile_bucket_context.shape == (2, TILE37_COUNT, BUCKET_COUNT - 1, 64)
+    assert logits.shape == (2, TILE37_COUNT, BUCKET_COUNT - 1, 5)
 
 
 def test_belief_model_samples_reuse_single_encoder_context():
