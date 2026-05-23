@@ -304,6 +304,45 @@ def test_belief_model_samples_reuse_single_encoder_context():
     assert samples.shape == (2, 3, 4, 37)
 
 
+def test_belief_model_samples_from_prepared_context_without_rerunning_encoder():
+    dataset = BeliefAllocationDataset(
+        [str(DATA_PATH)],
+        is_train=False,
+        n_players=4,
+        replay_rule="tenhou",
+        encoder=BeliefFeatureEncoder(),
+    )
+    items = [next(iter(dataset)) for _ in range(2)]
+    features = collate_belief_features([item[0] for item in items])
+
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    original_forward_context_and_memory = model.encoder.forward_context_and_memory
+    encoder_batch_sizes = []
+
+    def wrapped_forward_context_and_memory(batch, **kwargs):
+        encoder_batch_sizes.append(batch["visible_tile_counts"].shape[0])
+        return original_forward_context_and_memory(batch, **kwargs)
+
+    model.encoder.forward_context_and_memory = wrapped_forward_context_and_memory
+
+    sampling_context = model.prepare_allocation_sampling_context(features)
+    first = model.sample_allocations_from_context(sampling_context, num_samples=2)
+    second = model.sample_allocations_from_context(sampling_context, num_samples=2)
+
+    assert encoder_batch_sizes == [2]
+    assert first.shape == (2, 2, 4, 37)
+    assert second.shape == (2, 2, 4, 37)
+
+
 def test_belief_model_skips_invalid_targets_without_huge_loss():
     dataset = BeliefAllocationDataset(
         [str(DATA_PATH)],

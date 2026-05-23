@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -42,6 +43,23 @@ def _build_tile37_to_tile34() -> torch.Tensor:
 
 
 _TILE37_TO_TILE34 = tuple(int(tile34) for tile34 in _build_tile37_to_tile34().tolist())
+
+
+@dataclass(frozen=True)
+class AllocationSamplingContext:
+    """Encoder-side tensors reused when sampling many allocations for one observation batch."""
+
+    context: torch.Tensor
+    memory: torch.Tensor
+    memory_padding_mask: torch.Tensor
+    unseen_counts: torch.Tensor
+    tile_emb: torch.Tensor
+    seat_emb: torch.Tensor
+    rem: torch.Tensor
+
+    @property
+    def batch_size(self) -> int:
+        return int(self.context.shape[0])
 
 
 class _DenoiseLayer(nn.Module):
@@ -960,16 +978,10 @@ class JointHiddenAllocationSampler(nn.Module):
         return allocation
 
     @torch.inference_mode()
-    def sample_allocations(
+    def prepare_allocation_sampling_context(
         self,
         features: dict[str, torch.Tensor],
-        *,
-        num_samples: int = 1,
-        temperature: float = 1.0,
-        decode_steps: int | None = None,
-    ) -> torch.Tensor:
-        if num_samples <= 0:
-            raise ValueError("num_samples must be positive")
+    ) -> AllocationSamplingContext:
         context, memory, memory_padding_mask, tile37_table = self.encoder.forward_context_and_memory(
             features,
             return_tile37_table=True,
@@ -978,23 +990,60 @@ class JointHiddenAllocationSampler(nn.Module):
         tile_emb = self._shared_alloc_tile_embeddings(tile37_table)
         seat_emb = self._shared_alloc_seat_embeddings(context.device)
         rem = self._initial_rem(features, unseen_counts)
-        context = context.repeat_interleave(num_samples, dim=0)
-        tile_emb = tile_emb.repeat_interleave(num_samples, dim=0)
-        memory = memory.repeat_interleave(num_samples, dim=0)
-        memory_padding_mask = memory_padding_mask.repeat_interleave(num_samples, dim=0)
-        unseen_counts = unseen_counts.repeat_interleave(num_samples, dim=0)
-        rem = rem.repeat_interleave(num_samples, dim=0)
+        return AllocationSamplingContext(
+            context=context,
+            memory=memory,
+            memory_padding_mask=memory_padding_mask,
+            unseen_counts=unseen_counts,
+            tile_emb=tile_emb,
+            seat_emb=seat_emb,
+            rem=rem,
+        )
+
+    @torch.inference_mode()
+    def sample_allocations_from_context(
+        self,
+        sampling_context: AllocationSamplingContext,
+        *,
+        num_samples: int = 1,
+        temperature: float = 1.0,
+        decode_steps: int | None = None,
+    ) -> torch.Tensor:
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive")
+        context = sampling_context.context.repeat_interleave(num_samples, dim=0)
+        tile_emb = sampling_context.tile_emb.repeat_interleave(num_samples, dim=0)
+        memory = sampling_context.memory.repeat_interleave(num_samples, dim=0)
+        memory_padding_mask = sampling_context.memory_padding_mask.repeat_interleave(num_samples, dim=0)
+        unseen_counts = sampling_context.unseen_counts.repeat_interleave(num_samples, dim=0)
+        rem = sampling_context.rem.repeat_interleave(num_samples, dim=0)
         sampled = self._iterative_decode(
             context,
             memory,
             memory_padding_mask,
             unseen_counts,
             tile_emb,
-            seat_emb,
+            sampling_context.seat_emb,
             rem,
             sample=True,
             temperature=temperature,
             decode_steps=int(decode_steps or self.decode_steps),
         )
-        batch_size = features["visible_tile_counts"].shape[0]
-        return sampled.reshape(batch_size, num_samples, BUCKET_COUNT, TILE37_COUNT)
+        return sampled.reshape(sampling_context.batch_size, num_samples, BUCKET_COUNT, TILE37_COUNT)
+
+    @torch.inference_mode()
+    def sample_allocations(
+        self,
+        features: dict[str, torch.Tensor],
+        *,
+        num_samples: int = 1,
+        temperature: float = 1.0,
+        decode_steps: int | None = None,
+    ) -> torch.Tensor:
+        sampling_context = self.prepare_allocation_sampling_context(features)
+        return self.sample_allocations_from_context(
+            sampling_context,
+            num_samples=num_samples,
+            temperature=temperature,
+            decode_steps=decode_steps,
+        )

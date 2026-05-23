@@ -208,6 +208,17 @@ cells is then applied in confidence order while updating tile and opponent
 remaining capacities.  This keeps the sample legal without rerunning the
 transformer for each selected cell.
 
+For repeated sampling from the same fixed observation, callers can split this
+work explicitly:
+
+```python
+context = model.prepare_allocation_sampling_context(batch)
+allocation = model.sample_allocations_from_context(context, num_samples=8)
+```
+
+The prepared context contains the encoder output and public-memory tensors, so
+subsequent calls only rerun the allocation decoder.
+
 ## Log Annotation
 
 `BeliefLogSampler` runs the trained sampler on existing MJAI logs and writes
@@ -261,19 +272,23 @@ uv run python riichienv-ml/scripts/benchmark_belief_sampling.py \
 ```
 
 The default benchmark uses `samples_per_call: 256` and
-`target_duration_ms: 100.0`.  Each measurement runs at least one
-`sample_allocations(..., num_samples=samples_per_call)` call; if that call
-already exceeds the target duration, the measured `actual_duration_ms` records
-the longer real elapsed time.  CUDA measurements synchronize the device around
-timed calls so the reported samples/sec includes actual GPU execution time.
+`target_duration_ms: 100.0`.  Each decision measurement first runs the encoder
+once and caches its public-memory context, then repeatedly samples from that
+cached context until the target duration is reached.  This models the intended
+AI usage pattern: one fixed observation produces many samples without rerunning
+the observation encoder.  The reported elapsed time and samples/sec include that
+single encoder-cache preparation plus all decoder sampling calls.  CUDA
+measurements synchronize the device around timed calls so the reported
+samples/sec includes actual GPU execution time.
 
 Outputs:
 
 - `summary.json`: config, device info, per-decision measurements, overall speed,
   and aggregates by `prog_len`, `prog_len` bucket, phase, observer, and log.
 - `decisions.csv`: one row per measured decision, including `prog_len`,
-  `sparse_meld_len`, actual elapsed time, number of calls, total samples,
-  samples/sec, call durations, and peak CUDA memory when available.
+  `sparse_meld_len`, actual elapsed time, encoder-cache preparation time,
+  decoder elapsed time, number of calls, total samples, samples/sec, call
+  durations, and peak CUDA memory when available.
 - `prog_len.csv`: exact `prog_len` speed aggregates.
 - `prog_len_buckets.csv`: bucketed `prog_len` speed aggregates for quick
   comparison of early, middle, and late hand states.
