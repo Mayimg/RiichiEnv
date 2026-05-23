@@ -45,7 +45,21 @@ def _build_tile37_to_tile34() -> torch.Tensor:
     return tile34
 
 
+def _build_opponent_subset_masks() -> torch.Tensor:
+    return torch.tensor(
+        [
+            [(subset_mask >> seat) & 1 for seat in range(_OPPONENT_COUNT)]
+            for subset_mask in range(1, 1 << _OPPONENT_COUNT)
+        ],
+        dtype=torch.bool,
+    )
+
+
 _TILE37_TO_TILE34 = tuple(int(tile34) for tile34 in _build_tile37_to_tile34().tolist())
+_OPPONENT_SUBSET_FLAGS = tuple(
+    tuple(bool((subset_mask >> seat) & 1) for seat in range(_OPPONENT_COUNT))
+    for subset_mask in range(1, 1 << _OPPONENT_COUNT)
+)
 _PROFILE_RANGES_ENABLED = False
 
 
@@ -474,6 +488,9 @@ class JointHiddenAllocationSampler(nn.Module):
             torch.tensor(TOTAL_TILE_COUNTS37, dtype=torch.long),
             persistent=False,
         )
+        subset_masks = _build_opponent_subset_masks()
+        self.register_buffer("opponent_subset_masks", subset_masks, persistent=False)
+        self.register_buffer("opponent_subset_masks_long", subset_masks.long(), persistent=False)
         self.tile37_to_tile34 = _TILE37_TO_TILE34
 
     def _shared_alloc_tile_embeddings(self, tile37_table: torch.Tensor) -> torch.Tensor:
@@ -614,21 +631,20 @@ class JointHiddenAllocationSampler(nn.Module):
             & (candidates.view(1, 1, 1, -1) <= tile_value)
             & (candidates.view(1, 1, 1, -1) <= seat_value)
         )
+        subset_masks = self.opponent_subset_masks.to(tile_remaining.device)
+        subset_masks_long = self.opponent_subset_masks_long.to(tile_remaining.device)
 
-        for subset_mask in range(1, 1 << _OPPONENT_COUNT):
-            subset = torch.tensor(
-                [(subset_mask >> seat) & 1 for seat in range(_OPPONENT_COUNT)],
-                dtype=torch.bool,
-                device=tile_remaining.device,
-            )
-            base_demand = (seat_remaining * subset.long()).sum(dim=1)
+        for subset_idx, subset_flags in enumerate(_OPPONENT_SUBSET_FLAGS):
+            subset = subset_masks[subset_idx]
+            subset_long = subset_masks_long[subset_idx]
+            base_demand = (seat_remaining * subset_long).sum(dim=1)
             subset_edges = is_masked & subset.view(1, 1, _OPPONENT_COUNT)
             any_before = subset_edges.any(dim=2)
             edge_count = subset_edges.long().sum(dim=2)
             base_cap = (tile_remaining * any_before.long()).sum(dim=1)
 
             for seat in range(_OPPONENT_COUNT):
-                if subset[seat]:
+                if subset_flags[seat]:
                     demand_after = base_demand.view(-1, 1, 1) - candidates
                     any_after = edge_count > 1
                 else:
@@ -676,14 +692,13 @@ class JointHiddenAllocationSampler(nn.Module):
             - self._safe_logcomb(u_total, n_b)
         )
         feasible = is_masked[row_ids, tile37, opponent].unsqueeze(1) & (candidates <= u_t) & (candidates <= n_b)
+        subset_masks = self.opponent_subset_masks.to(tile_remaining.device)
+        subset_masks_long = self.opponent_subset_masks_long.to(tile_remaining.device)
 
-        for subset_mask in range(1, 1 << _OPPONENT_COUNT):
-            subset = torch.tensor(
-                [(subset_mask >> seat) & 1 for seat in range(_OPPONENT_COUNT)],
-                dtype=torch.bool,
-                device=tile_remaining.device,
-            )
-            base_demand = (seat_remaining * subset.long()).sum(dim=1)
+        for subset_idx in range(len(_OPPONENT_SUBSET_FLAGS)):
+            subset = subset_masks[subset_idx]
+            subset_long = subset_masks_long[subset_idx]
+            base_demand = (seat_remaining * subset_long).sum(dim=1)
             subset_edges = is_masked & subset.view(1, 1, _OPPONENT_COUNT)
             any_before = subset_edges.any(dim=2)
             edge_count = subset_edges.long().sum(dim=2)

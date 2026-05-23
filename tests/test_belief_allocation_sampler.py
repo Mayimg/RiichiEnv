@@ -201,6 +201,11 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     assert model.alloc_time_embed.num_embeddings == 4
     assert len(model.denoise_decoder.layers) == 2
     assert model.denoise_decoder.head.out_features == 5
+    assert model.opponent_subset_masks.shape == (7, BUCKET_COUNT - 1)
+    assert model.opponent_subset_masks.dtype == torch.bool
+    assert torch.equal(model.opponent_subset_masks_long, model.opponent_subset_masks.long())
+    assert "opponent_subset_masks" not in model.state_dict()
+    assert "opponent_subset_masks_long" not in model.state_dict()
     assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
     assert model.tile37_to_tile34[10] == model.tile37_to_tile34[15] == 13
     assert model.tile37_to_tile34[20] == model.tile37_to_tile34[25] == 22
