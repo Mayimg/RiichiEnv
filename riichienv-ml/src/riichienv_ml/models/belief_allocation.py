@@ -935,6 +935,7 @@ class JointHiddenAllocationSampler(nn.Module):
         seat_remaining = rem[:, :_OPPONENT_COUNT].clone()
         temp = max(float(temperature), 1e-6)
         batch_indices = torch.arange(batch_size, device=device)
+        remaining_count = _ALLOCATION_TOKEN_COUNT
 
         with _profile_range("belief/iterative_decode"):
             for step in range(decode_steps):
@@ -962,37 +963,30 @@ class JointHiddenAllocationSampler(nn.Module):
                         confidence = self._confidence(probs, self.confidence_method)
                         confidence = confidence.masked_fill(~is_masked, torch.finfo(confidence.dtype).min)
 
-                        remaining = is_masked.flatten(1).sum(dim=1)
                         if step == decode_steps - 1:
-                            n_to_unmask = remaining
+                            n_to_unmask = remaining_count
                         else:
                             target_unmasked = self._cosine_target_unmasked(step, decode_steps)
-                            current_unmasked = _ALLOCATION_TOKEN_COUNT - remaining
-                            n_to_unmask = (target_unmasked - current_unmasked).clamp(min=0)
-                            n_to_unmask = torch.minimum(n_to_unmask, remaining)
+                            current_unmasked = _ALLOCATION_TOKEN_COUNT - remaining_count
+                            n_to_unmask = max(0, min(target_unmasked - current_unmasked, remaining_count))
 
-                        max_to_unmask = int(n_to_unmask.max().item())
-                        if max_to_unmask == 0:
+                        if n_to_unmask == 0:
                             continue
                         token_order = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argsort(
                             dim=1,
                             descending=True,
                         )
                     with _profile_range("belief/cell_sampling_loop"):
-                        for rank in range(max_to_unmask):
-                            active = rank < n_to_unmask
-                            if not active.any():
-                                continue
-                            rows = batch_indices[active]
-                            token = token_order[rows, rank]
+                        for rank in range(n_to_unmask):
+                            token = token_order[:, rank]
                             tile37 = torch.div(token, _OPPONENT_COUNT, rounding_mode="floor")
                             opponent = token % _OPPONENT_COUNT
-                            cell_neural_logits = neural_logits[rows, tile37, opponent]
+                            cell_neural_logits = neural_logits[batch_indices, tile37, opponent]
                             cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
                                 cell_neural_logits,
-                                tile_remaining[rows],
-                                seat_remaining[rows],
-                                is_masked[rows],
+                                tile_remaining,
+                                seat_remaining,
+                                is_masked,
                                 tile37,
                                 opponent,
                             )
@@ -1002,11 +996,12 @@ class JointHiddenAllocationSampler(nn.Module):
                             else:
                                 chosen = cell_logits.argmax(dim=1)
 
-                            allocation[rows, opponent, tile37] = chosen
-                            state_ids[rows, tile37, opponent] = chosen
-                            tile_remaining[rows, tile37] = tile_remaining[rows, tile37] - chosen
-                            seat_remaining[rows, opponent] = seat_remaining[rows, opponent] - chosen
-                            is_masked[rows, tile37, opponent] = False
+                            allocation[batch_indices, opponent, tile37] = chosen
+                            state_ids[batch_indices, tile37, opponent] = chosen
+                            tile_remaining[batch_indices, tile37] = tile_remaining[batch_indices, tile37] - chosen
+                            seat_remaining[batch_indices, opponent] = seat_remaining[batch_indices, opponent] - chosen
+                            is_masked[batch_indices, tile37, opponent] = False
+                    remaining_count -= n_to_unmask
 
         allocation[:, BUCKET_COUNT - 1] = unseen_counts - allocation[:, :_OPPONENT_COUNT].sum(dim=1)
         return allocation
