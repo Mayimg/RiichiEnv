@@ -117,6 +117,26 @@ class AllocationDecodeState:
     seat_remaining: torch.Tensor
     is_masked: torch.Tensor
 
+    def apply_cell_update(
+        self,
+        batch_indices: torch.Tensor,
+        token: torch.Tensor,
+        tile37: torch.Tensor,
+        opponent: torch.Tensor,
+        chosen: torch.Tensor,
+    ) -> None:
+        allocation_index = batch_indices * (BUCKET_COUNT * TILE37_COUNT) + opponent * TILE37_COUNT + tile37
+        state_index = batch_indices * _ALLOCATION_TOKEN_COUNT + token
+        tile_index = batch_indices * TILE37_COUNT + tile37
+        seat_index = batch_indices * _OPPONENT_COUNT + opponent
+        neg_chosen = -chosen
+
+        self.allocation.view(-1).index_copy_(0, allocation_index, chosen)
+        self.state_ids.view(-1).index_copy_(0, state_index, chosen)
+        self.tile_remaining.view(-1).scatter_add_(0, tile_index, neg_chosen)
+        self.seat_remaining.view(-1).scatter_add_(0, seat_index, neg_chosen)
+        self.is_masked.view(-1).index_fill_(0, state_index, False)
+
 
 class _DenoiseLayer(nn.Module):
     """Pre-LN bidirectional decoder layer with public-memory cross attention."""
@@ -986,11 +1006,7 @@ class JointHiddenAllocationSampler(nn.Module):
         else:
             chosen = cell_logits.argmax(dim=1)
 
-        state.allocation[batch_indices, opponent, tile37] = chosen
-        state.state_ids[batch_indices, tile37, opponent] = chosen
-        state.tile_remaining[batch_indices, tile37] = state.tile_remaining[batch_indices, tile37] - chosen
-        state.seat_remaining[batch_indices, opponent] = state.seat_remaining[batch_indices, opponent] - chosen
-        state.is_masked[batch_indices, tile37, opponent] = False
+        state.apply_cell_update(batch_indices, token, tile37, opponent, chosen)
         return tile37, opponent, chosen
 
     def _iterative_decode(  # noqa: PLR0915
