@@ -682,6 +682,45 @@ class JointHiddenAllocationSampler(nn.Module):
             logits = self._hypergeom_prior(tile_remaining, seat_remaining, is_masked) + neural_logits
             return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible
 
+    def _selected_cell_hall_feasible(
+        self,
+        tile_remaining: torch.Tensor,
+        seat_remaining: torch.Tensor,
+        is_masked: torch.Tensor,
+        tile37: torch.Tensor,
+        opponent: torch.Tensor,
+        candidates: torch.Tensor,
+        u_t: torch.Tensor,
+    ) -> torch.Tensor:
+        subset_masks = self.opponent_subset_masks.to(tile_remaining.device)
+        subset_masks_long = self.opponent_subset_masks_long.to(tile_remaining.device)
+        subset_count = subset_masks.shape[0]
+
+        base_demand = (seat_remaining.unsqueeze(1) * subset_masks_long.view(1, subset_count, _OPPONENT_COUNT)).sum(
+            dim=2
+        )
+        subset_edges = is_masked.unsqueeze(1) & subset_masks.view(1, subset_count, 1, _OPPONENT_COUNT)
+        any_before = subset_edges.any(dim=3)
+        edge_count = subset_edges.long().sum(dim=3)
+        base_cap = (tile_remaining.unsqueeze(1) * any_before.long()).sum(dim=2)
+
+        tile_index = tile37.view(-1, 1, 1).expand(-1, subset_count, 1)
+        any_before_cell = any_before.gather(2, tile_index).squeeze(2)
+        edge_count_cell = edge_count.gather(2, tile_index).squeeze(2)
+        opponent_in_subset = subset_masks.gather(1, opponent.view(1, -1).expand(subset_count, -1)).transpose(0, 1)
+
+        candidate_values = candidates.view(1, 1, _COUNT_CANDIDATES)
+        opponent_in_subset_long = opponent_in_subset.long()
+        any_before_cell_long = any_before_cell.long()
+        any_after_cell_long = torch.where(opponent_in_subset, edge_count_cell > 1, any_before_cell).long()
+        demand_after = base_demand.unsqueeze(2) - opponent_in_subset_long.unsqueeze(2) * candidate_values
+        cap_after = (
+            base_cap.unsqueeze(2)
+            - u_t.unsqueeze(1) * any_before_cell_long.unsqueeze(2)
+            + (u_t.unsqueeze(1) - candidate_values) * any_after_cell_long.unsqueeze(2)
+        )
+        return (demand_after <= cap_after).all(dim=1)
+
     def _apply_prior_and_legality_for_cells(
         self,
         neural_logits: torch.Tensor,
@@ -703,32 +742,15 @@ class JointHiddenAllocationSampler(nn.Module):
             - self._safe_logcomb(u_total, n_b)
         )
         feasible = is_masked[row_ids, tile37, opponent].unsqueeze(1) & (candidates <= u_t) & (candidates <= n_b)
-        subset_masks = self.opponent_subset_masks.to(tile_remaining.device)
-        subset_masks_long = self.opponent_subset_masks_long.to(tile_remaining.device)
-
-        for subset_idx in range(len(_OPPONENT_SUBSET_FLAGS)):
-            subset = subset_masks[subset_idx]
-            subset_long = subset_masks_long[subset_idx]
-            base_demand = (seat_remaining * subset_long).sum(dim=1)
-            subset_edges = is_masked & subset.view(1, 1, _OPPONENT_COUNT)
-            any_before = subset_edges.any(dim=2)
-            edge_count = subset_edges.long().sum(dim=2)
-            base_cap = (tile_remaining * any_before.long()).sum(dim=1)
-            any_before_cell = any_before[row_ids, tile37]
-            edge_count_cell = edge_count[row_ids, tile37]
-            opponent_in_subset = subset[opponent]
-            any_after_cell = torch.where(opponent_in_subset, edge_count_cell > 1, any_before_cell)
-            demand_after = base_demand.unsqueeze(1) - torch.where(
-                opponent_in_subset.unsqueeze(1),
-                candidates,
-                torch.zeros_like(candidates),
-            )
-            cap_after = (
-                base_cap.unsqueeze(1)
-                - u_t * any_before_cell.long().unsqueeze(1)
-                + (u_t - candidates) * any_after_cell.long().unsqueeze(1)
-            )
-            feasible &= demand_after <= cap_after
+        feasible &= self._selected_cell_hall_feasible(
+            tile_remaining,
+            seat_remaining,
+            is_masked,
+            tile37,
+            opponent,
+            candidates,
+            u_t,
+        )
 
         logits = prior + neural_logits
         return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible

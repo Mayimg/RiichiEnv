@@ -236,6 +236,50 @@ def test_belief_model_logcomb_lookup_matches_clamped_lgamma():
     assert torch.allclose(model._safe_logcomb(n, k), expected)
 
 
+def test_belief_model_selected_cell_legality_matches_full_legality():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    generator = torch.Generator().manual_seed(11)
+    batch_size = 5
+    tile_remaining = torch.randint(0, 5, (batch_size, TILE37_COUNT), generator=generator)
+    seat_remaining = torch.randint(0, 14, (batch_size, BUCKET_COUNT - 1), generator=generator)
+    is_masked = torch.rand(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, generator=generator) > 0.35
+    tile37 = torch.tensor([0, 5, 10, 20, 36])
+    opponent = torch.tensor([0, 1, 2, 0, 2])
+    neural_logits = torch.randn(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, 5, generator=generator)
+    row_ids = torch.arange(batch_size)
+
+    full_logits, full_feasible = model._apply_prior_and_legality(
+        neural_logits,
+        tile_remaining,
+        seat_remaining,
+        is_masked,
+    )
+    cell_logits, cell_feasible = model._apply_prior_and_legality_for_cells(
+        neural_logits[row_ids, tile37, opponent],
+        tile_remaining,
+        seat_remaining,
+        is_masked,
+        tile37,
+        opponent,
+    )
+
+    expected_logits = full_logits[row_ids, tile37, opponent]
+    expected_feasible = full_feasible[row_ids, tile37, opponent]
+    finite = torch.isfinite(expected_logits)
+    assert torch.equal(cell_feasible, expected_feasible)
+    assert torch.equal(torch.isneginf(cell_logits), torch.isneginf(expected_logits))
+    assert torch.allclose(cell_logits[finite], expected_logits[finite])
+
+
 def test_belief_encoder_returns_public_cross_attention_memory():
     dataset = BeliefAllocationDataset(
         [str(DATA_PATH)],
