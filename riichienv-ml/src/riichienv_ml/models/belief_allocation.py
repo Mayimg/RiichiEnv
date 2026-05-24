@@ -31,6 +31,7 @@ _COUNT_CANDIDATES = 5
 _TILE34_COUNT = 34
 _OPPONENT_COUNT = BUCKET_COUNT - 1
 _ALLOCATION_TOKEN_COUNT = TILE37_COUNT * _OPPONENT_COUNT
+_MAX_LOGCOMB_COUNT = int(sum(TOTAL_TILE_COUNTS37))
 
 
 def _build_tile37_to_tile34() -> torch.Tensor:
@@ -53,6 +54,13 @@ def _build_opponent_subset_masks() -> torch.Tensor:
         ],
         dtype=torch.bool,
     )
+
+
+def _build_logcomb_table() -> torch.Tensor:
+    counts = torch.arange(_MAX_LOGCOMB_COUNT + 1, dtype=torch.float32)
+    n = counts.view(-1, 1)
+    k = torch.minimum(counts.view(1, -1), n)
+    return torch.lgamma(n + 1.0) - torch.lgamma(k + 1.0) - torch.lgamma(n - k + 1.0)
 
 
 _TILE37_TO_TILE34 = tuple(int(tile34) for tile34 in _build_tile37_to_tile34().tolist())
@@ -491,6 +499,7 @@ class JointHiddenAllocationSampler(nn.Module):
         subset_masks = _build_opponent_subset_masks()
         self.register_buffer("opponent_subset_masks", subset_masks, persistent=False)
         self.register_buffer("opponent_subset_masks_long", subset_masks.long(), persistent=False)
+        self.register_buffer("logcomb_table", _build_logcomb_table(), persistent=False)
         self.tile37_to_tile34 = _TILE37_TO_TILE34
 
     def _shared_alloc_tile_embeddings(self, tile37_table: torch.Tensor) -> torch.Tensor:
@@ -523,12 +532,14 @@ class JointHiddenAllocationSampler(nn.Module):
         sample_valid = teacher_path_valid & bucket_valid
         return sample_valid, teacher_path_valid
 
-    @staticmethod
-    def _safe_logcomb(n: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        n_f = n.float().clamp_min(0.0)
-        k_f = k.float().clamp_min(0.0)
-        k_f = torch.minimum(k_f, n_f)
-        return torch.lgamma(n_f + 1.0) - torch.lgamma(k_f + 1.0) - torch.lgamma(n_f - k_f + 1.0)
+    def _safe_logcomb(self, n: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+        table = self.logcomb_table
+        if table.device != n.device:
+            table = table.to(n.device)
+        n_idx = n.clamp(min=0, max=_MAX_LOGCOMB_COUNT).long()
+        k_idx = k.clamp(min=0, max=_MAX_LOGCOMB_COUNT).long()
+        k_idx = torch.minimum(k_idx, n_idx)
+        return table[n_idx, k_idx]
 
     def _decoder_memory(
         self,

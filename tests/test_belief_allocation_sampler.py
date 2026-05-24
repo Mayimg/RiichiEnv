@@ -206,9 +206,34 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     assert torch.equal(model.opponent_subset_masks_long, model.opponent_subset_masks.long())
     assert "opponent_subset_masks" not in model.state_dict()
     assert "opponent_subset_masks_long" not in model.state_dict()
+    assert model.logcomb_table.shape == (int(sum(TOTAL_TILE_COUNTS37)) + 1, int(sum(TOTAL_TILE_COUNTS37)) + 1)
+    assert model.logcomb_table.dtype == torch.float32
+    assert "logcomb_table" not in model.state_dict()
     assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
     assert model.tile37_to_tile34[10] == model.tile37_to_tile34[15] == 13
     assert model.tile37_to_tile34[20] == model.tile37_to_tile34[25] == 22
+
+
+def test_belief_model_logcomb_lookup_matches_clamped_lgamma():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    n = torch.tensor([[4, 4, 3, -1, 2]])
+    k = torch.tensor([[0, 2, 5, 1, -3]])
+
+    n_f = n.float().clamp_min(0.0)
+    k_f = k.float().clamp_min(0.0)
+    k_f = torch.minimum(k_f, n_f)
+    expected = torch.lgamma(n_f + 1.0) - torch.lgamma(k_f + 1.0) - torch.lgamma(n_f - k_f + 1.0)
+
+    assert torch.allclose(model._safe_logcomb(n, k), expected)
 
 
 def test_belief_encoder_returns_public_cross_attention_memory():
