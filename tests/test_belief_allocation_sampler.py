@@ -236,6 +236,73 @@ def test_belief_model_logcomb_lookup_matches_clamped_lgamma():
     assert torch.allclose(model._safe_logcomb(n, k), expected)
 
 
+def _reference_cell_hall_feasible(
+    model: JointHiddenAllocationSampler,
+    tile_remaining: torch.Tensor,
+    seat_remaining: torch.Tensor,
+    is_masked: torch.Tensor,
+) -> torch.Tensor:
+    opponent_count = BUCKET_COUNT - 1
+    candidates = model.count_candidates.to(tile_remaining.device).view(1, 1, -1)
+    tile_value = tile_remaining.unsqueeze(2).unsqueeze(-1)
+    seat_value = seat_remaining.unsqueeze(1).unsqueeze(-1)
+    feasible = (
+        is_masked.unsqueeze(-1)
+        & (candidates.view(1, 1, 1, -1) <= tile_value)
+        & (candidates.view(1, 1, 1, -1) <= seat_value)
+    )
+    subset_masks = model.opponent_subset_masks.to(tile_remaining.device)
+    subset_masks_long = model.opponent_subset_masks_long.to(tile_remaining.device)
+
+    for subset_idx in range(subset_masks.shape[0]):
+        subset = subset_masks[subset_idx]
+        subset_long = subset_masks_long[subset_idx]
+        base_demand = (seat_remaining * subset_long).sum(dim=1)
+        subset_edges = is_masked & subset.view(1, 1, opponent_count)
+        any_before = subset_edges.any(dim=2)
+        edge_count = subset_edges.long().sum(dim=2)
+        base_cap = (tile_remaining * any_before.long()).sum(dim=1)
+
+        for seat in range(opponent_count):
+            if bool(subset[seat].item()):
+                demand_after = base_demand.view(-1, 1, 1) - candidates
+                any_after = edge_count > 1
+            else:
+                demand_after = base_demand.view(-1, 1, 1)
+                any_after = any_before
+            cap_after = (
+                base_cap.view(-1, 1, 1)
+                - tile_remaining.unsqueeze(-1) * any_before.long().unsqueeze(-1)
+                + (tile_remaining.unsqueeze(-1) - candidates) * any_after.long().unsqueeze(-1)
+            )
+            feasible[:, :, seat, :] &= demand_after <= cap_after
+
+    return feasible
+
+
+def test_belief_model_full_hall_legality_matches_reference_loop():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    generator = torch.Generator().manual_seed(23)
+    batch_size = 4
+    tile_remaining = torch.randint(0, 5, (batch_size, TILE37_COUNT), generator=generator)
+    seat_remaining = torch.randint(0, 14, (batch_size, BUCKET_COUNT - 1), generator=generator)
+    is_masked = torch.rand(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, generator=generator) > 0.4
+
+    actual = model._cell_hall_feasible(tile_remaining, seat_remaining, is_masked)
+    expected = _reference_cell_hall_feasible(model, tile_remaining, seat_remaining, is_masked)
+
+    assert torch.equal(actual, expected)
+
+
 def test_belief_model_selected_cell_legality_matches_full_legality():
     model = JointHiddenAllocationSampler(
         d_model=64,

@@ -644,31 +644,29 @@ class JointHiddenAllocationSampler(nn.Module):
         )
         subset_masks = self.opponent_subset_masks.to(tile_remaining.device)
         subset_masks_long = self.opponent_subset_masks_long.to(tile_remaining.device)
+        subset_count = subset_masks.shape[0]
 
-        for subset_idx, subset_flags in enumerate(_OPPONENT_SUBSET_FLAGS):
-            subset = subset_masks[subset_idx]
-            subset_long = subset_masks_long[subset_idx]
-            base_demand = (seat_remaining * subset_long).sum(dim=1)
-            subset_edges = is_masked & subset.view(1, 1, _OPPONENT_COUNT)
-            any_before = subset_edges.any(dim=2)
-            edge_count = subset_edges.long().sum(dim=2)
-            base_cap = (tile_remaining * any_before.long()).sum(dim=1)
+        base_demand = (seat_remaining.unsqueeze(1) * subset_masks_long.view(1, subset_count, _OPPONENT_COUNT)).sum(
+            dim=2
+        )
+        subset_edges = is_masked.unsqueeze(1) & subset_masks.view(1, subset_count, 1, _OPPONENT_COUNT)
+        any_before = subset_edges.any(dim=3)
+        edge_count = subset_edges.long().sum(dim=3)
+        any_before_long = any_before.long()
+        base_cap = (tile_remaining.unsqueeze(1) * any_before_long).sum(dim=2)
 
-            for seat in range(_OPPONENT_COUNT):
-                if subset_flags[seat]:
-                    demand_after = base_demand.view(-1, 1, 1) - candidates
-                    any_after = edge_count > 1
-                else:
-                    demand_after = base_demand.view(-1, 1, 1)
-                    any_after = any_before
-                cap_after = (
-                    base_cap.view(-1, 1, 1)
-                    - tile_remaining.unsqueeze(-1) * any_before.long().unsqueeze(-1)
-                    + (tile_remaining.unsqueeze(-1) - candidates) * any_after.long().unsqueeze(-1)
-                )
-                feasible[:, :, seat, :] &= demand_after <= cap_after
-
-        return feasible
+        candidate_values = candidates.view(1, 1, 1, 1, _COUNT_CANDIDATES)
+        tile_values = tile_remaining.view(tile_remaining.shape[0], 1, TILE37_COUNT, 1, 1)
+        opponent_in_subset = subset_masks.view(1, subset_count, 1, _OPPONENT_COUNT)
+        opponent_in_subset_long = subset_masks_long.view(1, subset_count, 1, _OPPONENT_COUNT, 1)
+        any_after = torch.where(opponent_in_subset, edge_count.unsqueeze(3) > 1, any_before.unsqueeze(3))
+        demand_after = base_demand.view(-1, subset_count, 1, 1, 1) - opponent_in_subset_long * candidate_values
+        cap_after = (
+            base_cap.view(-1, subset_count, 1, 1, 1)
+            - tile_values * any_before_long.unsqueeze(3).unsqueeze(4)
+            + (tile_values - candidate_values) * any_after.long().unsqueeze(4)
+        )
+        return feasible & (demand_after <= cap_after).all(dim=1)
 
     def _apply_prior_and_legality(
         self,
