@@ -56,6 +56,20 @@ def _build_opponent_subset_masks() -> torch.Tensor:
     )
 
 
+def _build_allocation_token_tile37() -> torch.Tensor:
+    return torch.arange(_ALLOCATION_TOKEN_COUNT, dtype=torch.long) // _OPPONENT_COUNT
+
+
+def _build_allocation_token_opponent() -> torch.Tensor:
+    return torch.arange(_ALLOCATION_TOKEN_COUNT, dtype=torch.long) % _OPPONENT_COUNT
+
+
+def _build_allocation_token_allocation_offset() -> torch.Tensor:
+    tile37 = _build_allocation_token_tile37()
+    opponent = _build_allocation_token_opponent()
+    return opponent * TILE37_COUNT + tile37
+
+
 def _build_logcomb_table() -> torch.Tensor:
     counts = torch.arange(_MAX_LOGCOMB_COUNT + 1, dtype=torch.float32)
     n = counts.view(-1, 1)
@@ -107,6 +121,25 @@ class AllocationSamplingContext:
         return int(self.context.shape[0])
 
 
+@dataclass(frozen=True)
+class AllocationDecodeBatchOffsets:
+    """Batch-specific flat-index offsets used while decoding."""
+
+    allocation: torch.Tensor
+    state: torch.Tensor
+    tile: torch.Tensor
+    seat: torch.Tensor
+
+
+@dataclass(frozen=True)
+class AllocationDecodeTokenLookup:
+    """Token-indexed lookup buffers for hidden-allocation cells."""
+
+    tile37: torch.Tensor
+    opponent: torch.Tensor
+    allocation_offset: torch.Tensor
+
+
 @dataclass
 class AllocationDecodeState:
     """Mutable tensors updated while decoding hidden allocations."""
@@ -119,16 +152,16 @@ class AllocationDecodeState:
 
     def apply_cell_update(
         self,
-        batch_indices: torch.Tensor,
-        token: torch.Tensor,
+        batch_offsets: AllocationDecodeBatchOffsets,
+        state_index: torch.Tensor,
         tile37: torch.Tensor,
         opponent: torch.Tensor,
+        allocation_offset: torch.Tensor,
         chosen: torch.Tensor,
     ) -> None:
-        allocation_index = batch_indices * (BUCKET_COUNT * TILE37_COUNT) + opponent * TILE37_COUNT + tile37
-        state_index = batch_indices * _ALLOCATION_TOKEN_COUNT + token
-        tile_index = batch_indices * TILE37_COUNT + tile37
-        seat_index = batch_indices * _OPPONENT_COUNT + opponent
+        allocation_index = batch_offsets.allocation + allocation_offset
+        tile_index = batch_offsets.tile + tile37
+        seat_index = batch_offsets.seat + opponent
         neg_chosen = -chosen
 
         self.allocation.view(-1).index_copy_(0, allocation_index, chosen)
@@ -530,6 +563,13 @@ class JointHiddenAllocationSampler(nn.Module):
         subset_masks = _build_opponent_subset_masks()
         self.register_buffer("opponent_subset_masks", subset_masks, persistent=False)
         self.register_buffer("opponent_subset_masks_long", subset_masks.long(), persistent=False)
+        self.register_buffer("allocation_token_tile37", _build_allocation_token_tile37(), persistent=False)
+        self.register_buffer("allocation_token_opponent", _build_allocation_token_opponent(), persistent=False)
+        self.register_buffer(
+            "allocation_token_allocation_offset",
+            _build_allocation_token_allocation_offset(),
+            persistent=False,
+        )
         self.register_buffer("logcomb_table", _build_logcomb_table(), persistent=False)
         self.tile37_to_tile34 = _TILE37_TO_TILE34
 
@@ -539,6 +579,22 @@ class JointHiddenAllocationSampler(nn.Module):
     def _shared_alloc_seat_embeddings(self, device: torch.device) -> torch.Tensor:
         seats = torch.arange(1, BUCKET_COUNT, dtype=torch.long, device=device)
         return self.encoder._seat_model(seats, _SEAT_ROLE_PLAYER_INFO)
+
+    def _decode_token_lookup(self, device: torch.device) -> AllocationDecodeTokenLookup:
+        return AllocationDecodeTokenLookup(
+            tile37=self.allocation_token_tile37.to(device),
+            opponent=self.allocation_token_opponent.to(device),
+            allocation_offset=self.allocation_token_allocation_offset.to(device),
+        )
+
+    @staticmethod
+    def _decode_batch_offsets(batch_indices: torch.Tensor) -> AllocationDecodeBatchOffsets:
+        return AllocationDecodeBatchOffsets(
+            allocation=batch_indices * (BUCKET_COUNT * TILE37_COUNT),
+            state=batch_indices * _ALLOCATION_TOKEN_COUNT,
+            tile=batch_indices * TILE37_COUNT,
+            seat=batch_indices * _OPPONENT_COUNT,
+        )
 
     def _unseen_counts(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         visible = features["visible_tile_counts"][:, :, 1].long()
@@ -981,32 +1037,55 @@ class JointHiddenAllocationSampler(nn.Module):
 
     def _sample_and_apply_cell_step(
         self,
-        neural_logits: torch.Tensor,
+        neural_logits_cells: torch.Tensor,
         state: AllocationDecodeState,
         token: torch.Tensor,
-        batch_indices: torch.Tensor,
+        tile37: torch.Tensor,
+        opponent: torch.Tensor,
+        allocation_offset: torch.Tensor,
+        batch_offsets: AllocationDecodeBatchOffsets,
         *,
         sample: bool,
         temp: float,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        tile37 = torch.div(token, _OPPONENT_COUNT, rounding_mode="floor")
-        opponent = token % _OPPONENT_COUNT
-        cell_neural_logits = neural_logits[batch_indices, tile37, opponent]
-        cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
-            cell_neural_logits,
-            state.tile_remaining,
-            state.seat_remaining,
-            state.is_masked,
-            tile37,
-            opponent,
-        )
-        if sample:
-            cell_probs = F.softmax(cell_logits / temp, dim=1)
-            chosen = torch.multinomial(cell_probs, 1).squeeze(1)
+        if _PROFILE_RANGES_ENABLED:
+            with _profile_range("belief/cell_lookup"):
+                state_index = batch_offsets.state + token
+                cell_neural_logits = neural_logits_cells.index_select(0, state_index)
+            with _profile_range("belief/cell_legality"):
+                cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
+                    cell_neural_logits,
+                    state.tile_remaining,
+                    state.seat_remaining,
+                    state.is_masked,
+                    tile37,
+                    opponent,
+                )
+            with _profile_range("belief/cell_sample"):
+                if sample:
+                    cell_probs = F.softmax(cell_logits / temp, dim=1)
+                    chosen = torch.multinomial(cell_probs, 1).squeeze(1)
+                else:
+                    chosen = cell_logits.argmax(dim=1)
+            with _profile_range("belief/cell_state_update"):
+                state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
         else:
-            chosen = cell_logits.argmax(dim=1)
-
-        state.apply_cell_update(batch_indices, token, tile37, opponent, chosen)
+            state_index = batch_offsets.state + token
+            cell_neural_logits = neural_logits_cells.index_select(0, state_index)
+            cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
+                cell_neural_logits,
+                state.tile_remaining,
+                state.seat_remaining,
+                state.is_masked,
+                tile37,
+                opponent,
+            )
+            if sample:
+                cell_probs = F.softmax(cell_logits / temp, dim=1)
+                chosen = torch.multinomial(cell_probs, 1).squeeze(1)
+            else:
+                chosen = cell_logits.argmax(dim=1)
+            state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
         return tile37, opponent, chosen
 
     def _iterative_decode(  # noqa: PLR0915
@@ -1044,6 +1123,8 @@ class JointHiddenAllocationSampler(nn.Module):
         )
         temp = max(float(temperature), 1e-6)
         batch_indices = torch.arange(batch_size, device=device)
+        batch_offsets = self._decode_batch_offsets(batch_indices)
+        token_lookup = self._decode_token_lookup(device)
         remaining_count = _ALLOCATION_TOKEN_COUNT
 
         with _profile_range("belief/iterative_decode"):
@@ -1061,6 +1142,7 @@ class JointHiddenAllocationSampler(nn.Module):
                         state.state_ids,
                         step_ids,
                     )
+                    neural_logits_cells = neural_logits.reshape(batch_size * _ALLOCATION_TOKEN_COUNT, _COUNT_CANDIDATES)
                     logits, _feasible = self._apply_prior_and_legality(
                         neural_logits,
                         state.tile_remaining,
@@ -1085,14 +1167,32 @@ class JointHiddenAllocationSampler(nn.Module):
                             dim=1,
                             descending=True,
                         )
+                        selected_token_order = token_order[:, :n_to_unmask]
+                        with _profile_range("belief/token_lookup_order"):
+                            selected_tokens = selected_token_order.reshape(-1)
+                            token_tile37_order = token_lookup.tile37.index_select(0, selected_tokens).reshape(
+                                batch_size,
+                                n_to_unmask,
+                            )
+                            token_opponent_order = token_lookup.opponent.index_select(0, selected_tokens).reshape(
+                                batch_size,
+                                n_to_unmask,
+                            )
+                            token_allocation_offset_order = token_lookup.allocation_offset.index_select(
+                                0,
+                                selected_tokens,
+                            ).reshape(batch_size, n_to_unmask)
                     with _profile_range("belief/cell_sampling_loop"):
                         for rank in range(n_to_unmask):
-                            token = token_order[:, rank]
+                            token = selected_token_order[:, rank]
                             self._sample_and_apply_cell_step(
-                                neural_logits,
+                                neural_logits_cells,
                                 state,
                                 token,
-                                batch_indices,
+                                token_tile37_order[:, rank],
+                                token_opponent_order[:, rank],
+                                token_allocation_offset_order[:, rank],
+                                batch_offsets,
                                 sample=sample,
                                 temp=temp,
                             )

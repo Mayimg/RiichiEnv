@@ -347,6 +347,28 @@ def test_belief_model_selected_cell_legality_matches_full_legality():
     assert torch.allclose(cell_logits[finite], expected_logits[finite])
 
 
+def test_belief_model_decode_token_lookup_buffers():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    tokens = torch.arange(TILE37_COUNT * (BUCKET_COUNT - 1))
+    expected_tile37 = tokens // (BUCKET_COUNT - 1)
+    expected_opponent = tokens % (BUCKET_COUNT - 1)
+    expected_allocation_offset = expected_opponent * TILE37_COUNT + expected_tile37
+    lookup = model._decode_token_lookup(torch.device("cpu"))
+
+    assert torch.equal(lookup.tile37, expected_tile37)
+    assert torch.equal(lookup.opponent, expected_opponent)
+    assert torch.equal(lookup.allocation_offset, expected_allocation_offset)
+
+
 def test_belief_model_cell_step_updates_decode_state():
     model = JointHiddenAllocationSampler(
         d_model=64,
@@ -365,6 +387,10 @@ def test_belief_model_cell_step_updates_decode_state():
     tile37 = torch.div(token, BUCKET_COUNT - 1, rounding_mode="floor")
     opponent = token % (BUCKET_COUNT - 1)
     neural_logits = torch.randn(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, 5, generator=generator)
+    neural_logits_cells = neural_logits.reshape(batch_size * TILE37_COUNT * (BUCKET_COUNT - 1), 5)
+    batch_offsets = model._decode_batch_offsets(batch_indices)
+    token_lookup = model._decode_token_lookup(torch.device("cpu"))
+    allocation_offset = token_lookup.allocation_offset.index_select(0, token)
     state = AllocationDecodeState(
         allocation=torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
         state_ids=torch.full((batch_size, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id, dtype=torch.long),
@@ -394,10 +420,13 @@ def test_belief_model_cell_step_updates_decode_state():
     expected_is_masked[batch_indices, tile37, opponent] = False
 
     actual_tile37, actual_opponent, actual_chosen = model._sample_and_apply_cell_step(
-        neural_logits,
+        neural_logits_cells,
         state,
         token,
-        batch_indices,
+        tile37,
+        opponent,
+        allocation_offset,
+        batch_offsets,
         sample=False,
         temp=1.0,
     )
