@@ -13,7 +13,7 @@ from riichienv_ml.features.belief_features import (
     BeliefFeatureEncoder,
     collate_belief_features,
 )
-from riichienv_ml.models.belief_allocation import JointHiddenAllocationSampler
+from riichienv_ml.models.belief_allocation import AllocationDecodeState, JointHiddenAllocationSampler
 
 from riichienv import MjaiReplay
 
@@ -345,6 +345,71 @@ def test_belief_model_selected_cell_legality_matches_full_legality():
     assert torch.equal(cell_feasible, expected_feasible)
     assert torch.equal(torch.isneginf(cell_logits), torch.isneginf(expected_logits))
     assert torch.allclose(cell_logits[finite], expected_logits[finite])
+
+
+def test_belief_model_cell_step_updates_decode_state():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    generator = torch.Generator().manual_seed(31)
+    batch_size = 3
+    batch_indices = torch.arange(batch_size)
+    token = torch.tensor([0, 5 * (BUCKET_COUNT - 1) + 1, 10 * (BUCKET_COUNT - 1) + 2])
+    tile37 = torch.div(token, BUCKET_COUNT - 1, rounding_mode="floor")
+    opponent = token % (BUCKET_COUNT - 1)
+    neural_logits = torch.randn(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, 5, generator=generator)
+    state = AllocationDecodeState(
+        allocation=torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
+        state_ids=torch.full((batch_size, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id, dtype=torch.long),
+        tile_remaining=torch.full((batch_size, TILE37_COUNT), 4, dtype=torch.long),
+        seat_remaining=torch.full((batch_size, BUCKET_COUNT - 1), 13, dtype=torch.long),
+        is_masked=torch.ones(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool),
+    )
+
+    cell_logits, _cell_feasible = model._apply_prior_and_legality_for_cells(
+        neural_logits[batch_indices, tile37, opponent],
+        state.tile_remaining,
+        state.seat_remaining,
+        state.is_masked,
+        tile37,
+        opponent,
+    )
+    expected_chosen = cell_logits.argmax(dim=1)
+    expected_allocation = state.allocation.clone()
+    expected_state_ids = state.state_ids.clone()
+    expected_tile_remaining = state.tile_remaining.clone()
+    expected_seat_remaining = state.seat_remaining.clone()
+    expected_is_masked = state.is_masked.clone()
+    expected_allocation[batch_indices, opponent, tile37] = expected_chosen
+    expected_state_ids[batch_indices, tile37, opponent] = expected_chosen
+    expected_tile_remaining[batch_indices, tile37] -= expected_chosen
+    expected_seat_remaining[batch_indices, opponent] -= expected_chosen
+    expected_is_masked[batch_indices, tile37, opponent] = False
+
+    actual_tile37, actual_opponent, actual_chosen = model._sample_and_apply_cell_step(
+        neural_logits,
+        state,
+        token,
+        batch_indices,
+        sample=False,
+        temp=1.0,
+    )
+
+    assert torch.equal(actual_tile37, tile37)
+    assert torch.equal(actual_opponent, opponent)
+    assert torch.equal(actual_chosen, expected_chosen)
+    assert torch.equal(state.allocation, expected_allocation)
+    assert torch.equal(state.state_ids, expected_state_ids)
+    assert torch.equal(state.tile_remaining, expected_tile_remaining)
+    assert torch.equal(state.seat_remaining, expected_seat_remaining)
+    assert torch.equal(state.is_masked, expected_is_masked)
 
 
 def test_belief_encoder_returns_public_cross_attention_memory():
