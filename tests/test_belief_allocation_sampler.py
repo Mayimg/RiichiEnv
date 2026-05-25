@@ -13,7 +13,7 @@ from riichienv_ml.features.belief_features import (
     BeliefFeatureEncoder,
     collate_belief_features,
 )
-from riichienv_ml.models.belief_allocation import JointHiddenAllocationSampler
+from riichienv_ml.models.belief_allocation import AllocationDecodeState, JointHiddenAllocationSampler
 
 from riichienv import MjaiReplay
 
@@ -201,9 +201,244 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     assert model.alloc_time_embed.num_embeddings == 4
     assert len(model.denoise_decoder.layers) == 2
     assert model.denoise_decoder.head.out_features == 5
+    assert model.opponent_subset_masks.shape == (7, BUCKET_COUNT - 1)
+    assert model.opponent_subset_masks.dtype == torch.bool
+    assert torch.equal(model.opponent_subset_masks_long, model.opponent_subset_masks.long())
+    assert "opponent_subset_masks" not in model.state_dict()
+    assert "opponent_subset_masks_long" not in model.state_dict()
+    assert model.logcomb_table.shape == (int(sum(TOTAL_TILE_COUNTS37)) + 1, int(sum(TOTAL_TILE_COUNTS37)) + 1)
+    assert model.logcomb_table.dtype == torch.float32
+    assert "logcomb_table" not in model.state_dict()
     assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
     assert model.tile37_to_tile34[10] == model.tile37_to_tile34[15] == 13
     assert model.tile37_to_tile34[20] == model.tile37_to_tile34[25] == 22
+
+
+def test_belief_model_logcomb_lookup_matches_clamped_lgamma():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    n = torch.tensor([[4, 4, 3, -1, 2]])
+    k = torch.tensor([[0, 2, 5, 1, -3]])
+
+    n_f = n.float().clamp_min(0.0)
+    k_f = k.float().clamp_min(0.0)
+    k_f = torch.minimum(k_f, n_f)
+    expected = torch.lgamma(n_f + 1.0) - torch.lgamma(k_f + 1.0) - torch.lgamma(n_f - k_f + 1.0)
+
+    assert torch.allclose(model._safe_logcomb(n, k), expected)
+
+
+def _reference_cell_hall_feasible(
+    model: JointHiddenAllocationSampler,
+    tile_remaining: torch.Tensor,
+    seat_remaining: torch.Tensor,
+    is_masked: torch.Tensor,
+) -> torch.Tensor:
+    opponent_count = BUCKET_COUNT - 1
+    candidates = model.count_candidates.to(tile_remaining.device).view(1, 1, -1)
+    tile_value = tile_remaining.unsqueeze(2).unsqueeze(-1)
+    seat_value = seat_remaining.unsqueeze(1).unsqueeze(-1)
+    feasible = (
+        is_masked.unsqueeze(-1)
+        & (candidates.view(1, 1, 1, -1) <= tile_value)
+        & (candidates.view(1, 1, 1, -1) <= seat_value)
+    )
+    subset_masks = model.opponent_subset_masks.to(tile_remaining.device)
+    subset_masks_long = model.opponent_subset_masks_long.to(tile_remaining.device)
+
+    for subset_idx in range(subset_masks.shape[0]):
+        subset = subset_masks[subset_idx]
+        subset_long = subset_masks_long[subset_idx]
+        base_demand = (seat_remaining * subset_long).sum(dim=1)
+        subset_edges = is_masked & subset.view(1, 1, opponent_count)
+        any_before = subset_edges.any(dim=2)
+        edge_count = subset_edges.long().sum(dim=2)
+        base_cap = (tile_remaining * any_before.long()).sum(dim=1)
+
+        for seat in range(opponent_count):
+            if bool(subset[seat].item()):
+                demand_after = base_demand.view(-1, 1, 1) - candidates
+                any_after = edge_count > 1
+            else:
+                demand_after = base_demand.view(-1, 1, 1)
+                any_after = any_before
+            cap_after = (
+                base_cap.view(-1, 1, 1)
+                - tile_remaining.unsqueeze(-1) * any_before.long().unsqueeze(-1)
+                + (tile_remaining.unsqueeze(-1) - candidates) * any_after.long().unsqueeze(-1)
+            )
+            feasible[:, :, seat, :] &= demand_after <= cap_after
+
+    return feasible
+
+
+def test_belief_model_full_hall_legality_matches_reference_loop():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    generator = torch.Generator().manual_seed(23)
+    batch_size = 4
+    tile_remaining = torch.randint(0, 5, (batch_size, TILE37_COUNT), generator=generator)
+    seat_remaining = torch.randint(0, 14, (batch_size, BUCKET_COUNT - 1), generator=generator)
+    is_masked = torch.rand(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, generator=generator) > 0.4
+
+    actual = model._cell_hall_feasible(tile_remaining, seat_remaining, is_masked)
+    expected = _reference_cell_hall_feasible(model, tile_remaining, seat_remaining, is_masked)
+
+    assert torch.equal(actual, expected)
+
+
+def test_belief_model_selected_cell_legality_matches_full_legality():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    generator = torch.Generator().manual_seed(11)
+    batch_size = 5
+    tile_remaining = torch.randint(0, 5, (batch_size, TILE37_COUNT), generator=generator)
+    seat_remaining = torch.randint(0, 14, (batch_size, BUCKET_COUNT - 1), generator=generator)
+    is_masked = torch.rand(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, generator=generator) > 0.35
+    tile37 = torch.tensor([0, 5, 10, 20, 36])
+    opponent = torch.tensor([0, 1, 2, 0, 2])
+    neural_logits = torch.randn(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, 5, generator=generator)
+    row_ids = torch.arange(batch_size)
+
+    full_logits, full_feasible = model._apply_prior_and_legality(
+        neural_logits,
+        tile_remaining,
+        seat_remaining,
+        is_masked,
+    )
+    cell_logits, cell_feasible = model._apply_prior_and_legality_for_cells(
+        neural_logits[row_ids, tile37, opponent],
+        tile_remaining,
+        seat_remaining,
+        is_masked,
+        tile37,
+        opponent,
+    )
+
+    expected_logits = full_logits[row_ids, tile37, opponent]
+    expected_feasible = full_feasible[row_ids, tile37, opponent]
+    finite = torch.isfinite(expected_logits)
+    assert torch.equal(cell_feasible, expected_feasible)
+    assert torch.equal(torch.isneginf(cell_logits), torch.isneginf(expected_logits))
+    assert torch.allclose(cell_logits[finite], expected_logits[finite])
+
+
+def test_belief_model_decode_token_lookup_buffers():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    tokens = torch.arange(TILE37_COUNT * (BUCKET_COUNT - 1))
+    expected_tile37 = tokens // (BUCKET_COUNT - 1)
+    expected_opponent = tokens % (BUCKET_COUNT - 1)
+    expected_allocation_offset = expected_opponent * TILE37_COUNT + expected_tile37
+    lookup = model._decode_token_lookup(torch.device("cpu"))
+
+    assert torch.equal(lookup.tile37, expected_tile37)
+    assert torch.equal(lookup.opponent, expected_opponent)
+    assert torch.equal(lookup.allocation_offset, expected_allocation_offset)
+
+
+def test_belief_model_cell_step_updates_decode_state():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    generator = torch.Generator().manual_seed(31)
+    batch_size = 3
+    batch_indices = torch.arange(batch_size)
+    token = torch.tensor([0, 5 * (BUCKET_COUNT - 1) + 1, 10 * (BUCKET_COUNT - 1) + 2])
+    tile37 = torch.div(token, BUCKET_COUNT - 1, rounding_mode="floor")
+    opponent = token % (BUCKET_COUNT - 1)
+    neural_logits = torch.randn(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, 5, generator=generator)
+    neural_logits_cells = neural_logits.reshape(batch_size * TILE37_COUNT * (BUCKET_COUNT - 1), 5)
+    batch_offsets = model._decode_batch_offsets(batch_indices)
+    token_lookup = model._decode_token_lookup(torch.device("cpu"))
+    allocation_offset = token_lookup.allocation_offset.index_select(0, token)
+    state = AllocationDecodeState(
+        allocation=torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
+        state_ids=torch.full((batch_size, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id, dtype=torch.long),
+        tile_remaining=torch.full((batch_size, TILE37_COUNT), 4, dtype=torch.long),
+        seat_remaining=torch.full((batch_size, BUCKET_COUNT - 1), 13, dtype=torch.long),
+        is_masked=torch.ones(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool),
+    )
+
+    cell_logits, _cell_feasible = model._apply_prior_and_legality_for_cells(
+        neural_logits[batch_indices, tile37, opponent],
+        state.tile_remaining,
+        state.seat_remaining,
+        state.is_masked,
+        tile37,
+        opponent,
+    )
+    expected_chosen = cell_logits.argmax(dim=1)
+    expected_allocation = state.allocation.clone()
+    expected_state_ids = state.state_ids.clone()
+    expected_tile_remaining = state.tile_remaining.clone()
+    expected_seat_remaining = state.seat_remaining.clone()
+    expected_is_masked = state.is_masked.clone()
+    expected_allocation[batch_indices, opponent, tile37] = expected_chosen
+    expected_state_ids[batch_indices, tile37, opponent] = expected_chosen
+    expected_tile_remaining[batch_indices, tile37] -= expected_chosen
+    expected_seat_remaining[batch_indices, opponent] -= expected_chosen
+    expected_is_masked[batch_indices, tile37, opponent] = False
+
+    actual_tile37, actual_opponent, actual_chosen = model._sample_and_apply_cell_step(
+        neural_logits_cells,
+        state,
+        token,
+        tile37,
+        opponent,
+        allocation_offset,
+        batch_offsets,
+        sample=False,
+        temp=1.0,
+    )
+
+    assert torch.equal(actual_tile37, tile37)
+    assert torch.equal(actual_opponent, opponent)
+    assert torch.equal(actual_chosen, expected_chosen)
+    assert torch.equal(state.allocation, expected_allocation)
+    assert torch.equal(state.state_ids, expected_state_ids)
+    assert torch.equal(state.tile_remaining, expected_tile_remaining)
+    assert torch.equal(state.seat_remaining, expected_seat_remaining)
+    assert torch.equal(state.is_masked, expected_is_masked)
 
 
 def test_belief_encoder_returns_public_cross_attention_memory():
@@ -302,6 +537,45 @@ def test_belief_model_samples_reuse_single_encoder_context():
 
     assert encoder_batch_sizes == [2]
     assert samples.shape == (2, 3, 4, 37)
+
+
+def test_belief_model_samples_from_prepared_context_without_rerunning_encoder():
+    dataset = BeliefAllocationDataset(
+        [str(DATA_PATH)],
+        is_train=False,
+        n_players=4,
+        replay_rule="tenhou",
+        encoder=BeliefFeatureEncoder(),
+    )
+    items = [next(iter(dataset)) for _ in range(2)]
+    features = collate_belief_features([item[0] for item in items])
+
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    original_forward_context_and_memory = model.encoder.forward_context_and_memory
+    encoder_batch_sizes = []
+
+    def wrapped_forward_context_and_memory(batch, **kwargs):
+        encoder_batch_sizes.append(batch["visible_tile_counts"].shape[0])
+        return original_forward_context_and_memory(batch, **kwargs)
+
+    model.encoder.forward_context_and_memory = wrapped_forward_context_and_memory
+
+    sampling_context = model.prepare_allocation_sampling_context(features)
+    first = model.sample_allocations_from_context(sampling_context, num_samples=2)
+    second = model.sample_allocations_from_context(sampling_context, num_samples=2)
+
+    assert encoder_batch_sizes == [2]
+    assert first.shape == (2, 2, 4, 37)
+    assert second.shape == (2, 2, 4, 37)
 
 
 def test_belief_model_skips_invalid_targets_without_huge_loss():

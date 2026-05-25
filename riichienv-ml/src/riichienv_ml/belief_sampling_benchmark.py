@@ -139,6 +139,8 @@ def _aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "samples_per_second": total_samples / elapsed_seconds if elapsed_seconds > 0.0 else None,
         "decision_samples_per_second": _value_stats([float(row["samples_per_second"]) for row in rows]),
         "elapsed_ms": _value_stats([float(row["elapsed_ms"]) for row in rows]),
+        "encoder_cache_ms": _value_stats([float(row["encoder_cache_ms"]) for row in rows]),
+        "decoder_elapsed_ms": _value_stats([float(row["decoder_elapsed_ms"]) for row in rows]),
         "call_ms": _value_stats([float(row["mean_call_ms"]) for row in rows]),
         "num_calls": _value_stats([float(row["num_calls"]) for row in rows]),
     }
@@ -384,9 +386,11 @@ class BeliefSamplingBenchmark:
         features, _feature_prepare_ms = self._prepare_feature_batch(record.feature)
         self._sync()
         started_at = time.perf_counter()
+        sampling_context = self.model.prepare_allocation_sampling_context(features)
+        self._sync()
         for _ in range(self.cfg.warmup_calls):
-            samples = self.model.sample_allocations(
-                features,
+            samples = self.model.sample_allocations_from_context(
+                sampling_context,
                 num_samples=samples_per_call,
                 temperature=self.cfg.temperature,
                 decode_steps=self.cfg.decode_steps,
@@ -420,11 +424,15 @@ class BeliefSamplingBenchmark:
         call_durations_ms: list[float] = []
         total_samples = 0
         started_at = time.perf_counter()
-        elapsed = 0.0
+        cache_started_at = time.perf_counter()
+        sampling_context = self.model.prepare_allocation_sampling_context(features)
+        self._sync()
+        encoder_cache_ms = (time.perf_counter() - cache_started_at) * 1000.0
+        elapsed = time.perf_counter() - started_at
         while not call_durations_ms or elapsed < target_seconds:
             call_started_at = time.perf_counter()
-            samples = self.model.sample_allocations(
-                features,
+            samples = self.model.sample_allocations_from_context(
+                sampling_context,
                 num_samples=self.cfg.samples_per_call,
                 temperature=self.cfg.temperature,
                 decode_steps=self.cfg.decode_steps,
@@ -452,6 +460,8 @@ class BeliefSamplingBenchmark:
             "actual_duration_ms": elapsed_ms,
             "elapsed_ms": elapsed_ms,
             "feature_prepare_ms": feature_prepare_ms,
+            "encoder_cache_ms": encoder_cache_ms,
+            "decoder_elapsed_ms": sum(call_durations_ms),
             "samples_per_call": self.cfg.samples_per_call,
             "num_calls": len(call_durations_ms),
             "total_samples": total_samples,

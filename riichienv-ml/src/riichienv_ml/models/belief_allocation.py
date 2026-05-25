@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.profiler import record_function
 
 from riichienv_ml.features.belief_features import (
     BUCKET_COUNT,
@@ -27,6 +31,7 @@ _COUNT_CANDIDATES = 5
 _TILE34_COUNT = 34
 _OPPONENT_COUNT = BUCKET_COUNT - 1
 _ALLOCATION_TOKEN_COUNT = TILE37_COUNT * _OPPONENT_COUNT
+_MAX_LOGCOMB_COUNT = int(sum(TOTAL_TILE_COUNTS37))
 
 
 def _build_tile37_to_tile34() -> torch.Tensor:
@@ -41,7 +46,129 @@ def _build_tile37_to_tile34() -> torch.Tensor:
     return tile34
 
 
+def _build_opponent_subset_masks() -> torch.Tensor:
+    return torch.tensor(
+        [
+            [(subset_mask >> seat) & 1 for seat in range(_OPPONENT_COUNT)]
+            for subset_mask in range(1, 1 << _OPPONENT_COUNT)
+        ],
+        dtype=torch.bool,
+    )
+
+
+def _build_allocation_token_tile37() -> torch.Tensor:
+    return torch.arange(_ALLOCATION_TOKEN_COUNT, dtype=torch.long) // _OPPONENT_COUNT
+
+
+def _build_allocation_token_opponent() -> torch.Tensor:
+    return torch.arange(_ALLOCATION_TOKEN_COUNT, dtype=torch.long) % _OPPONENT_COUNT
+
+
+def _build_allocation_token_allocation_offset() -> torch.Tensor:
+    tile37 = _build_allocation_token_tile37()
+    opponent = _build_allocation_token_opponent()
+    return opponent * TILE37_COUNT + tile37
+
+
+def _build_logcomb_table() -> torch.Tensor:
+    counts = torch.arange(_MAX_LOGCOMB_COUNT + 1, dtype=torch.float32)
+    n = counts.view(-1, 1)
+    k = torch.minimum(counts.view(1, -1), n)
+    return torch.lgamma(n + 1.0) - torch.lgamma(k + 1.0) - torch.lgamma(n - k + 1.0)
+
+
 _TILE37_TO_TILE34 = tuple(int(tile34) for tile34 in _build_tile37_to_tile34().tolist())
+_OPPONENT_SUBSET_FLAGS = tuple(
+    tuple(bool((subset_mask >> seat) & 1) for seat in range(_OPPONENT_COUNT))
+    for subset_mask in range(1, 1 << _OPPONENT_COUNT)
+)
+_PROFILE_RANGES_ENABLED = False
+
+
+@contextmanager
+def belief_profile_ranges(enabled: bool = True) -> Iterator[None]:
+    """Enable detailed profiler ranges for belief sampler inference in this context."""
+
+    global _PROFILE_RANGES_ENABLED  # noqa: PLW0603
+    previous = _PROFILE_RANGES_ENABLED
+    _PROFILE_RANGES_ENABLED = bool(enabled)
+    try:
+        yield
+    finally:
+        _PROFILE_RANGES_ENABLED = previous
+
+
+def _profile_range(name: str):
+    if _PROFILE_RANGES_ENABLED:
+        return record_function(name)
+    return nullcontext()
+
+
+@dataclass(frozen=True)
+class AllocationSamplingContext:
+    """Encoder-side tensors reused when sampling many allocations for one observation batch."""
+
+    context: torch.Tensor
+    memory: torch.Tensor
+    memory_padding_mask: torch.Tensor
+    unseen_counts: torch.Tensor
+    tile_emb: torch.Tensor
+    seat_emb: torch.Tensor
+    rem: torch.Tensor
+
+    @property
+    def batch_size(self) -> int:
+        return int(self.context.shape[0])
+
+
+@dataclass(frozen=True)
+class AllocationDecodeBatchOffsets:
+    """Batch-specific flat-index offsets used while decoding."""
+
+    allocation: torch.Tensor
+    state: torch.Tensor
+    tile: torch.Tensor
+    seat: torch.Tensor
+
+
+@dataclass(frozen=True)
+class AllocationDecodeTokenLookup:
+    """Token-indexed lookup buffers for hidden-allocation cells."""
+
+    tile37: torch.Tensor
+    opponent: torch.Tensor
+    allocation_offset: torch.Tensor
+
+
+@dataclass
+class AllocationDecodeState:
+    """Mutable tensors updated while decoding hidden allocations."""
+
+    allocation: torch.Tensor
+    state_ids: torch.Tensor
+    tile_remaining: torch.Tensor
+    seat_remaining: torch.Tensor
+    is_masked: torch.Tensor
+
+    def apply_cell_update(
+        self,
+        batch_offsets: AllocationDecodeBatchOffsets,
+        state_index: torch.Tensor,
+        tile37: torch.Tensor,
+        opponent: torch.Tensor,
+        allocation_offset: torch.Tensor,
+        chosen: torch.Tensor,
+    ) -> None:
+        allocation_index = batch_offsets.allocation + allocation_offset
+        tile_index = batch_offsets.tile + tile37
+        seat_index = batch_offsets.seat + opponent
+        neg_chosen = -chosen
+
+        self.allocation.view(-1).index_copy_(0, allocation_index, chosen)
+        self.state_ids.view(-1).index_copy_(0, state_index, chosen)
+        self.tile_remaining.view(-1).scatter_add_(0, tile_index, neg_chosen)
+        self.seat_remaining.view(-1).scatter_add_(0, seat_index, neg_chosen)
+        self.is_masked.view(-1).index_fill_(0, state_index, False)
 
 
 class _DenoiseLayer(nn.Module):
@@ -433,6 +560,17 @@ class JointHiddenAllocationSampler(nn.Module):
             torch.tensor(TOTAL_TILE_COUNTS37, dtype=torch.long),
             persistent=False,
         )
+        subset_masks = _build_opponent_subset_masks()
+        self.register_buffer("opponent_subset_masks", subset_masks, persistent=False)
+        self.register_buffer("opponent_subset_masks_long", subset_masks.long(), persistent=False)
+        self.register_buffer("allocation_token_tile37", _build_allocation_token_tile37(), persistent=False)
+        self.register_buffer("allocation_token_opponent", _build_allocation_token_opponent(), persistent=False)
+        self.register_buffer(
+            "allocation_token_allocation_offset",
+            _build_allocation_token_allocation_offset(),
+            persistent=False,
+        )
+        self.register_buffer("logcomb_table", _build_logcomb_table(), persistent=False)
         self.tile37_to_tile34 = _TILE37_TO_TILE34
 
     def _shared_alloc_tile_embeddings(self, tile37_table: torch.Tensor) -> torch.Tensor:
@@ -441,6 +579,22 @@ class JointHiddenAllocationSampler(nn.Module):
     def _shared_alloc_seat_embeddings(self, device: torch.device) -> torch.Tensor:
         seats = torch.arange(1, BUCKET_COUNT, dtype=torch.long, device=device)
         return self.encoder._seat_model(seats, _SEAT_ROLE_PLAYER_INFO)
+
+    def _decode_token_lookup(self, device: torch.device) -> AllocationDecodeTokenLookup:
+        return AllocationDecodeTokenLookup(
+            tile37=self.allocation_token_tile37.to(device),
+            opponent=self.allocation_token_opponent.to(device),
+            allocation_offset=self.allocation_token_allocation_offset.to(device),
+        )
+
+    @staticmethod
+    def _decode_batch_offsets(batch_indices: torch.Tensor) -> AllocationDecodeBatchOffsets:
+        return AllocationDecodeBatchOffsets(
+            allocation=batch_indices * (BUCKET_COUNT * TILE37_COUNT),
+            state=batch_indices * _ALLOCATION_TOKEN_COUNT,
+            tile=batch_indices * TILE37_COUNT,
+            seat=batch_indices * _OPPONENT_COUNT,
+        )
 
     def _unseen_counts(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         visible = features["visible_tile_counts"][:, :, 1].long()
@@ -465,12 +619,14 @@ class JointHiddenAllocationSampler(nn.Module):
         sample_valid = teacher_path_valid & bucket_valid
         return sample_valid, teacher_path_valid
 
-    @staticmethod
-    def _safe_logcomb(n: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        n_f = n.float().clamp_min(0.0)
-        k_f = k.float().clamp_min(0.0)
-        k_f = torch.minimum(k_f, n_f)
-        return torch.lgamma(n_f + 1.0) - torch.lgamma(k_f + 1.0) - torch.lgamma(n_f - k_f + 1.0)
+    def _safe_logcomb(self, n: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+        table = self.logcomb_table
+        if table.device != n.device:
+            table = table.to(n.device)
+        n_idx = n.clamp(min=0, max=_MAX_LOGCOMB_COUNT).long()
+        k_idx = k.clamp(min=0, max=_MAX_LOGCOMB_COUNT).long()
+        k_idx = torch.minimum(k_idx, n_idx)
+        return table[n_idx, k_idx]
 
     def _decoder_memory(
         self,
@@ -523,20 +679,23 @@ class JointHiddenAllocationSampler(nn.Module):
         state_ids: torch.Tensor,
         step_ids: torch.Tensor,
     ) -> torch.Tensor:
-        tokens = self._token_embeddings(
-            tile_emb,
-            seat_emb,
-            tile_remaining,
-            seat_remaining,
-            state_ids,
-            step_ids,
-        )
-        decoder_memory, decoder_memory_padding_mask = self._decoder_memory(
-            context,
-            memory,
-            memory_padding_mask,
-        )
-        logits = self.denoise_decoder(tokens, decoder_memory, decoder_memory_padding_mask)
+        with _profile_range("belief/denoise_neural_logits"):
+            with _profile_range("belief/token_embeddings"):
+                tokens = self._token_embeddings(
+                    tile_emb,
+                    seat_emb,
+                    tile_remaining,
+                    seat_remaining,
+                    state_ids,
+                    step_ids,
+                )
+            decoder_memory, decoder_memory_padding_mask = self._decoder_memory(
+                context,
+                memory,
+                memory_padding_mask,
+            )
+            with _profile_range("belief/denoise_decoder"):
+                logits = self.denoise_decoder(tokens, decoder_memory, decoder_memory_padding_mask)
         return logits.reshape(context.shape[0], TILE37_COUNT, _OPPONENT_COUNT, _COUNT_CANDIDATES)
 
     def _hypergeom_prior(
@@ -570,34 +729,31 @@ class JointHiddenAllocationSampler(nn.Module):
             & (candidates.view(1, 1, 1, -1) <= tile_value)
             & (candidates.view(1, 1, 1, -1) <= seat_value)
         )
+        subset_masks = self.opponent_subset_masks.to(tile_remaining.device)
+        subset_masks_long = self.opponent_subset_masks_long.to(tile_remaining.device)
+        subset_count = subset_masks.shape[0]
 
-        for subset_mask in range(1, 1 << _OPPONENT_COUNT):
-            subset = torch.tensor(
-                [(subset_mask >> seat) & 1 for seat in range(_OPPONENT_COUNT)],
-                dtype=torch.bool,
-                device=tile_remaining.device,
-            )
-            base_demand = (seat_remaining * subset.long()).sum(dim=1)
-            subset_edges = is_masked & subset.view(1, 1, _OPPONENT_COUNT)
-            any_before = subset_edges.any(dim=2)
-            edge_count = subset_edges.long().sum(dim=2)
-            base_cap = (tile_remaining * any_before.long()).sum(dim=1)
+        base_demand = (seat_remaining.unsqueeze(1) * subset_masks_long.view(1, subset_count, _OPPONENT_COUNT)).sum(
+            dim=2
+        )
+        subset_edges = is_masked.unsqueeze(1) & subset_masks.view(1, subset_count, 1, _OPPONENT_COUNT)
+        any_before = subset_edges.any(dim=3)
+        edge_count = subset_edges.long().sum(dim=3)
+        any_before_long = any_before.long()
+        base_cap = (tile_remaining.unsqueeze(1) * any_before_long).sum(dim=2)
 
-            for seat in range(_OPPONENT_COUNT):
-                if subset[seat]:
-                    demand_after = base_demand.view(-1, 1, 1) - candidates
-                    any_after = edge_count > 1
-                else:
-                    demand_after = base_demand.view(-1, 1, 1)
-                    any_after = any_before
-                cap_after = (
-                    base_cap.view(-1, 1, 1)
-                    - tile_remaining.unsqueeze(-1) * any_before.long().unsqueeze(-1)
-                    + (tile_remaining.unsqueeze(-1) - candidates) * any_after.long().unsqueeze(-1)
-                )
-                feasible[:, :, seat, :] &= demand_after <= cap_after
-
-        return feasible
+        candidate_values = candidates.view(1, 1, 1, 1, _COUNT_CANDIDATES)
+        tile_values = tile_remaining.view(tile_remaining.shape[0], 1, TILE37_COUNT, 1, 1)
+        opponent_in_subset = subset_masks.view(1, subset_count, 1, _OPPONENT_COUNT)
+        opponent_in_subset_long = subset_masks_long.view(1, subset_count, 1, _OPPONENT_COUNT, 1)
+        any_after = torch.where(opponent_in_subset, edge_count.unsqueeze(3) > 1, any_before.unsqueeze(3))
+        demand_after = base_demand.view(-1, subset_count, 1, 1, 1) - opponent_in_subset_long * candidate_values
+        cap_after = (
+            base_cap.view(-1, subset_count, 1, 1, 1)
+            - tile_values * any_before_long.unsqueeze(3).unsqueeze(4)
+            + (tile_values - candidate_values) * any_after.long().unsqueeze(4)
+        )
+        return feasible & (demand_after <= cap_after).all(dim=1)
 
     def _apply_prior_and_legality(
         self,
@@ -606,9 +762,49 @@ class JointHiddenAllocationSampler(nn.Module):
         seat_remaining: torch.Tensor,
         is_masked: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        feasible = self._cell_hall_feasible(tile_remaining, seat_remaining, is_masked)
-        logits = self._hypergeom_prior(tile_remaining, seat_remaining, is_masked) + neural_logits
-        return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible
+        with _profile_range("belief/apply_prior_legality"):
+            feasible = self._cell_hall_feasible(tile_remaining, seat_remaining, is_masked)
+            logits = self._hypergeom_prior(tile_remaining, seat_remaining, is_masked) + neural_logits
+            return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible
+
+    def _selected_cell_hall_feasible(
+        self,
+        tile_remaining: torch.Tensor,
+        seat_remaining: torch.Tensor,
+        is_masked: torch.Tensor,
+        tile37: torch.Tensor,
+        opponent: torch.Tensor,
+        candidates: torch.Tensor,
+        u_t: torch.Tensor,
+    ) -> torch.Tensor:
+        subset_masks = self.opponent_subset_masks.to(tile_remaining.device)
+        subset_masks_long = self.opponent_subset_masks_long.to(tile_remaining.device)
+        subset_count = subset_masks.shape[0]
+
+        base_demand = (seat_remaining.unsqueeze(1) * subset_masks_long.view(1, subset_count, _OPPONENT_COUNT)).sum(
+            dim=2
+        )
+        subset_edges = is_masked.unsqueeze(1) & subset_masks.view(1, subset_count, 1, _OPPONENT_COUNT)
+        any_before = subset_edges.any(dim=3)
+        edge_count = subset_edges.long().sum(dim=3)
+        base_cap = (tile_remaining.unsqueeze(1) * any_before.long()).sum(dim=2)
+
+        tile_index = tile37.view(-1, 1, 1).expand(-1, subset_count, 1)
+        any_before_cell = any_before.gather(2, tile_index).squeeze(2)
+        edge_count_cell = edge_count.gather(2, tile_index).squeeze(2)
+        opponent_in_subset = subset_masks.gather(1, opponent.view(1, -1).expand(subset_count, -1)).transpose(0, 1)
+
+        candidate_values = candidates.view(1, 1, _COUNT_CANDIDATES)
+        opponent_in_subset_long = opponent_in_subset.long()
+        any_before_cell_long = any_before_cell.long()
+        any_after_cell_long = torch.where(opponent_in_subset, edge_count_cell > 1, any_before_cell).long()
+        demand_after = base_demand.unsqueeze(2) - opponent_in_subset_long.unsqueeze(2) * candidate_values
+        cap_after = (
+            base_cap.unsqueeze(2)
+            - u_t.unsqueeze(1) * any_before_cell_long.unsqueeze(2)
+            + (u_t.unsqueeze(1) - candidate_values) * any_after_cell_long.unsqueeze(2)
+        )
+        return (demand_after <= cap_after).all(dim=1)
 
     def _apply_prior_and_legality_for_cells(
         self,
@@ -631,33 +827,15 @@ class JointHiddenAllocationSampler(nn.Module):
             - self._safe_logcomb(u_total, n_b)
         )
         feasible = is_masked[row_ids, tile37, opponent].unsqueeze(1) & (candidates <= u_t) & (candidates <= n_b)
-
-        for subset_mask in range(1, 1 << _OPPONENT_COUNT):
-            subset = torch.tensor(
-                [(subset_mask >> seat) & 1 for seat in range(_OPPONENT_COUNT)],
-                dtype=torch.bool,
-                device=tile_remaining.device,
-            )
-            base_demand = (seat_remaining * subset.long()).sum(dim=1)
-            subset_edges = is_masked & subset.view(1, 1, _OPPONENT_COUNT)
-            any_before = subset_edges.any(dim=2)
-            edge_count = subset_edges.long().sum(dim=2)
-            base_cap = (tile_remaining * any_before.long()).sum(dim=1)
-            any_before_cell = any_before[row_ids, tile37]
-            edge_count_cell = edge_count[row_ids, tile37]
-            opponent_in_subset = subset[opponent]
-            any_after_cell = torch.where(opponent_in_subset, edge_count_cell > 1, any_before_cell)
-            demand_after = base_demand.unsqueeze(1) - torch.where(
-                opponent_in_subset.unsqueeze(1),
-                candidates,
-                torch.zeros_like(candidates),
-            )
-            cap_after = (
-                base_cap.unsqueeze(1)
-                - u_t * any_before_cell.long().unsqueeze(1)
-                + (u_t - candidates) * any_after_cell.long().unsqueeze(1)
-            )
-            feasible &= demand_after <= cap_after
+        feasible &= self._selected_cell_hall_feasible(
+            tile_remaining,
+            seat_remaining,
+            is_masked,
+            tile37,
+            opponent,
+            candidates,
+            u_t,
+        )
 
         logits = prior + neural_logits
         return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible
@@ -857,6 +1035,59 @@ class JointHiddenAllocationSampler(nn.Module):
             out.update({"loss": zero, "acc": zero.detach()})
         return out
 
+    def _sample_and_apply_cell_step(
+        self,
+        neural_logits_cells: torch.Tensor,
+        state: AllocationDecodeState,
+        token: torch.Tensor,
+        tile37: torch.Tensor,
+        opponent: torch.Tensor,
+        allocation_offset: torch.Tensor,
+        batch_offsets: AllocationDecodeBatchOffsets,
+        *,
+        sample: bool,
+        temp: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if _PROFILE_RANGES_ENABLED:
+            with _profile_range("belief/cell_lookup"):
+                state_index = batch_offsets.state + token
+                cell_neural_logits = neural_logits_cells.index_select(0, state_index)
+            with _profile_range("belief/cell_legality"):
+                cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
+                    cell_neural_logits,
+                    state.tile_remaining,
+                    state.seat_remaining,
+                    state.is_masked,
+                    tile37,
+                    opponent,
+                )
+            with _profile_range("belief/cell_sample"):
+                if sample:
+                    cell_probs = F.softmax(cell_logits / temp, dim=1)
+                    chosen = torch.multinomial(cell_probs, 1).squeeze(1)
+                else:
+                    chosen = cell_logits.argmax(dim=1)
+            with _profile_range("belief/cell_state_update"):
+                state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
+        else:
+            state_index = batch_offsets.state + token
+            cell_neural_logits = neural_logits_cells.index_select(0, state_index)
+            cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
+                cell_neural_logits,
+                state.tile_remaining,
+                state.seat_remaining,
+                state.is_masked,
+                tile37,
+                opponent,
+            )
+            if sample:
+                cell_probs = F.softmax(cell_logits / temp, dim=1)
+                chosen = torch.multinomial(cell_probs, 1).squeeze(1)
+            else:
+                chosen = cell_logits.argmax(dim=1)
+            state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
+        return tile37, opponent, chosen
+
     def _iterative_decode(  # noqa: PLR0915
         self,
         context: torch.Tensor,
@@ -878,86 +1109,154 @@ class JointHiddenAllocationSampler(nn.Module):
 
         batch_size = context.shape[0]
         device = context.device
-        state_ids = torch.full(
-            (batch_size, TILE37_COUNT, _OPPONENT_COUNT),
-            self.mask_state_id,
-            dtype=torch.long,
-            device=device,
+        state = AllocationDecodeState(
+            allocation=torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long, device=device),
+            state_ids=torch.full(
+                (batch_size, TILE37_COUNT, _OPPONENT_COUNT),
+                self.mask_state_id,
+                dtype=torch.long,
+                device=device,
+            ),
+            tile_remaining=unseen_counts.clone(),
+            seat_remaining=rem[:, :_OPPONENT_COUNT].clone(),
+            is_masked=torch.ones(batch_size, TILE37_COUNT, _OPPONENT_COUNT, dtype=torch.bool, device=device),
         )
-        is_masked = torch.ones(batch_size, TILE37_COUNT, _OPPONENT_COUNT, dtype=torch.bool, device=device)
-        allocation = torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long, device=device)
-        tile_remaining = unseen_counts.clone()
-        seat_remaining = rem[:, :_OPPONENT_COUNT].clone()
         temp = max(float(temperature), 1e-6)
         batch_indices = torch.arange(batch_size, device=device)
+        batch_offsets = self._decode_batch_offsets(batch_indices)
+        token_lookup = self._decode_token_lookup(device)
+        remaining_count = _ALLOCATION_TOKEN_COUNT
 
-        for step in range(decode_steps):
-            step_ids = torch.full((batch_size,), step, dtype=torch.long, device=device)
-            neural_logits = self._denoise_neural_logits(
+        with _profile_range("belief/iterative_decode"):
+            for step in range(decode_steps):
+                with _profile_range("belief/decode_step"):
+                    step_ids = torch.full((batch_size,), step, dtype=torch.long, device=device)
+                    neural_logits = self._denoise_neural_logits(
+                        context,
+                        memory,
+                        memory_padding_mask,
+                        tile_emb,
+                        seat_emb,
+                        state.tile_remaining,
+                        state.seat_remaining,
+                        state.state_ids,
+                        step_ids,
+                    )
+                    neural_logits_cells = neural_logits.reshape(batch_size * _ALLOCATION_TOKEN_COUNT, _COUNT_CANDIDATES)
+                    logits, _feasible = self._apply_prior_and_legality(
+                        neural_logits,
+                        state.tile_remaining,
+                        state.seat_remaining,
+                        state.is_masked,
+                    )
+                    with _profile_range("belief/confidence_order"):
+                        probs = F.softmax(logits / temp, dim=-1)
+                        confidence = self._confidence(probs, self.confidence_method)
+                        confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
+
+                        if step == decode_steps - 1:
+                            n_to_unmask = remaining_count
+                        else:
+                            target_unmasked = self._cosine_target_unmasked(step, decode_steps)
+                            current_unmasked = _ALLOCATION_TOKEN_COUNT - remaining_count
+                            n_to_unmask = max(0, min(target_unmasked - current_unmasked, remaining_count))
+
+                        if n_to_unmask == 0:
+                            continue
+                        token_order = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argsort(
+                            dim=1,
+                            descending=True,
+                        )
+                        selected_token_order = token_order[:, :n_to_unmask]
+                        with _profile_range("belief/token_lookup_order"):
+                            selected_tokens = selected_token_order.reshape(-1)
+                            token_tile37_order = token_lookup.tile37.index_select(0, selected_tokens).reshape(
+                                batch_size,
+                                n_to_unmask,
+                            )
+                            token_opponent_order = token_lookup.opponent.index_select(0, selected_tokens).reshape(
+                                batch_size,
+                                n_to_unmask,
+                            )
+                            token_allocation_offset_order = token_lookup.allocation_offset.index_select(
+                                0,
+                                selected_tokens,
+                            ).reshape(batch_size, n_to_unmask)
+                    with _profile_range("belief/cell_sampling_loop"):
+                        for rank in range(n_to_unmask):
+                            token = selected_token_order[:, rank]
+                            self._sample_and_apply_cell_step(
+                                neural_logits_cells,
+                                state,
+                                token,
+                                token_tile37_order[:, rank],
+                                token_opponent_order[:, rank],
+                                token_allocation_offset_order[:, rank],
+                                batch_offsets,
+                                sample=sample,
+                                temp=temp,
+                            )
+                    remaining_count -= n_to_unmask
+
+        state.allocation[:, BUCKET_COUNT - 1] = unseen_counts - state.allocation[:, :_OPPONENT_COUNT].sum(dim=1)
+        return state.allocation
+
+    @torch.inference_mode()
+    def prepare_allocation_sampling_context(
+        self,
+        features: dict[str, torch.Tensor],
+    ) -> AllocationSamplingContext:
+        with _profile_range("belief/prepare_allocation_sampling_context"):
+            context, memory, memory_padding_mask, tile37_table = self.encoder.forward_context_and_memory(
+                features,
+                return_tile37_table=True,
+            )
+            unseen_counts = self._unseen_counts(features)
+            tile_emb = self._shared_alloc_tile_embeddings(tile37_table)
+            seat_emb = self._shared_alloc_seat_embeddings(context.device)
+            rem = self._initial_rem(features, unseen_counts)
+        return AllocationSamplingContext(
+            context=context,
+            memory=memory,
+            memory_padding_mask=memory_padding_mask,
+            unseen_counts=unseen_counts,
+            tile_emb=tile_emb,
+            seat_emb=seat_emb,
+            rem=rem,
+        )
+
+    @torch.inference_mode()
+    def sample_allocations_from_context(
+        self,
+        sampling_context: AllocationSamplingContext,
+        *,
+        num_samples: int = 1,
+        temperature: float = 1.0,
+        decode_steps: int | None = None,
+    ) -> torch.Tensor:
+        if num_samples <= 0:
+            raise ValueError("num_samples must be positive")
+        with _profile_range("belief/sample_allocations_from_context"):
+            with _profile_range("belief/repeat_sampling_context"):
+                context = sampling_context.context.repeat_interleave(num_samples, dim=0)
+                tile_emb = sampling_context.tile_emb.repeat_interleave(num_samples, dim=0)
+                memory = sampling_context.memory.repeat_interleave(num_samples, dim=0)
+                memory_padding_mask = sampling_context.memory_padding_mask.repeat_interleave(num_samples, dim=0)
+                unseen_counts = sampling_context.unseen_counts.repeat_interleave(num_samples, dim=0)
+                rem = sampling_context.rem.repeat_interleave(num_samples, dim=0)
+            sampled = self._iterative_decode(
                 context,
                 memory,
                 memory_padding_mask,
+                unseen_counts,
                 tile_emb,
-                seat_emb,
-                tile_remaining,
-                seat_remaining,
-                state_ids,
-                step_ids,
+                sampling_context.seat_emb,
+                rem,
+                sample=True,
+                temperature=temperature,
+                decode_steps=int(decode_steps or self.decode_steps),
             )
-            logits, _feasible = self._apply_prior_and_legality(
-                neural_logits,
-                tile_remaining,
-                seat_remaining,
-                is_masked,
-            )
-            probs = F.softmax(logits / temp, dim=-1)
-            confidence = self._confidence(probs, self.confidence_method)
-            confidence = confidence.masked_fill(~is_masked, torch.finfo(confidence.dtype).min)
-
-            remaining = is_masked.flatten(1).sum(dim=1)
-            if step == decode_steps - 1:
-                n_to_unmask = remaining
-            else:
-                target_unmasked = self._cosine_target_unmasked(step, decode_steps)
-                current_unmasked = _ALLOCATION_TOKEN_COUNT - remaining
-                n_to_unmask = (target_unmasked - current_unmasked).clamp(min=0)
-                n_to_unmask = torch.minimum(n_to_unmask, remaining)
-
-            max_to_unmask = int(n_to_unmask.max().item())
-            if max_to_unmask == 0:
-                continue
-            token_order = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argsort(dim=1, descending=True)
-            for rank in range(max_to_unmask):
-                active = rank < n_to_unmask
-                if not active.any():
-                    continue
-                rows = batch_indices[active]
-                token = token_order[rows, rank]
-                tile37 = torch.div(token, _OPPONENT_COUNT, rounding_mode="floor")
-                opponent = token % _OPPONENT_COUNT
-                cell_neural_logits = neural_logits[rows, tile37, opponent]
-                cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
-                    cell_neural_logits,
-                    tile_remaining[rows],
-                    seat_remaining[rows],
-                    is_masked[rows],
-                    tile37,
-                    opponent,
-                )
-                if sample:
-                    cell_probs = F.softmax(cell_logits / temp, dim=1)
-                    chosen = torch.multinomial(cell_probs, 1).squeeze(1)
-                else:
-                    chosen = cell_logits.argmax(dim=1)
-
-                allocation[rows, opponent, tile37] = chosen
-                state_ids[rows, tile37, opponent] = chosen
-                tile_remaining[rows, tile37] = tile_remaining[rows, tile37] - chosen
-                seat_remaining[rows, opponent] = seat_remaining[rows, opponent] - chosen
-                is_masked[rows, tile37, opponent] = False
-
-        allocation[:, BUCKET_COUNT - 1] = unseen_counts - allocation[:, :_OPPONENT_COUNT].sum(dim=1)
-        return allocation
+        return sampled.reshape(sampling_context.batch_size, num_samples, BUCKET_COUNT, TILE37_COUNT)
 
     @torch.inference_mode()
     def sample_allocations(
@@ -968,33 +1267,10 @@ class JointHiddenAllocationSampler(nn.Module):
         temperature: float = 1.0,
         decode_steps: int | None = None,
     ) -> torch.Tensor:
-        if num_samples <= 0:
-            raise ValueError("num_samples must be positive")
-        context, memory, memory_padding_mask, tile37_table = self.encoder.forward_context_and_memory(
-            features,
-            return_tile37_table=True,
-        )
-        unseen_counts = self._unseen_counts(features)
-        tile_emb = self._shared_alloc_tile_embeddings(tile37_table)
-        seat_emb = self._shared_alloc_seat_embeddings(context.device)
-        rem = self._initial_rem(features, unseen_counts)
-        context = context.repeat_interleave(num_samples, dim=0)
-        tile_emb = tile_emb.repeat_interleave(num_samples, dim=0)
-        memory = memory.repeat_interleave(num_samples, dim=0)
-        memory_padding_mask = memory_padding_mask.repeat_interleave(num_samples, dim=0)
-        unseen_counts = unseen_counts.repeat_interleave(num_samples, dim=0)
-        rem = rem.repeat_interleave(num_samples, dim=0)
-        sampled = self._iterative_decode(
-            context,
-            memory,
-            memory_padding_mask,
-            unseen_counts,
-            tile_emb,
-            seat_emb,
-            rem,
-            sample=True,
+        sampling_context = self.prepare_allocation_sampling_context(features)
+        return self.sample_allocations_from_context(
+            sampling_context,
+            num_samples=num_samples,
             temperature=temperature,
-            decode_steps=int(decode_steps or self.decode_steps),
+            decode_steps=decode_steps,
         )
-        batch_size = features["visible_tile_counts"].shape[0]
-        return sampled.reshape(batch_size, num_samples, BUCKET_COUNT, TILE37_COUNT)
