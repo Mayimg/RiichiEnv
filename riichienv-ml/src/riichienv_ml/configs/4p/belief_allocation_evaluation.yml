@@ -1,0 +1,47 @@
+belief_allocation_evaluation:
+  game:
+    n_players: 4
+    replay_rule: tenhou
+  input_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
+  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04
+  report_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04/report.md
+  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04/summary.json
+  decisions_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04/decisions.csv
+  opponents_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04/opponents.csv
+  opponent_state_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04/opponent_state.csv
+  opponent_discard_count_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04/opponent_discard_count.csv
+  opponent_state_discard_count_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04/opponent_state_discard_count.csv
+  shanten_distribution_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test04/shanten_distributions.csv
+  model_path: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test18/model.pth
+  device: cuda
+  num_logs: 10000
+  max_decisions: null
+  decision_stride: 1
+  sample_keep_prob: 0.02
+  samples_per_decision: 64
+  batch_size: 4
+  warmup_batches: 1
+  skip_single_action: true
+  overwrite: false
+  seed: 0
+  temperature: 1.0
+  decode_steps: null
+  matmul_precision: high
+  progress_interval: 50
+  include_decisions_in_summary: false
+  include_opponents_in_summary: false
+  semantic_features: true
+  dora_weight: 1.0
+  red_weight: 1.0
+  model_class: riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler
+  encoder_class: riichienv_ml.features.belief_features.BeliefFeatureEncoder
+  model:
+    d_model: 256
+    nhead: 8
+    num_layers: 4
+    dim_feedforward: 1024
+    dropout: 0.1
+    denoise_num_layers: 3
+    denoise_dim_feedforward: 512
+    decode_steps: 12
+    confidence_method: max_prob
