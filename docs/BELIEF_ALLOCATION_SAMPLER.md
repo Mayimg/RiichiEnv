@@ -293,6 +293,58 @@ Outputs:
 - `prog_len_buckets.csv`: bucketed `prog_len` speed aggregates for quick
   comparison of early, middle, and late hand states.
 
+## Quality Evaluation
+
+`BeliefAllocationEvaluator` evaluates sampled hidden allocations against the
+full-information hands in ordinary MJAI logs.  It does not modify input logs or
+the MJAI format.  The evaluator replays files in filename-sorted order, keeps a
+deterministic subset of decision observations, samples `S` allocations for each
+selected observation, and writes decision-level and opponent-level metrics.
+
+```bash
+uv run python riichienv-ml/scripts/evaluate_belief_allocation.py \
+  -c riichienv-ml/src/riichienv_ml/configs/4p/belief_allocation_evaluation.yml
+```
+
+The default evaluation config uses `samples_per_decision: 64`,
+`batch_size: 4`, and `sample_keep_prob: 0.002`.  This favors broad log coverage
+over very large per-observation sample counts.  For quick model screening,
+`samples_per_decision: 32` is usually enough; use `128` or `256` for deeper
+final checks of diversity-sensitive metrics.
+
+Primary metrics are opponent-only because online inference uses the sampled
+opponent hands and fills the residual wall separately:
+
+- legality and diversity: allocation legal rate, bucket exact rate, unique
+  sample rate, pairwise L1, and samples/sec;
+- raw distribution quality: fair sample Energy Score over opponent buckets in
+  tile37, collapsed tile34, and dora/red-weighted tile37 spaces;
+- mahjong meaning: opponent-hand shanten CRPS plus a compact semantic Energy
+  Score over shanten, tenpai flags, dora/aka counts, suit counts, terminal/honor
+  count, pair count, and triplet count.
+
+Outputs:
+
+- `report.md`: a compact Markdown report for quickly reading the run setup,
+  sampler-health checks, overall scores, and tenpai/shanten bias by stratum.
+- `summary.json`: config, selected files, overall metrics, sampling speed,
+  stratified metrics, and shanten distributions.
+- `decisions.csv`: one row per selected decision observation.
+- `opponents.csv`: one row per target opponent per selected decision.
+- `opponent_state.csv`: metrics stratified by `riichi`, `closed`, `meld1`,
+  `meld2`, and `meld3plus`.
+- `opponent_discard_count.csv`: metrics stratified by the target opponent's
+  discard count.
+- `opponent_state_discard_count.csv`: metrics stratified by both state and
+  discard count.
+- `shanten_distributions.csv`: true and sampled shanten distributions for the
+  overall set and each stratum.
+
+Use a fixed `seed`, `input_glob`, `num_logs`, `sample_keep_prob`, and
+`samples_per_decision` when comparing models.  This keeps the decision subset
+identical across runs, so model differences are not hidden by evaluation
+sampling noise.
+
 ### Profiling
 
 Use the PyTorch profiler script to inspect one fixed decision observation in

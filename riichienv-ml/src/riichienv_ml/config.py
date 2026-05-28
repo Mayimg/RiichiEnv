@@ -351,6 +351,46 @@ class BeliefSamplingBenchmarkConfig(BaseModel):
     encoder_class: str = "riichienv_ml.features.belief_features.BeliefFeatureEncoder"
 
 
+class BeliefAllocationEvaluationConfig(BaseModel):
+    """Config for evaluating belief-sampler hidden-allocation quality."""
+
+    game: GameConfig = GameConfig(n_players=4, replay_rule="tenhou")
+    input_glob: str = "data/self_match/BC/test10/game_*.jsonl"
+    output_dir: str = "data/belief_allocation_evaluation/test01"
+    report_path: str | None = None
+    summary_path: str | None = None
+    decisions_csv_path: str | None = None
+    opponents_csv_path: str | None = None
+    opponent_state_csv_path: str | None = None
+    opponent_discard_count_csv_path: str | None = None
+    opponent_state_discard_count_csv_path: str | None = None
+    shanten_distribution_csv_path: str | None = None
+    model_path: str = "models/belief_sampler/test01/model.pth"
+    device: str = "cuda"
+    num_logs: int = 10
+    max_decisions: int | None = None
+    decision_stride: int = 1
+    sample_keep_prob: float = 1.0
+    samples_per_decision: int = 64
+    batch_size: int = 4
+    warmup_batches: int = 1
+    skip_single_action: bool = True
+    overwrite: bool = False
+    seed: int | None = 0
+    temperature: float = 1.0
+    decode_steps: int | None = None
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
+    progress_interval: int = 50
+    include_decisions_in_summary: bool = False
+    include_opponents_in_summary: bool = False
+    semantic_features: bool = True
+    dora_weight: float = 1.0
+    red_weight: float = 1.0
+    model: ModelConfig = ModelConfig()
+    model_class: str = "riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler"
+    encoder_class: str = "riichienv_ml.features.belief_features.BeliefFeatureEncoder"
+
+
 class SelfMatchAgentConfig(BaseModel):
     config_path: str
     model_path: str
@@ -399,6 +439,7 @@ class Config(BaseModel):
     belief_sampler: BeliefSamplerConfig = BeliefSamplerConfig()
     belief_log_sampling: BeliefLogSamplingConfig = BeliefLogSamplingConfig()
     belief_sampling_benchmark: BeliefSamplingBenchmarkConfig = BeliefSamplingBenchmarkConfig()
+    belief_allocation_evaluation: BeliefAllocationEvaluationConfig = BeliefAllocationEvaluationConfig()
     self_match: SelfMatchConfig = SelfMatchConfig(
         agents=[
             SelfMatchAgentConfig(
