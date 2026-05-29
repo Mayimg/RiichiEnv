@@ -115,6 +115,64 @@ def test_belief_dataset_applies_sample_keep_prob_after_buffering(monkeypatch):
     assert [sample_id for sample_id, _target in DummyBeliefDataset()] == ["a", "c"]
 
 
+def test_belief_dataset_applies_per_sample_keep_prob_after_buffering(monkeypatch):
+    monkeypatch.setattr("riichienv_ml.datasets.belief_allocation.random.shuffle", lambda values: None)
+    random_values = iter([0.3, 0.02, 0.1])
+    monkeypatch.setattr("riichienv_ml.datasets.belief_allocation.random.random", lambda: next(random_values))
+
+    class DummyBeliefDataset(BeliefAllocationDataset):
+        def __init__(self):
+            super().__init__(
+                ["a"],
+                is_train=True,
+                n_players=4,
+                replay_rule="tenhou",
+                encoder=None,
+                sample_keep_prob=0.2,
+                stratified_sample_keep_prob={"enabled": True},
+            )
+
+        def _load_file_samples(self, file_path: str):
+            del file_path
+            target = torch.zeros(4, 37, dtype=torch.long)
+            return [
+                ("riichi", target, 0.4),
+                ("early_closed", target, 0.01),
+                ("legacy", target),
+            ]
+
+    assert {sample_id for sample_id, _target in DummyBeliefDataset()} == {"riichi", "legacy"}
+
+
+def test_belief_dataset_stratified_keep_prob_uses_max_opponent_value():
+    class DummyObs:
+        player_id = 0
+        riichi_declared = [False, True, False, False]
+        riichi_stage = [False, False, False, False]
+        melds = [[], [], [1, 2, 3], []]
+        discards = [[], [], list(range(3)), list(range(20))]
+
+    dataset = BeliefAllocationDataset(
+        [str(DATA_PATH)],
+        is_train=True,
+        n_players=4,
+        replay_rule="tenhou",
+        encoder=BeliefFeatureEncoder(),
+        stratified_sample_keep_prob={
+            "riichi": 0.4,
+            "meld1": 0.1,
+            "meld2": 0.2,
+            "meld3plus": 0.5,
+            "closed_start": 0.01,
+            "closed_end": 0.3,
+            "closed_start_discard_count": 0,
+            "closed_end_discard_count": 20,
+        },
+    )
+
+    assert dataset._decision_sample_keep_prob(DummyObs()) == 0.5
+
+
 def test_belief_dataset_rejects_invalid_shuffle_buffer_files():
     with pytest.raises(ValueError, match="shuffle_buffer_files"):
         BeliefAllocationDataset(

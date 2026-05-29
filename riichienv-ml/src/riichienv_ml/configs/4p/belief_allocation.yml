@@ -13,6 +13,17 @@ belief_sampler:
   num_workers: 8
   shuffle_buffer_files: 128
   sample_keep_prob: 0.1
+  # When enabled, this replaces sample_keep_prob for regular belief-allocation samples.
+  stratified_sample_keep_prob:
+    enabled: true
+    riichi: 0.4
+    meld1: 0.1
+    meld2: 0.2
+    meld3plus: 0.5
+    closed_start: 0.01
+    closed_end: 0.3
+    closed_start_discard_count: 0
+    closed_end_discard_count: 20
   limit: 500000
   weight_decay: 0.01
   max_grad_norm: 10.0
