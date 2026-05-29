@@ -49,6 +49,7 @@ class BeliefAllocationTrainer:
         skip_single_action: bool = True,
         shuffle_buffer_files: int = 1,
         sample_keep_prob: float = 1.0,
+        stratified_sample_keep_prob: dict[str, Any] | None = None,
         eval_num_samples: int = 4,
         eval_sample_batches: int = 2,
     ):
@@ -76,6 +77,7 @@ class BeliefAllocationTrainer:
         self.skip_single_action = skip_single_action
         self.shuffle_buffer_files = int(shuffle_buffer_files)
         self.sample_keep_prob = float(sample_keep_prob)
+        self.stratified_sample_keep_prob = stratified_sample_keep_prob
         self.eval_num_samples = int(eval_num_samples)
         self.eval_sample_batches = int(eval_sample_batches)
 
@@ -105,6 +107,7 @@ class BeliefAllocationTrainer:
             skip_single_action=self.skip_single_action,
             shuffle_buffer_files=self.shuffle_buffer_files,
             sample_keep_prob=self.sample_keep_prob,
+            stratified_sample_keep_prob=self.stratified_sample_keep_prob,
         )
 
     def train(self, output_path: str) -> None:

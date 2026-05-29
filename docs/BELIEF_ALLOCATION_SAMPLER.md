@@ -161,11 +161,28 @@ samples from each training shuffle buffer after it is filled.  This is useful
 when nearby decision points share nearly identical hidden-hand targets.  The
 default is `1.0`, which keeps all samples.
 
+Training can also use `stratified_sample_keep_prob` to oversample decision
+points with advanced target-opponent states.  When enabled, the dataset computes
+a keep probability for each of the three opponents and keeps the decision using
+the maximum value.  Riichi and meld-count states use fixed probabilities; closed
+hands use a linear schedule by that opponent's discard count.  For ordinary
+belief-allocation samples this replaces the global `sample_keep_prob`.
+
 `riichienv_ml/configs/4p/belief_allocation.yml` uses:
 
 ```yaml
 shuffle_buffer_files: 128
 sample_keep_prob: 0.1
+stratified_sample_keep_prob:
+  enabled: true
+  riichi: 0.4
+  meld1: 0.1
+  meld2: 0.2
+  meld3plus: 0.5
+  closed_start: 0.01
+  closed_end: 0.3
+  closed_start_discard_count: 0
+  closed_end_discard_count: 20
 ```
 
 Training logs include both epoch-running metrics and recent-window metrics:

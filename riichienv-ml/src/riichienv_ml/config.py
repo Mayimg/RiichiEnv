@@ -265,6 +265,20 @@ class HandPredConfig(WandbConfig):
     val_step_interval: int = 20000  # run validation & save checkpoint every N steps
 
 
+class BeliefStratifiedSampleKeepProbConfig(BaseModel):
+    """Decision keep probabilities keyed by the most valuable target opponent."""
+
+    enabled: bool = True
+    riichi: float = 0.4
+    meld1: float = 0.1
+    meld2: float = 0.2
+    meld3plus: float = 0.5
+    closed_start: float = 0.01
+    closed_end: float = 0.3
+    closed_start_discard_count: int = 0
+    closed_end_discard_count: int = 20
+
+
 class BeliefSamplerConfig(WandbConfig):
     """Config for the joint hidden-allocation belief sampler."""
 
@@ -286,6 +300,7 @@ class BeliefSamplerConfig(WandbConfig):
     skip_single_action: bool = True
     shuffle_buffer_files: int = 1
     sample_keep_prob: float = 1.0
+    stratified_sample_keep_prob: BeliefStratifiedSampleKeepProbConfig | None = None
     eval_num_samples: int = 4
     eval_sample_batches: int = 2
     model: ModelConfig = ModelConfig()

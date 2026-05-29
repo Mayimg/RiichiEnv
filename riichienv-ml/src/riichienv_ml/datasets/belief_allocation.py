@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+from typing import Any
 
 import torch
 
@@ -12,6 +13,62 @@ from riichienv_ml.datasets.mjai_logs import BaseDataset
 from riichienv_ml.features.belief_features import make_hidden_allocation_target
 
 logger = logging.getLogger(__name__)
+
+
+_DEFAULT_STRATIFIED_SAMPLE_KEEP_PROB = {
+    "enabled": True,
+    "riichi": 0.4,
+    "meld1": 0.1,
+    "meld2": 0.2,
+    "meld3plus": 0.5,
+    "closed_start": 0.01,
+    "closed_end": 0.3,
+    "closed_start_discard_count": 0,
+    "closed_end_discard_count": 20,
+}
+
+
+def _validate_keep_prob(value: float, name: str) -> float:
+    value = float(value)
+    if not 0.0 < value <= 1.0:
+        raise ValueError(f"{name} must be in (0, 1]")
+    return value
+
+
+def _normalize_stratified_sample_keep_prob(config: Any | None) -> dict[str, Any] | None:
+    if config is None:
+        return None
+    if hasattr(config, "model_dump"):
+        config = config.model_dump()
+    if not isinstance(config, dict):
+        raise ValueError("stratified_sample_keep_prob must be a mapping")
+
+    normalized = dict(_DEFAULT_STRATIFIED_SAMPLE_KEEP_PROB)
+    normalized.update(config)
+    if not bool(normalized.get("enabled", True)):
+        return None
+
+    for key in ("riichi", "meld1", "meld2", "meld3plus", "closed_start", "closed_end"):
+        normalized[key] = _validate_keep_prob(float(normalized[key]), f"stratified_sample_keep_prob.{key}")
+
+    start = int(normalized["closed_start_discard_count"])
+    end = int(normalized["closed_end_discard_count"])
+    if start < 0:
+        raise ValueError("stratified_sample_keep_prob.closed_start_discard_count must be >= 0")
+    if end < start:
+        raise ValueError(
+            "stratified_sample_keep_prob.closed_end_discard_count must be >= closed_start_discard_count"
+        )
+    normalized["closed_start_discard_count"] = start
+    normalized["closed_end_discard_count"] = end
+    return normalized
+
+
+def _indexed_bool(values: Any, index: int) -> bool:
+    try:
+        return bool(values[index])
+    except (TypeError, IndexError, KeyError):
+        return False
 
 
 class BeliefAllocationDataset(BaseDataset):
@@ -28,18 +85,68 @@ class BeliefAllocationDataset(BaseDataset):
         skip_single_action: bool = True,
         shuffle_buffer_files: int = 1,
         sample_keep_prob: float = 1.0,
+        stratified_sample_keep_prob: Any | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.skip_single_action = skip_single_action
         self.shuffle_buffer_files = int(shuffle_buffer_files)
-        self.sample_keep_prob = float(sample_keep_prob)
+        self.sample_keep_prob = _validate_keep_prob(float(sample_keep_prob), "sample_keep_prob")
+        self.stratified_sample_keep_prob = _normalize_stratified_sample_keep_prob(stratified_sample_keep_prob)
         if self.shuffle_buffer_files < 1:
             raise ValueError("shuffle_buffer_files must be >= 1")
-        if not 0.0 < self.sample_keep_prob <= 1.0:
-            raise ValueError("sample_keep_prob must be in (0, 1]")
         if self.n_players != 4:
             raise ValueError("BeliefAllocationDataset currently supports 4-player mahjong only")
+
+    def _closed_sample_keep_prob(self, discard_count: int) -> float:
+        config = self.stratified_sample_keep_prob
+        if config is None:
+            return self.sample_keep_prob
+        start = int(config["closed_start_discard_count"])
+        end = int(config["closed_end_discard_count"])
+        if end == start:
+            return float(config["closed_end"])
+        clipped = max(start, min(int(discard_count), end))
+        ratio = (clipped - start) / float(end - start)
+        return float(config["closed_start"]) + ratio * (float(config["closed_end"]) - float(config["closed_start"]))
+
+    def _opponent_sample_keep_prob(self, obs, abs_seat: int) -> float:
+        config = self.stratified_sample_keep_prob
+        if config is None:
+            return self.sample_keep_prob
+
+        riichi_declared = _indexed_bool(getattr(obs, "riichi_declared", None), abs_seat)
+        riichi_stage = _indexed_bool(getattr(obs, "riichi_stage", None), abs_seat)
+        if riichi_declared or riichi_stage:
+            return float(config["riichi"])
+
+        meld_count = len(obs.melds[abs_seat])
+        if meld_count == 1:
+            return float(config["meld1"])
+        if meld_count == 2:
+            return float(config["meld2"])
+        if meld_count >= 3:
+            return float(config["meld3plus"])
+        return self._closed_sample_keep_prob(len(obs.discards[abs_seat]))
+
+    def _decision_sample_keep_prob(self, obs) -> float:
+        if self.stratified_sample_keep_prob is None:
+            return self.sample_keep_prob
+        observer = int(obs.player_id)
+        return max(self._opponent_sample_keep_prob(obs, (observer + rel) % 4) for rel in (1, 2, 3))
+
+    def _buffer_sample(self, features, target: torch.Tensor, keep_prob: float):
+        return features, target, _validate_keep_prob(keep_prob, "sample keep_prob")
+
+    def _sample_entry_keep_prob(self, sample) -> float:
+        if isinstance(sample, tuple) and len(sample) == 3 and isinstance(sample[2], float | int):
+            return _validate_keep_prob(float(sample[2]), "sample keep_prob")
+        return self.sample_keep_prob
+
+    def _sample_entry_payload(self, sample):
+        if isinstance(sample, tuple) and len(sample) == 3 and isinstance(sample[2], float | int):
+            return sample[0], sample[1]
+        return sample
 
     def _load_file_samples(self, file_path: str):
         try:
@@ -55,9 +162,10 @@ class BeliefAllocationDataset(BaseDataset):
                     skip_single_action=self.skip_single_action,
                     include_hidden=True,
                 ):
+                    keep_prob = self._decision_sample_keep_prob(obs)
                     features = self.encoder.encode(obs)
                     target = make_hidden_allocation_target(obs, hidden_hands, features)
-                    buffer.append((features, target))
+                    buffer.append(self._buffer_sample(features, target, keep_prob))
         except (RuntimeError, ValueError) as e:
             logger.warning("Skipping replay due to error: %s: %s", file_path, e)
             return None
@@ -65,11 +173,11 @@ class BeliefAllocationDataset(BaseDataset):
         return buffer
 
     def _yield_shuffled(self, buffer: list):
-        if self.sample_keep_prob < 1.0:
-            buffer = [sample for sample in buffer if random.random() < self.sample_keep_prob]
+        if self.sample_keep_prob < 1.0 or self.stratified_sample_keep_prob is not None:
+            buffer = [sample for sample in buffer if random.random() < self._sample_entry_keep_prob(sample)]
         random.shuffle(buffer)
         while buffer:
-            yield buffer.pop()
+            yield self._sample_entry_payload(buffer.pop())
 
     def __iter__(self):
         files = list(self._get_files())
@@ -111,7 +219,8 @@ class BeliefAllocationDataset(BaseDataset):
             if samples is None:
                 skipped += 1
                 continue
-            yield from samples
+            for sample in samples:
+                yield self._sample_entry_payload(sample)
 
         if skipped > 0:
             logger.warning("Skipped %d / %d replay files due to errors", skipped, total)
