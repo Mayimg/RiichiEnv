@@ -513,7 +513,7 @@ class JointHiddenAllocationSampler(nn.Module):
         **encoder_kwargs: Any,
     ):
         super().__init__()
-        del decoder_hidden_dim
+        del decoder_hidden_dim, max_decode_steps
         encoder_kwargs["d_model"] = d_model
         self.encoder = BeliefObservationEncoder(**encoder_kwargs)
         self.d_model = d_model
@@ -524,9 +524,6 @@ class JointHiddenAllocationSampler(nn.Module):
         self.decode_steps = int(decode_steps)
         if self.decode_steps <= 0:
             raise ValueError("decode_steps must be positive")
-        self.max_decode_steps = int(max_decode_steps or self.decode_steps)
-        if self.max_decode_steps < self.decode_steps:
-            raise ValueError("max_decode_steps must be >= decode_steps")
         if confidence_method not in {"max_prob", "neg_entropy"}:
             raise ValueError("confidence_method must be 'max_prob' or 'neg_entropy'")
         self.confidence_method = confidence_method
@@ -542,7 +539,6 @@ class JointHiddenAllocationSampler(nn.Module):
         self.alloc_tile_remaining_embed = nn.Embedding(5, d_model)
         self.alloc_seat_remaining_embed = nn.Embedding(BeliefFeatureEncoder.HAND_SIZE_DIMS, d_model)
         self.alloc_state_embed = nn.Embedding(_COUNT_CANDIDATES + 1, self.d_dec)
-        self.alloc_time_embed = nn.Embedding(self.max_decode_steps, self.d_dec)
         d_ff = int(denoise_dim_feedforward or max(self.d_dec * 2, 512))
         self.denoise_decoder = DenoiseTransformer(
             self.d_dec,
@@ -647,7 +643,6 @@ class JointHiddenAllocationSampler(nn.Module):
         tile_remaining: torch.Tensor,
         seat_remaining: torch.Tensor,
         state_ids: torch.Tensor,
-        step_ids: torch.Tensor,
     ) -> torch.Tensor:
         batch_size = tile_emb.shape[0]
         tile_token = tile_emb.unsqueeze(2).expand(-1, -1, _OPPONENT_COUNT, -1)
@@ -656,14 +651,12 @@ class JointHiddenAllocationSampler(nn.Module):
         seat_rem_emb = self.alloc_seat_remaining_embed(
             seat_remaining.clamp(min=0, max=BeliefFeatureEncoder.HAND_SIZE_DIMS - 1).long()
         ).unsqueeze(1)
-        step_ids = step_ids.clamp(min=0, max=self.max_decode_steps - 1)
         tokens = (
             tile_token
             + seat_token
             + tile_rem_emb
             + seat_rem_emb
             + self.alloc_state_embed(state_ids.clamp(min=0, max=self.mask_state_id))
-            + self.alloc_time_embed(step_ids).view(batch_size, 1, 1, self.d_dec)
         )
         return tokens.reshape(batch_size, _ALLOCATION_TOKEN_COUNT, self.d_dec)
 
@@ -677,7 +670,6 @@ class JointHiddenAllocationSampler(nn.Module):
         tile_remaining: torch.Tensor,
         seat_remaining: torch.Tensor,
         state_ids: torch.Tensor,
-        step_ids: torch.Tensor,
     ) -> torch.Tensor:
         with _profile_range("belief/denoise_neural_logits"):
             with _profile_range("belief/token_embeddings"):
@@ -687,7 +679,6 @@ class JointHiddenAllocationSampler(nn.Module):
                     tile_remaining,
                     seat_remaining,
                     state_ids,
-                    step_ids,
                 )
             decoder_memory, decoder_memory_padding_mask = self._decoder_memory(
                 context,
@@ -844,8 +835,7 @@ class JointHiddenAllocationSampler(nn.Module):
     def _sample_random_mask(
         batch_size: int,
         device: torch.device,
-        decode_steps: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         t = torch.rand(batch_size, device=device)
         mask_ratio = torch.cos(t * math.pi / 2.0)
         n_masked = (
@@ -861,8 +851,7 @@ class JointHiddenAllocationSampler(nn.Module):
         chosen = ranks < n_masked.unsqueeze(1)
         mask = torch.zeros(batch_size, _ALLOCATION_TOKEN_COUNT, dtype=torch.bool, device=device)
         mask.scatter_(1, order, chosen)
-        step_ids = torch.floor(t * float(decode_steps)).long().clamp(max=decode_steps - 1)
-        return mask.reshape(batch_size, TILE37_COUNT, _OPPONENT_COUNT), step_ids
+        return mask.reshape(batch_size, TILE37_COUNT, _OPPONENT_COUNT)
 
     @staticmethod
     def _cosine_target_unmasked(step: int, decode_steps: int) -> int:
@@ -994,7 +983,7 @@ class JointHiddenAllocationSampler(nn.Module):
         target_cells = target_counts[:, :_OPPONENT_COUNT].permute(0, 2, 1).long()
         target_match = (target_cells >= 0) & (target_cells < _COUNT_CANDIDATES)
         target_ids = target_cells.clamp(min=0, max=_COUNT_CANDIDATES - 1)
-        mask, step_ids = self._sample_random_mask(context.shape[0], context.device, self.decode_steps)
+        mask = self._sample_random_mask(context.shape[0], context.device)
         state_ids = target_ids.masked_fill(mask, self.mask_state_id)
         known_counts = target_cells * (~mask).long()
         tile_remaining = unseen_counts - known_counts.sum(dim=2)
@@ -1009,7 +998,6 @@ class JointHiddenAllocationSampler(nn.Module):
             tile_remaining,
             seat_remaining,
             state_ids,
-            step_ids,
         )
         logits, feasible = self._apply_prior_and_legality(
             neural_logits,
@@ -1104,8 +1092,6 @@ class JointHiddenAllocationSampler(nn.Module):
     ) -> torch.Tensor:
         if decode_steps <= 0:
             raise ValueError("decode_steps must be positive")
-        if decode_steps > self.max_decode_steps:
-            raise ValueError("decode_steps cannot exceed max_decode_steps")
 
         batch_size = context.shape[0]
         device = context.device
@@ -1130,7 +1116,6 @@ class JointHiddenAllocationSampler(nn.Module):
         with _profile_range("belief/iterative_decode"):
             for step in range(decode_steps):
                 with _profile_range("belief/decode_step"):
-                    step_ids = torch.full((batch_size,), step, dtype=torch.long, device=device)
                     neural_logits = self._denoise_neural_logits(
                         context,
                         memory,
@@ -1140,7 +1125,6 @@ class JointHiddenAllocationSampler(nn.Module):
                         state.tile_remaining,
                         state.seat_remaining,
                         state.state_ids,
-                        step_ids,
                     )
                     neural_logits_cells = neural_logits.reshape(batch_size * _ALLOCATION_TOKEN_COUNT, _COUNT_CANDIDATES)
                     logits, _feasible = self._apply_prior_and_legality(
@@ -1197,6 +1181,8 @@ class JointHiddenAllocationSampler(nn.Module):
                                 temp=temp,
                             )
                     remaining_count -= n_to_unmask
+                    if remaining_count == 0:
+                        break
 
         state.allocation[:, BUCKET_COUNT - 1] = unseen_counts - state.allocation[:, :_OPPONENT_COUNT].sum(dim=1)
         return state.allocation

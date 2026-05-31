@@ -233,6 +233,10 @@ def test_belief_model_trains_and_samples_legal_allocations():
     assert diagnostics["allocation_legal_rate"].item() == 1.0
     assert diagnostics["opponent_hand_size_exact_rate"].item() == 1.0
 
+    longer_step_samples = model.sample_allocations(features, num_samples=1, decode_steps=8)
+    assert longer_step_samples.shape == (2, 1, 4, 37)
+    assert torch.equal(longer_step_samples.sum(dim=2), unseen.unsqueeze(1))
+
 
 def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     d_model = 64
@@ -256,7 +260,8 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     assert model.alloc_seat_remaining_embed.num_embeddings == BeliefFeatureEncoder.HAND_SIZE_DIMS
     assert model.alloc_state_embed.num_embeddings == 6
     assert model.mask_state_id == 5
-    assert model.alloc_time_embed.num_embeddings == 4
+    assert not hasattr(model, "alloc_time_embed")
+    assert not hasattr(model, "max_decode_steps")
     assert len(model.denoise_decoder.layers) == 2
     assert model.denoise_decoder.head.out_features == 5
     assert model.opponent_subset_masks.shape == (7, BUCKET_COUNT - 1)
@@ -544,8 +549,7 @@ def test_belief_encoder_returns_public_cross_attention_memory():
     unseen_counts = model._unseen_counts(features)
     rem = model._initial_rem(features, unseen_counts)
     state_ids = torch.full((2, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id)
-    step_ids = torch.zeros(2, dtype=torch.long)
-    tokens = model._token_embeddings(tile_emb, seat_emb, unseen_counts, rem[:, :3], state_ids, step_ids)
+    tokens = model._token_embeddings(tile_emb, seat_emb, unseen_counts, rem[:, :3], state_ids)
     assert tokens.shape == (2, TILE37_COUNT * (BUCKET_COUNT - 1), 64)
     logits = model._denoise_neural_logits(
         context,
@@ -556,7 +560,6 @@ def test_belief_encoder_returns_public_cross_attention_memory():
         unseen_counts,
         rem[:, :3],
         state_ids,
-        step_ids,
     )
     assert logits.shape == (2, TILE37_COUNT, BUCKET_COUNT - 1, 5)
 
