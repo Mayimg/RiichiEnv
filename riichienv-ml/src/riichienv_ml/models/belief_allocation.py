@@ -862,6 +862,16 @@ class JointHiddenAllocationSampler(nn.Module):
         return max(0, min(_ALLOCATION_TOKEN_COUNT, target))
 
     @staticmethod
+    def _scheduled_unmask_count(step: int, decode_steps: int, remaining_count: int) -> int:
+        if decode_steps == _ALLOCATION_TOKEN_COUNT:
+            return min(1, remaining_count)
+        if step == decode_steps - 1:
+            return remaining_count
+        target_unmasked = JointHiddenAllocationSampler._cosine_target_unmasked(step, decode_steps)
+        current_unmasked = _ALLOCATION_TOKEN_COUNT - remaining_count
+        return max(0, min(target_unmasked - current_unmasked, remaining_count))
+
+    @staticmethod
     def _confidence(probs: torch.Tensor, method: str) -> torch.Tensor:
         if method == "neg_entropy":
             safe_probs = probs.clamp_min(torch.finfo(probs.dtype).tiny)
@@ -1138,12 +1148,7 @@ class JointHiddenAllocationSampler(nn.Module):
                         confidence = self._confidence(probs, self.confidence_method)
                         confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
 
-                        if step == decode_steps - 1:
-                            n_to_unmask = remaining_count
-                        else:
-                            target_unmasked = self._cosine_target_unmasked(step, decode_steps)
-                            current_unmasked = _ALLOCATION_TOKEN_COUNT - remaining_count
-                            n_to_unmask = max(0, min(target_unmasked - current_unmasked, remaining_count))
+                        n_to_unmask = self._scheduled_unmask_count(step, decode_steps, remaining_count)
 
                         if n_to_unmask == 0:
                             continue
