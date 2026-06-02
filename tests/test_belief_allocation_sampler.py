@@ -20,6 +20,19 @@ from riichienv import MjaiReplay
 DATA_PATH = Path(__file__).parent / "data" / "126_204_0_mjai.jsonl"
 
 
+def _decode_unmask_counts(decode_steps: int) -> list[int]:
+    token_count = TILE37_COUNT * (BUCKET_COUNT - 1)
+    remaining_count = token_count
+    counts = []
+    for step in range(decode_steps):
+        n_to_unmask = JointHiddenAllocationSampler._scheduled_unmask_count(step, decode_steps, remaining_count)
+        counts.append(n_to_unmask)
+        remaining_count -= n_to_unmask
+        if remaining_count == 0:
+            break
+    return counts
+
+
 def test_mjai_steps_can_return_teacher_hidden_hands():
     replay = MjaiReplay.from_jsonl(str(DATA_PATH), rule="tenhou")
     kyoku = next(iter(replay.take_kyokus()))
@@ -236,6 +249,20 @@ def test_belief_model_trains_and_samples_legal_allocations():
     longer_step_samples = model.sample_allocations(features, num_samples=1, decode_steps=8)
     assert longer_step_samples.shape == (2, 1, 4, 37)
     assert torch.equal(longer_step_samples.sum(dim=2), unseen.unsqueeze(1))
+
+
+def test_belief_decode_steps_equal_allocation_tokens_unmasks_one_cell_per_step():
+    token_count = TILE37_COUNT * (BUCKET_COUNT - 1)
+
+    counts = _decode_unmask_counts(token_count)
+
+    assert counts == [1] * token_count
+
+
+def test_belief_decode_steps_other_than_allocation_tokens_keep_cosine_schedule():
+    counts = _decode_unmask_counts(12)
+
+    assert counts == [1, 3, 4, 7, 8, 10, 10, 12, 14, 13, 15, 14]
 
 
 def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():

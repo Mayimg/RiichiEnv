@@ -225,6 +225,11 @@ cells is then applied in confidence order while updating tile and opponent
 remaining capacities.  This keeps the sample legal without rerunning the
 transformer for each selected cell.
 
+The 4-player sampler has 111 allocation cells: 37 tile types for each of the 3
+opponents.  When `decode_steps=111`, inference uses one-cell-per-step decoding
+instead of the cosine unmasking schedule.  Other `decode_steps` values keep the
+cosine schedule and may select zero or multiple cells in a single decode step.
+
 For repeated sampling from the same fixed observation, callers can split this
 work explicitly:
 
