@@ -4,7 +4,7 @@ belief_sampler:
     replay_rule: tenhou
   data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
   val_data_glob: /home/naoyuki/mahjong01/RiichiEnv/data/self_match/BC/test11/game_*.jsonl
-  output: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test18/model.pth
+  output: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test23/model.pth
   device: cuda
   batch_size: 32
   lr: 0.0001
@@ -15,7 +15,7 @@ belief_sampler:
   sample_keep_prob: 0.1
   # When enabled, this replaces sample_keep_prob for regular belief-allocation samples.
   stratified_sample_keep_prob:
-    enabled: true
+    enabled: false
     riichi: 0.4
     meld1: 0.1
     meld2: 0.2
@@ -46,3 +46,5 @@ belief_sampler:
     denoise_dim_feedforward: 512
     decode_steps: 12
     confidence_method: max_prob
+    joint_assignment_confidence_beta: 0.0
+    joint_assignment_score_gamma: 1.0
