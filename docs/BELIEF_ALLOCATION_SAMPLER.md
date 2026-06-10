@@ -233,6 +233,16 @@ from its legal 5-way output while updating tile and opponent remaining
 capacities.  Other `decode_steps` values keep the cosine schedule and may select
 zero or multiple cells in a single decode step.
 
+Supported confidence methods are:
+
+- `max_prob`: select cells with the largest legal-output probability.
+- `neg_entropy`: select cells with the lowest entropy over the 5-way output.
+- `legal_normalized_entropy`: select cells by `1 - H(p) / log(M)`, where `M`
+  is the number of legal count candidates for that cell.  This ranks cells by
+  how peaked the distribution is relative to the legal candidate count.  Cells
+  with `M=1` are forced decisions and receive a priority score above the normal
+  `[0, 1]` range.
+
 For repeated sampling from the same fixed observation, callers can split this
 work explicitly:
 

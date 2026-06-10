@@ -28,6 +28,7 @@ from riichienv_ml.models.transformer import (
 )
 
 _COUNT_CANDIDATES = 5
+_CONFIDENCE_METHODS = ("max_prob", "neg_entropy", "legal_normalized_entropy")
 _TILE34_COUNT = 34
 _OPPONENT_COUNT = BUCKET_COUNT - 1
 _ALLOCATION_TOKEN_COUNT = TILE37_COUNT * _OPPONENT_COUNT
@@ -526,8 +527,9 @@ class JointHiddenAllocationSampler(nn.Module):
         self.decode_steps = int(decode_steps)
         if self.decode_steps <= 0:
             raise ValueError("decode_steps must be positive")
-        if confidence_method not in {"max_prob", "neg_entropy"}:
-            raise ValueError("confidence_method must be 'max_prob' or 'neg_entropy'")
+        if confidence_method not in _CONFIDENCE_METHODS:
+            allowed = "', '".join(_CONFIDENCE_METHODS)
+            raise ValueError(f"confidence_method must be one of: '{allowed}'")
         self.confidence_method = confidence_method
         self.mask_state_id = _COUNT_CANDIDATES
 
@@ -874,10 +876,27 @@ class JointHiddenAllocationSampler(nn.Module):
         return max(0, min(target_unmasked - current_unmasked, remaining_count))
 
     @staticmethod
-    def _confidence(probs: torch.Tensor, method: str) -> torch.Tensor:
+    def _confidence(
+        probs: torch.Tensor,
+        method: str,
+        feasible: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if method == "neg_entropy":
             safe_probs = probs.clamp_min(torch.finfo(probs.dtype).tiny)
             return (safe_probs * safe_probs.log()).sum(dim=-1)
+        if method == "legal_normalized_entropy":
+            if feasible is None:
+                raise ValueError("feasible mask is required for legal_normalized_entropy")
+            legal_count = feasible.sum(dim=-1)
+            legal_probs = probs.masked_fill(~feasible, 0.0)
+            legal_mass = legal_probs.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(probs.dtype).tiny)
+            legal_probs = legal_probs / legal_mass
+            safe_legal_probs = legal_probs.clamp_min(torch.finfo(probs.dtype).tiny)
+            entropy = -(legal_probs * safe_legal_probs.log()).sum(dim=-1)
+            denominator = legal_count.clamp_min(2).to(probs.dtype).log()
+            score = (1.0 - entropy / denominator).clamp(min=0.0, max=1.0)
+            score = torch.where(legal_count == 1, score.new_full(score.shape, 2.0), score)
+            return torch.where(legal_count > 0, score, score.new_full(score.shape, torch.finfo(score.dtype).min))
         return probs.max(dim=-1).values
 
     @staticmethod
@@ -1139,7 +1158,7 @@ class JointHiddenAllocationSampler(nn.Module):
                         state.state_ids,
                     )
                     neural_logits_cells = neural_logits.reshape(batch_size * _ALLOCATION_TOKEN_COUNT, _COUNT_CANDIDATES)
-                    logits, _feasible = self._apply_prior_and_legality(
+                    logits, feasible = self._apply_prior_and_legality(
                         neural_logits,
                         state.tile_remaining,
                         state.seat_remaining,
@@ -1147,7 +1166,7 @@ class JointHiddenAllocationSampler(nn.Module):
                     )
                     with _profile_range("belief/confidence_order"):
                         probs = F.softmax(logits / temp, dim=-1)
-                        confidence = self._confidence(probs, self.confidence_method)
+                        confidence = self._confidence(probs, self.confidence_method, feasible)
                         confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
 
                         n_to_unmask = self._scheduled_unmask_count(step, decode_steps, remaining_count)
