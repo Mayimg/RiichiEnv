@@ -510,12 +510,12 @@ class JointHiddenAllocationSampler(nn.Module):
         decode_steps: int = 12,
         max_decode_steps: int | None = None,
         confidence_method: str = "max_prob",
-        joint_assignment_confidence_beta: float = 1.0,
-        joint_assignment_score_gamma: float = 1.0,
         **encoder_kwargs: Any,
     ):
         super().__init__()
         del decoder_hidden_dim, max_decode_steps
+        encoder_kwargs.pop("joint_assignment_confidence_beta", None)
+        encoder_kwargs.pop("joint_assignment_score_gamma", None)
         encoder_kwargs["d_model"] = d_model
         self.encoder = BeliefObservationEncoder(**encoder_kwargs)
         self.d_model = d_model
@@ -529,12 +529,6 @@ class JointHiddenAllocationSampler(nn.Module):
         if confidence_method not in {"max_prob", "neg_entropy"}:
             raise ValueError("confidence_method must be 'max_prob' or 'neg_entropy'")
         self.confidence_method = confidence_method
-        self.joint_assignment_confidence_beta = float(joint_assignment_confidence_beta)
-        if self.joint_assignment_confidence_beta < 0.0:
-            raise ValueError("joint_assignment_confidence_beta must be non-negative")
-        self.joint_assignment_score_gamma = float(joint_assignment_score_gamma)
-        if self.joint_assignment_score_gamma <= 0.0:
-            raise ValueError("joint_assignment_score_gamma must be positive")
         self.mask_state_id = _COUNT_CANDIDATES
 
         cross_attn_heads = int(encoder_kwargs.get("nhead", 8))
@@ -1092,41 +1086,6 @@ class JointHiddenAllocationSampler(nn.Module):
             else:
                 chosen = cell_logits.argmax(dim=1)
             state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
-        return tile37, opponent, chosen
-
-    def _sample_and_apply_joint_assignment_step(
-        self,
-        logits: torch.Tensor,
-        state: AllocationDecodeState,
-        token_lookup: AllocationDecodeTokenLookup,
-        batch_offsets: AllocationDecodeBatchOffsets,
-        *,
-        sample: bool,
-        temp: float,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        masked_logits = logits.masked_fill(~state.is_masked.unsqueeze(-1), 0.0)
-        log_probs = F.log_softmax(masked_logits / temp, dim=-1)
-        log_probs = log_probs.masked_fill(~state.is_masked.unsqueeze(-1), torch.finfo(log_probs.dtype).min)
-        if self.joint_assignment_confidence_beta > 0.0:
-            cell_confidence = log_probs.exp().max(dim=-1).values.clamp_min(torch.finfo(log_probs.dtype).tiny)
-            log_probs = log_probs + self.joint_assignment_confidence_beta * cell_confidence.log().unsqueeze(-1)
-            log_probs = log_probs.masked_fill(~state.is_masked.unsqueeze(-1), torch.finfo(log_probs.dtype).min)
-        if self.joint_assignment_score_gamma != 1.0:
-            log_probs = log_probs * self.joint_assignment_score_gamma
-            log_probs = log_probs.masked_fill(~state.is_masked.unsqueeze(-1), torch.finfo(log_probs.dtype).min)
-        flat_scores = log_probs.reshape(logits.shape[0], _ALLOCATION_TOKEN_COUNT * _COUNT_CANDIDATES)
-        if sample:
-            selected_pair = torch.multinomial(flat_scores.exp(), 1).squeeze(1)
-        else:
-            selected_pair = flat_scores.argmax(dim=1)
-
-        token = torch.div(selected_pair, _COUNT_CANDIDATES, rounding_mode="floor")
-        chosen = selected_pair % _COUNT_CANDIDATES
-        tile37 = token_lookup.tile37.index_select(0, token)
-        opponent = token_lookup.opponent.index_select(0, token)
-        allocation_offset = token_lookup.allocation_offset.index_select(0, token)
-        state_index = batch_offsets.state + token
-        state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
         return tile37, opponent, chosen
 
     def _iterative_decode(  # noqa: PLR0915
