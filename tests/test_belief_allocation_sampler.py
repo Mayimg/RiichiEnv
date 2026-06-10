@@ -265,7 +265,7 @@ def test_belief_decode_steps_other_than_allocation_tokens_keep_cosine_schedule()
     assert counts == [1, 3, 4, 7, 8, 10, 10, 12, 14, 13, 15, 14]
 
 
-def test_belief_decode_steps_equal_allocation_tokens_uses_joint_assignment(monkeypatch):
+def test_belief_decode_steps_equal_allocation_tokens_uses_two_stage_cell_decoding(monkeypatch):
     d_model = 64
     model = JointHiddenAllocationSampler(
         d_model=d_model,
@@ -288,16 +288,23 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_joint_assignment(monke
         del args, kwargs
         return neural_logits, torch.ones_like(neural_logits, dtype=torch.bool)
 
-    def fail_cell_step(*args, **kwargs):
+    def fail_joint_assignment_step(*args, **kwargs):
         del args, kwargs
-        raise AssertionError("decode_steps=111 must use joint assignment decoding")
+        raise AssertionError("decode_steps=111 must use two-stage cell decoding")
 
-    def fake_joint_assignment_step(logits, state, token_lookup, batch_offsets, *, sample, temp):
-        del logits, sample, temp
-        token = torch.tensor([len(calls)])
-        tile37 = token_lookup.tile37.index_select(0, token)
-        opponent = token_lookup.opponent.index_select(0, token)
-        allocation_offset = token_lookup.allocation_offset.index_select(0, token)
+    def fake_cell_step(
+        neural_logits_cells,
+        state,
+        token,
+        tile37,
+        opponent,
+        allocation_offset,
+        batch_offsets,
+        *,
+        sample,
+        temp,
+    ):
+        del neural_logits_cells, sample, temp
         chosen = torch.zeros(1, dtype=torch.long)
         state_index = batch_offsets.state + token
         state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
@@ -306,8 +313,8 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_joint_assignment(monke
 
     monkeypatch.setattr(model, "_denoise_neural_logits", fake_denoise_neural_logits)
     monkeypatch.setattr(model, "_apply_prior_and_legality", fake_apply_prior_and_legality)
-    monkeypatch.setattr(model, "_sample_and_apply_cell_step", fail_cell_step)
-    monkeypatch.setattr(model, "_sample_and_apply_joint_assignment_step", fake_joint_assignment_step)
+    monkeypatch.setattr(model, "_sample_and_apply_cell_step", fake_cell_step)
+    monkeypatch.setattr(model, "_sample_and_apply_joint_assignment_step", fail_joint_assignment_step)
 
     allocation = model._iterative_decode(
         torch.zeros(1, d_model),
@@ -322,7 +329,8 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_joint_assignment(monke
         decode_steps=token_count,
     )
 
-    assert calls == list(range(token_count))
+    assert len(calls) == token_count
+    assert sorted(calls) == list(range(token_count))
     assert allocation.shape == (1, BUCKET_COUNT, TILE37_COUNT)
 
 

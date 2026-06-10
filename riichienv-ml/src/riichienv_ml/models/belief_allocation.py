@@ -1186,21 +1186,6 @@ class JointHiddenAllocationSampler(nn.Module):
                         state.seat_remaining,
                         state.is_masked,
                     )
-                    if decode_steps == _ALLOCATION_TOKEN_COUNT:
-                        with _profile_range("belief/joint_assignment_step"):
-                            self._sample_and_apply_joint_assignment_step(
-                                logits,
-                                state,
-                                token_lookup,
-                                batch_offsets,
-                                sample=sample,
-                                temp=temp,
-                            )
-                        remaining_count -= 1
-                        if remaining_count == 0:
-                            break
-                        continue
-
                     with _profile_range("belief/confidence_order"):
                         probs = F.softmax(logits / temp, dim=-1)
                         confidence = self._confidence(probs, self.confidence_method)

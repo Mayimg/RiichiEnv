@@ -226,17 +226,12 @@ opponent remaining capacities.  This keeps the sample legal without rerunning
 the transformer for each selected cell.
 
 The 4-player sampler has 111 allocation cells: 37 tile types for each of the 3
-opponents.  When `decode_steps=111`, inference uses one-cell-per-step joint
-assignment decoding instead of the confidence schedule.  Each step applies the
-legal mask, normalizes count logits within each still-masked cell, flattens all
-legal `(cell, count)` assignments, and chooses one assignment from
-`p(count | cell) * max_prob(cell)^beta`.  `beta` is configured with
-`joint_assignment_confidence_beta`; `0.0` gives pure flattened cell-normalized
-sampling, while larger values prioritize high-confidence cells earlier.  The
-final flattened weights can be sharpened with `joint_assignment_score_gamma`:
-`1.0` keeps the weights unchanged and values above `1.0` sample more strongly
-from the largest weighted assignments.  Other `decode_steps` values keep the
-cosine schedule and may select zero or multiple cells in a single decode step.
+opponents.  When `decode_steps=111`, the confidence schedule selects exactly one
+cell per decode step.  Each step first chooses the next cell from still-masked
+cells using the configured `confidence_method`, then samples that cell's count
+from its legal 5-way output while updating tile and opponent remaining
+capacities.  Other `decode_steps` values keep the cosine schedule and may select
+zero or multiple cells in a single decode step.
 
 For repeated sampling from the same fixed observation, callers can split this
 work explicitly:

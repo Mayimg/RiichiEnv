@@ -45,5 +45,3 @@ belief_allocation_evaluation:
     denoise_dim_feedforward: 512
     decode_steps: 111
     confidence_method: max_prob
-    joint_assignment_confidence_beta: 0.0
-    joint_assignment_score_gamma: 1.0
