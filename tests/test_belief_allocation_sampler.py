@@ -265,7 +265,7 @@ def test_belief_decode_steps_other_than_allocation_tokens_keep_cosine_schedule()
     assert counts == [1, 3, 4, 7, 8, 10, 10, 12, 14, 13, 15, 14]
 
 
-def test_belief_decode_steps_equal_allocation_tokens_uses_joint_assignment(monkeypatch):
+def test_belief_decode_steps_equal_allocation_tokens_uses_two_stage_cell_decoding(monkeypatch):
     d_model = 64
     model = JointHiddenAllocationSampler(
         d_model=d_model,
@@ -288,16 +288,19 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_joint_assignment(monke
         del args, kwargs
         return neural_logits, torch.ones_like(neural_logits, dtype=torch.bool)
 
-    def fail_cell_step(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError("decode_steps=111 must use joint assignment decoding")
-
-    def fake_joint_assignment_step(logits, state, token_lookup, batch_offsets, *, sample, temp):
-        del logits, sample, temp
-        token = torch.tensor([len(calls)])
-        tile37 = token_lookup.tile37.index_select(0, token)
-        opponent = token_lookup.opponent.index_select(0, token)
-        allocation_offset = token_lookup.allocation_offset.index_select(0, token)
+    def fake_cell_step(
+        neural_logits_cells,
+        state,
+        token,
+        tile37,
+        opponent,
+        allocation_offset,
+        batch_offsets,
+        *,
+        sample,
+        temp,
+    ):
+        del neural_logits_cells, sample, temp
         chosen = torch.zeros(1, dtype=torch.long)
         state_index = batch_offsets.state + token
         state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
@@ -306,8 +309,7 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_joint_assignment(monke
 
     monkeypatch.setattr(model, "_denoise_neural_logits", fake_denoise_neural_logits)
     monkeypatch.setattr(model, "_apply_prior_and_legality", fake_apply_prior_and_legality)
-    monkeypatch.setattr(model, "_sample_and_apply_cell_step", fail_cell_step)
-    monkeypatch.setattr(model, "_sample_and_apply_joint_assignment_step", fake_joint_assignment_step)
+    monkeypatch.setattr(model, "_sample_and_apply_cell_step", fake_cell_step)
 
     allocation = model._iterative_decode(
         torch.zeros(1, d_model),
@@ -322,7 +324,8 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_joint_assignment(monke
         decode_steps=token_count,
     )
 
-    assert calls == list(range(token_count))
+    assert len(calls) == token_count
+    assert sorted(calls) == list(range(token_count))
     assert allocation.shape == (1, BUCKET_COUNT, TILE37_COUNT)
 
 
@@ -348,8 +351,8 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     assert model.alloc_seat_remaining_embed.num_embeddings == BeliefFeatureEncoder.HAND_SIZE_DIMS
     assert model.alloc_state_embed.num_embeddings == 6
     assert model.mask_state_id == 5
-    assert model.joint_assignment_confidence_beta == pytest.approx(1.0)
-    assert model.joint_assignment_score_gamma == pytest.approx(1.0)
+    assert not hasattr(model, "joint_assignment_confidence_beta")
+    assert not hasattr(model, "joint_assignment_score_gamma")
     assert not hasattr(model, "alloc_time_embed")
     assert not hasattr(model, "max_decode_steps")
     assert len(model.denoise_decoder.layers) == 2
@@ -365,6 +368,24 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
     assert model.tile37_to_tile34[10] == model.tile37_to_tile34[15] == 13
     assert model.tile37_to_tile34[20] == model.tile37_to_tile34[25] == 22
+
+
+def test_belief_model_ignores_legacy_joint_assignment_config_keys():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        joint_assignment_confidence_beta=2.0,
+        joint_assignment_score_gamma=1.5,
+        dropout=0.0,
+    )
+
+    assert not hasattr(model, "joint_assignment_confidence_beta")
+    assert not hasattr(model, "joint_assignment_score_gamma")
 
 
 def test_belief_model_logcomb_lookup_matches_clamped_lgamma():
@@ -592,263 +613,6 @@ def test_belief_model_cell_step_updates_decode_state():
     assert torch.equal(state.tile_remaining, expected_tile_remaining)
     assert torch.equal(state.seat_remaining, expected_seat_remaining)
     assert torch.equal(state.is_masked, expected_is_masked)
-
-
-def test_belief_model_joint_assignment_step_argmax_uses_cell_normalized_probs():
-    model = JointHiddenAllocationSampler(
-        d_model=64,
-        nhead=4,
-        num_layers=1,
-        dim_feedforward=128,
-        denoise_num_layers=1,
-        denoise_dim_feedforward=128,
-        decode_steps=4,
-        dropout=0.0,
-    )
-    batch_indices = torch.arange(1)
-    batch_offsets = model._decode_batch_offsets(batch_indices)
-    token_lookup = model._decode_token_lookup(torch.device("cpu"))
-    state = AllocationDecodeState(
-        allocation=torch.zeros(1, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
-        state_ids=torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id, dtype=torch.long),
-        tile_remaining=torch.full((1, TILE37_COUNT), 4, dtype=torch.long),
-        seat_remaining=torch.full((1, BUCKET_COUNT - 1), 13, dtype=torch.long),
-        is_masked=torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool),
-    )
-    state.is_masked[0, 0, 0] = True
-    state.is_masked[0, 1, 0] = True
-    logits = torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1, 5), torch.finfo(torch.float32).min)
-    logits[0, 0, 0] = torch.tensor([100.0, 99.0, -100.0, -100.0, -100.0])
-    logits[0, 1, 0] = torch.tensor([0.0, -100.0, -100.0, -100.0, -100.0])
-
-    actual_tile37, actual_opponent, actual_chosen = model._sample_and_apply_joint_assignment_step(
-        logits,
-        state,
-        token_lookup,
-        batch_offsets,
-        sample=False,
-        temp=1.0,
-    )
-
-    assert torch.equal(actual_tile37, torch.tensor([1]))
-    assert torch.equal(actual_opponent, torch.tensor([0]))
-    assert torch.equal(actual_chosen, torch.tensor([0]))
-    assert state.allocation[0, 0, 1].item() == 0
-    assert not state.is_masked[0, 1, 0].item()
-    assert state.is_masked[0, 0, 0].item()
-
-
-def test_belief_model_joint_assignment_step_applies_max_prob_prior(monkeypatch):
-    model = JointHiddenAllocationSampler(
-        d_model=64,
-        nhead=4,
-        num_layers=1,
-        dim_feedforward=128,
-        denoise_num_layers=1,
-        denoise_dim_feedforward=128,
-        decode_steps=4,
-        joint_assignment_confidence_beta=2.0,
-        dropout=0.0,
-    )
-    batch_offsets = model._decode_batch_offsets(torch.arange(1))
-    token_lookup = model._decode_token_lookup(torch.device("cpu"))
-    state = AllocationDecodeState(
-        allocation=torch.zeros(1, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
-        state_ids=torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id, dtype=torch.long),
-        tile_remaining=torch.full((1, TILE37_COUNT), 4, dtype=torch.long),
-        seat_remaining=torch.full((1, BUCKET_COUNT - 1), 13, dtype=torch.long),
-        is_masked=torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool),
-    )
-    state.is_masked[0, 0, 0] = True
-    state.is_masked[0, 1, 0] = True
-    min_value = torch.finfo(torch.float32).min
-    logits = torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1, 5), min_value)
-    logits[0, 0, 0] = torch.tensor([0.0, 0.0, min_value, min_value, min_value])
-    logits[0, 1, 0] = torch.tensor([0.0, min_value, min_value, min_value, min_value])
-    captured = {}
-
-    def fake_multinomial(weights, num_samples):
-        captured["weights"] = weights
-        assert num_samples == 1
-        return torch.tensor([[0]])
-
-    monkeypatch.setattr(torch, "multinomial", fake_multinomial)
-
-    model._sample_and_apply_joint_assignment_step(
-        logits,
-        state,
-        token_lookup,
-        batch_offsets,
-        sample=True,
-        temp=1.0,
-    )
-
-    token0_count0 = 0
-    token1_count0 = (BUCKET_COUNT - 1) * 5
-    assert captured["weights"][0, token0_count0].item() == pytest.approx(0.125)
-    assert captured["weights"][0, token1_count0].item() == pytest.approx(1.0)
-
-
-def test_belief_model_joint_assignment_step_applies_score_gamma(monkeypatch):
-    model = JointHiddenAllocationSampler(
-        d_model=64,
-        nhead=4,
-        num_layers=1,
-        dim_feedforward=128,
-        denoise_num_layers=1,
-        denoise_dim_feedforward=128,
-        decode_steps=4,
-        joint_assignment_confidence_beta=0.0,
-        joint_assignment_score_gamma=2.0,
-        dropout=0.0,
-    )
-    batch_offsets = model._decode_batch_offsets(torch.arange(1))
-    token_lookup = model._decode_token_lookup(torch.device("cpu"))
-    state = AllocationDecodeState(
-        allocation=torch.zeros(1, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
-        state_ids=torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id, dtype=torch.long),
-        tile_remaining=torch.full((1, TILE37_COUNT), 4, dtype=torch.long),
-        seat_remaining=torch.full((1, BUCKET_COUNT - 1), 13, dtype=torch.long),
-        is_masked=torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool),
-    )
-    state.is_masked[0, 0, 0] = True
-    state.is_masked[0, 1, 0] = True
-    min_value = torch.finfo(torch.float32).min
-    logits = torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1, 5), min_value)
-    logits[0, 0, 0] = torch.tensor([0.0, 0.0, min_value, min_value, min_value])
-    logits[0, 1, 0] = torch.tensor([0.0, min_value, min_value, min_value, min_value])
-    captured = {}
-
-    def fake_multinomial(weights, num_samples):
-        captured["weights"] = weights
-        assert num_samples == 1
-        return torch.tensor([[0]])
-
-    monkeypatch.setattr(torch, "multinomial", fake_multinomial)
-
-    model._sample_and_apply_joint_assignment_step(
-        logits,
-        state,
-        token_lookup,
-        batch_offsets,
-        sample=True,
-        temp=1.0,
-    )
-
-    token0_count0 = 0
-    token1_count0 = (BUCKET_COUNT - 1) * 5
-    assert captured["weights"][0, token0_count0].item() == pytest.approx(0.25)
-    assert captured["weights"][0, token1_count0].item() == pytest.approx(1.0)
-    assert captured["weights"][0, 2 * 5].item() == 0.0
-
-
-def test_belief_model_joint_assignment_step_samples_flattened_cell_probs(monkeypatch):
-    model = JointHiddenAllocationSampler(
-        d_model=64,
-        nhead=4,
-        num_layers=1,
-        dim_feedforward=128,
-        denoise_num_layers=1,
-        denoise_dim_feedforward=128,
-        decode_steps=4,
-        dropout=0.0,
-    )
-    batch_indices = torch.arange(1)
-    batch_offsets = model._decode_batch_offsets(batch_indices)
-    token_lookup = model._decode_token_lookup(torch.device("cpu"))
-    state = AllocationDecodeState(
-        allocation=torch.zeros(1, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
-        state_ids=torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id, dtype=torch.long),
-        tile_remaining=torch.full((1, TILE37_COUNT), 4, dtype=torch.long),
-        seat_remaining=torch.full((1, BUCKET_COUNT - 1), 13, dtype=torch.long),
-        is_masked=torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool),
-    )
-    target_token = 1 * (BUCKET_COUNT - 1) + 2
-    target_pair = target_token * 5 + 1
-    state.is_masked[0, 0, 0] = True
-    state.is_masked[0, 1, 2] = True
-    logits = torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1, 5), torch.finfo(torch.float32).min)
-    logits[0, 0, 0] = torch.tensor([5.0, -1.0, -2.0, -3.0, -4.0])
-    logits[0, 1, 2] = torch.tensor([-3.0, 4.8, -3.0, -3.0, -3.0])
-    captured = {}
-
-    def fake_multinomial(weights, num_samples):
-        captured["weights"] = weights
-        assert num_samples == 1
-        return torch.tensor([[target_pair]])
-
-    monkeypatch.setattr(torch, "multinomial", fake_multinomial)
-
-    actual_tile37, actual_opponent, actual_chosen = model._sample_and_apply_joint_assignment_step(
-        logits,
-        state,
-        token_lookup,
-        batch_offsets,
-        sample=True,
-        temp=1.0,
-    )
-
-    assert captured["weights"].shape == (1, TILE37_COUNT * (BUCKET_COUNT - 1) * 5)
-    assert captured["weights"][0, target_pair].item() > 0.0
-    assert captured["weights"][0, 2 * 5].item() == 0.0
-    assert torch.equal(actual_tile37, torch.tensor([1]))
-    assert torch.equal(actual_opponent, torch.tensor([2]))
-    assert torch.equal(actual_chosen, torch.tensor([1]))
-    assert state.allocation[0, 2, 1].item() == 1
-    assert state.tile_remaining[0, 1].item() == 3
-    assert state.seat_remaining[0, 2].item() == 12
-    assert not state.is_masked[0, 1, 2].item()
-
-
-def test_belief_model_joint_assignment_confidence_beta_zero_keeps_pure_flatten(monkeypatch):
-    model = JointHiddenAllocationSampler(
-        d_model=64,
-        nhead=4,
-        num_layers=1,
-        dim_feedforward=128,
-        denoise_num_layers=1,
-        denoise_dim_feedforward=128,
-        decode_steps=4,
-        joint_assignment_confidence_beta=0.0,
-        dropout=0.0,
-    )
-    batch_offsets = model._decode_batch_offsets(torch.arange(1))
-    token_lookup = model._decode_token_lookup(torch.device("cpu"))
-    state = AllocationDecodeState(
-        allocation=torch.zeros(1, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
-        state_ids=torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1), model.mask_state_id, dtype=torch.long),
-        tile_remaining=torch.full((1, TILE37_COUNT), 4, dtype=torch.long),
-        seat_remaining=torch.full((1, BUCKET_COUNT - 1), 13, dtype=torch.long),
-        is_masked=torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool),
-    )
-    state.is_masked[0, 0, 0] = True
-    state.is_masked[0, 1, 0] = True
-    min_value = torch.finfo(torch.float32).min
-    logits = torch.full((1, TILE37_COUNT, BUCKET_COUNT - 1, 5), min_value)
-    logits[0, 0, 0] = torch.tensor([0.0, 0.0, min_value, min_value, min_value])
-    logits[0, 1, 0] = torch.tensor([0.0, min_value, min_value, min_value, min_value])
-    captured = {}
-
-    def fake_multinomial(weights, num_samples):
-        captured["weights"] = weights
-        assert num_samples == 1
-        return torch.tensor([[0]])
-
-    monkeypatch.setattr(torch, "multinomial", fake_multinomial)
-
-    model._sample_and_apply_joint_assignment_step(
-        logits,
-        state,
-        token_lookup,
-        batch_offsets,
-        sample=True,
-        temp=1.0,
-    )
-
-    token0_count0 = 0
-    token1_count0 = (BUCKET_COUNT - 1) * 5
-    assert captured["weights"][0, token0_count0].item() == pytest.approx(0.5)
-    assert captured["weights"][0, token1_count0].item() == pytest.approx(1.0)
 
 
 def test_belief_encoder_returns_public_cross_attention_memory():
