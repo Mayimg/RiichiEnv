@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -263,6 +264,55 @@ def test_belief_decode_steps_other_than_allocation_tokens_keep_cosine_schedule()
     counts = _decode_unmask_counts(12)
 
     assert counts == [1, 3, 4, 7, 8, 10, 10, 12, 14, 13, 15, 14]
+
+
+def test_belief_confidence_legal_normalized_entropy_scores_by_legal_candidate_count():
+    probs = torch.tensor(
+        [
+            [0.90, 0.10, 0.00, 0.00, 0.00],
+            [0.90, 0.033, 0.033, 0.034, 0.00],
+            [0.00, 1.00, 0.00, 0.00, 0.00],
+            [0.20, 0.20, 0.20, 0.20, 0.20],
+        ],
+        dtype=torch.float32,
+    )
+    feasible = torch.tensor(
+        [
+            [True, True, False, False, False],
+            [True, True, True, True, False],
+            [False, True, False, False, False],
+            [False, False, False, False, False],
+        ],
+    )
+
+    confidence = JointHiddenAllocationSampler._confidence(probs, "legal_normalized_entropy", feasible)
+
+    expected_two = 1.0 - (-(0.90 * math.log(0.90) + 0.10 * math.log(0.10))) / math.log(2)
+    expected_four = 1.0 - (
+        -(0.90 * math.log(0.90) + 0.033 * math.log(0.033) + 0.033 * math.log(0.033) + 0.034 * math.log(0.034))
+    ) / math.log(4)
+
+    assert torch.isclose(confidence[0], torch.tensor(expected_two, dtype=confidence.dtype))
+    assert torch.isclose(confidence[1], torch.tensor(expected_four, dtype=confidence.dtype))
+    assert confidence[1] > confidence[0]
+    assert confidence[2].item() == 2.0
+    assert confidence[3].item() == torch.finfo(confidence.dtype).min
+
+
+def test_belief_model_accepts_legal_normalized_entropy_confidence_method():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+        confidence_method="legal_normalized_entropy",
+    )
+
+    assert model.confidence_method == "legal_normalized_entropy"
 
 
 def test_belief_decode_steps_equal_allocation_tokens_uses_two_stage_cell_decoding(monkeypatch):
