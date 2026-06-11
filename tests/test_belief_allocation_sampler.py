@@ -266,6 +266,81 @@ def test_belief_decode_steps_other_than_allocation_tokens_keep_cosine_schedule()
     assert counts == [1, 3, 4, 7, 8, 10, 10, 12, 14, 13, 15, 14]
 
 
+def test_belief_training_mask_decode_steps_equal_allocation_tokens_samples_uniform_count(monkeypatch):
+    token_count = TILE37_COUNT * (BUCKET_COUNT - 1)
+    expected_counts = torch.tensor([1, token_count // 2, token_count], dtype=torch.long)
+    calls = []
+
+    def fake_randint(low, high, size, *, device=None):
+        calls.append((low, high, size, device))
+        target_device = device if device is not None else torch.device("cpu")
+        return expected_counts.to(target_device)
+
+    monkeypatch.setattr(torch, "randint", fake_randint)
+
+    mask = JointHiddenAllocationSampler._sample_random_mask(
+        expected_counts.shape[0],
+        torch.device("cpu"),
+        decode_steps=token_count,
+    )
+
+    assert calls == [(1, token_count + 1, (expected_counts.shape[0],), torch.device("cpu"))]
+    assert mask.flatten(1).sum(dim=1).tolist() == expected_counts.tolist()
+
+
+def test_belief_training_forward_passes_decode_steps_to_random_mask(monkeypatch):
+    d_model = 64
+    token_count = TILE37_COUNT * (BUCKET_COUNT - 1)
+    batch_size = 2
+    model = JointHiddenAllocationSampler(
+        d_model=d_model,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=token_count,
+        dropout=0.0,
+    )
+    captured = {}
+
+    def fake_sample_random_mask(batch_size_arg, device, *, decode_steps=None):
+        captured["batch_size"] = batch_size_arg
+        captured["device"] = device
+        captured["decode_steps"] = decode_steps
+        return torch.ones(batch_size_arg, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool, device=device)
+
+    def fake_denoise_neural_logits(*args, **kwargs):
+        del args, kwargs
+        return torch.zeros(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, 5)
+
+    def fake_apply_prior_and_legality(neural_logits, *args, **kwargs):
+        del args, kwargs
+        return neural_logits, torch.ones_like(neural_logits, dtype=torch.bool)
+
+    monkeypatch.setattr(model, "_sample_random_mask", fake_sample_random_mask)
+    monkeypatch.setattr(model, "_denoise_neural_logits", fake_denoise_neural_logits)
+    monkeypatch.setattr(model, "_apply_prior_and_legality", fake_apply_prior_and_legality)
+
+    out = model._training_forward(
+        torch.zeros(batch_size, d_model),
+        torch.zeros(batch_size, 1, d_model),
+        torch.zeros(batch_size, 1, dtype=torch.bool),
+        torch.zeros(batch_size, TILE37_COUNT, dtype=torch.long),
+        torch.zeros(batch_size, TILE37_COUNT, d_model),
+        torch.zeros(BUCKET_COUNT - 1, d_model),
+        torch.zeros(batch_size, BUCKET_COUNT, dtype=torch.long),
+        torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
+    )
+
+    assert captured == {
+        "batch_size": batch_size,
+        "device": torch.device("cpu"),
+        "decode_steps": token_count,
+    }
+    assert out["loss"].isfinite()
+
+
 def test_belief_confidence_legal_normalized_entropy_scores_by_legal_candidate_count():
     probs = torch.tensor(
         [
