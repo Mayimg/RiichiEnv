@@ -839,17 +839,23 @@ class JointHiddenAllocationSampler(nn.Module):
     def _sample_random_mask(
         batch_size: int,
         device: torch.device,
+        *,
+        decode_steps: int | None = None,
     ) -> torch.Tensor:
-        t = torch.rand(batch_size, device=device)
-        mask_ratio = torch.cos(t * math.pi / 2.0)
-        n_masked = (
-            torch.round(_ALLOCATION_TOKEN_COUNT * mask_ratio)
-            .long()
-            .clamp(
-                min=1,
-                max=_ALLOCATION_TOKEN_COUNT,
+        if decode_steps == _ALLOCATION_TOKEN_COUNT:
+            # Match a uniformly sampled state from the one-cell-per-step decode path.
+            n_masked = torch.randint(1, _ALLOCATION_TOKEN_COUNT + 1, (batch_size,), device=device)
+        else:
+            t = torch.rand(batch_size, device=device)
+            mask_ratio = torch.cos(t * math.pi / 2.0)
+            n_masked = (
+                torch.round(_ALLOCATION_TOKEN_COUNT * mask_ratio)
+                .long()
+                .clamp(
+                    min=1,
+                    max=_ALLOCATION_TOKEN_COUNT,
+                )
             )
-        )
         order = torch.rand(batch_size, _ALLOCATION_TOKEN_COUNT, device=device).argsort(dim=1)
         ranks = torch.arange(_ALLOCATION_TOKEN_COUNT, device=device).unsqueeze(0)
         chosen = ranks < n_masked.unsqueeze(1)
@@ -1014,7 +1020,7 @@ class JointHiddenAllocationSampler(nn.Module):
         target_cells = target_counts[:, :_OPPONENT_COUNT].permute(0, 2, 1).long()
         target_match = (target_cells >= 0) & (target_cells < _COUNT_CANDIDATES)
         target_ids = target_cells.clamp(min=0, max=_COUNT_CANDIDATES - 1)
-        mask = self._sample_random_mask(context.shape[0], context.device)
+        mask = self._sample_random_mask(context.shape[0], context.device, decode_steps=self.decode_steps)
         state_ids = target_ids.masked_fill(mask, self.mask_state_id)
         known_counts = target_cells * (~mask).long()
         tile_remaining = unseen_counts - known_counts.sum(dim=2)
