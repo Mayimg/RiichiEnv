@@ -322,15 +322,26 @@ def test_belief_training_forward_passes_decode_steps_to_random_mask(monkeypatch)
     monkeypatch.setattr(model, "_denoise_neural_logits", fake_denoise_neural_logits)
     monkeypatch.setattr(model, "_apply_prior_and_legality", fake_apply_prior_and_legality)
 
+    unseen_counts = torch.ones(batch_size, TILE37_COUNT, dtype=torch.long)
+    rem = torch.tensor([[1, 1, 1, TILE37_COUNT - 3]] * batch_size, dtype=torch.long)
+    targets = torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long)
+    targets[:, 0, 0] = 1
+    targets[:, 1, 1] = 1
+    targets[:, 2, 2] = 1
+    targets[:, 3] = unseen_counts
+    targets[:, 3, 0] -= 1
+    targets[:, 3, 1] -= 1
+    targets[:, 3, 2] -= 1
+
     out = model._training_forward(
         torch.zeros(batch_size, d_model),
         torch.zeros(batch_size, 1, d_model),
         torch.zeros(batch_size, 1, dtype=torch.bool),
-        torch.zeros(batch_size, TILE37_COUNT, dtype=torch.long),
+        unseen_counts,
         torch.zeros(batch_size, TILE37_COUNT, d_model),
         torch.zeros(BUCKET_COUNT - 1, d_model),
-        torch.zeros(batch_size, BUCKET_COUNT, dtype=torch.long),
-        torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long),
+        rem,
+        targets,
     )
 
     assert captured == {
@@ -424,8 +435,9 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_two_stage_cell_decodin
         *,
         sample,
         temp,
+        row_indices=None,
     ):
-        del neural_logits_cells, sample, temp
+        del neural_logits_cells, sample, temp, row_indices
         chosen = torch.zeros(1, dtype=torch.long)
         state_index = batch_offsets.state + token
         state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
@@ -435,6 +447,7 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_two_stage_cell_decodin
     monkeypatch.setattr(model, "_denoise_neural_logits", fake_denoise_neural_logits)
     monkeypatch.setattr(model, "_apply_prior_and_legality", fake_apply_prior_and_legality)
     monkeypatch.setattr(model, "_sample_and_apply_cell_step", fake_cell_step)
+    monkeypatch.setattr(model, "_apply_forced_decode_cells", lambda *args, **kwargs: 0)
 
     allocation = model._iterative_decode(
         torch.zeros(1, d_model),
@@ -644,6 +657,126 @@ def test_belief_model_selected_cell_legality_matches_full_legality():
     assert torch.equal(cell_feasible, expected_feasible)
     assert torch.equal(torch.isneginf(cell_logits), torch.isneginf(expected_logits))
     assert torch.allclose(cell_logits[finite], expected_logits[finite])
+
+
+def test_belief_model_detects_forced_cells_from_unique_legal_candidate():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    tile_remaining = torch.zeros(1, TILE37_COUNT, dtype=torch.long)
+    tile_remaining[0, 7] = 3
+    seat_remaining = torch.tensor([[3, 0, 0]], dtype=torch.long)
+    is_masked = torch.ones(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool)
+
+    forced, values = model._forced_cells(tile_remaining, seat_remaining, is_masked)
+
+    assert forced[0, 7, 0]
+    assert values[0, 7, 0].item() == 3
+    assert forced[0, :, 1].all()
+    assert forced[0, :, 2].all()
+    assert values[0, :, 1].sum().item() == 0
+    assert values[0, :, 2].sum().item() == 0
+    assert forced[0, 0, 0]
+    assert values[0, 0, 0].item() == 0
+
+
+def test_belief_model_initial_decode_resolves_fully_forced_state_without_neural_logits(monkeypatch):
+    d_model = 64
+    model = JointHiddenAllocationSampler(
+        d_model=d_model,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+
+    def fail_denoise_neural_logits(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("forced decode should finish before neural logits are requested")
+
+    monkeypatch.setattr(model, "_denoise_neural_logits", fail_denoise_neural_logits)
+    unseen_counts = torch.zeros(1, TILE37_COUNT, dtype=torch.long)
+    unseen_counts[0, 7] = 3
+    rem = torch.tensor([[3, 0, 0, 0]], dtype=torch.long)
+
+    allocation = model._iterative_decode(
+        torch.zeros(1, d_model),
+        torch.zeros(1, 1, d_model),
+        torch.zeros(1, 1, dtype=torch.bool),
+        unseen_counts,
+        torch.zeros(1, TILE37_COUNT, d_model),
+        torch.zeros(BUCKET_COUNT - 1, d_model),
+        rem,
+        sample=True,
+        temperature=1.0,
+        decode_steps=4,
+    )
+
+    assert allocation[0, 0, 7].item() == 3
+    assert allocation[0, :3].sum().item() == 3
+    assert allocation[0, 3].sum().item() == 0
+    assert torch.equal(allocation.sum(dim=1), unseen_counts)
+
+
+def test_belief_training_mask_resolves_forced_cells_and_retries_empty_rows(monkeypatch):
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    first = torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool)
+    first[0, 0, 1] = True
+    second = first.clone()
+    second[0, 0, 0] = True
+    second[0, 1, 0] = True
+    sampled_masks = [first, second]
+    calls = []
+
+    def fake_sample_random_mask(batch_size, device, *, decode_steps=None):
+        calls.append((batch_size, device, decode_steps))
+        return sampled_masks.pop(0).to(device)
+
+    monkeypatch.setattr(model, "_sample_random_mask", fake_sample_random_mask)
+    target_cells = torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.long)
+    target_cells[0, 0, 0] = 1
+    target_ids = target_cells.clone()
+    target_match = torch.ones_like(target_cells, dtype=torch.bool)
+    unseen_counts = torch.zeros(1, TILE37_COUNT, dtype=torch.long)
+    unseen_counts[0, 0] = 1
+    unseen_counts[0, 1] = 1
+    seat_caps = torch.tensor([[1, 0, 0]], dtype=torch.long)
+    target_sample_valid = torch.ones(1, dtype=torch.bool)
+
+    mask = model._sample_training_mask(
+        target_cells,
+        target_ids,
+        target_match,
+        unseen_counts,
+        seat_caps,
+        target_sample_valid,
+        decode_steps=model.decode_steps,
+    )
+
+    assert calls == [(1, torch.device("cpu"), 4), (1, torch.device("cpu"), 4)]
+    assert mask[0, 0, 0]
+    assert mask[0, 1, 0]
+    assert not mask[0, 0, 1]
+    assert mask.sum().item() == 2
 
 
 def test_belief_model_decode_token_lookup_buffers():

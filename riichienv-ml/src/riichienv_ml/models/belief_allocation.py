@@ -33,6 +33,7 @@ _TILE34_COUNT = 34
 _OPPONENT_COUNT = BUCKET_COUNT - 1
 _ALLOCATION_TOKEN_COUNT = TILE37_COUNT * _OPPONENT_COUNT
 _MAX_LOGCOMB_COUNT = int(sum(TOTAL_TILE_COUNTS37))
+_TRAINING_MASK_MAX_RETRIES = 16
 
 
 def _build_tile37_to_tile34() -> torch.Tensor:
@@ -163,6 +164,23 @@ class AllocationDecodeState:
         allocation_index = batch_offsets.allocation + allocation_offset
         tile_index = batch_offsets.tile + tile37
         seat_index = batch_offsets.seat + opponent
+
+        self.apply_flat_cell_updates(
+            state_index,
+            allocation_index,
+            tile_index,
+            seat_index,
+            chosen,
+        )
+
+    def apply_flat_cell_updates(
+        self,
+        state_index: torch.Tensor,
+        allocation_index: torch.Tensor,
+        tile_index: torch.Tensor,
+        seat_index: torch.Tensor,
+        chosen: torch.Tensor,
+    ) -> None:
         neg_chosen = -chosen
 
         self.allocation.view(-1).index_copy_(0, allocation_index, chosen)
@@ -762,6 +780,17 @@ class JointHiddenAllocationSampler(nn.Module):
             logits = self._hypergeom_prior(tile_remaining, seat_remaining, is_masked) + neural_logits
             return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible
 
+    def _forced_cells(
+        self,
+        tile_remaining: torch.Tensor,
+        seat_remaining: torch.Tensor,
+        is_masked: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        feasible = self._cell_hall_feasible(tile_remaining, seat_remaining, is_masked)
+        forced = is_masked & (feasible.sum(dim=-1) == 1)
+        values = feasible.long().argmax(dim=-1)
+        return forced, values
+
     def _selected_cell_hall_feasible(
         self,
         tile_remaining: torch.Tensor,
@@ -809,7 +838,13 @@ class JointHiddenAllocationSampler(nn.Module):
         is_masked: torch.Tensor,
         tile37: torch.Tensor,
         opponent: torch.Tensor,
+        row_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if row_indices is not None:
+            tile_remaining = tile_remaining.index_select(0, row_indices)
+            seat_remaining = seat_remaining.index_select(0, row_indices)
+            is_masked = is_masked.index_select(0, row_indices)
+
         row_ids = torch.arange(tile_remaining.shape[0], device=tile_remaining.device)
         candidates = self.count_candidates.to(tile_remaining.device).view(1, _COUNT_CANDIDATES)
         u_t = tile_remaining[row_ids, tile37].unsqueeze(1)
@@ -863,6 +898,62 @@ class JointHiddenAllocationSampler(nn.Module):
         mask.scatter_(1, order, chosen)
         return mask.reshape(batch_size, TILE37_COUNT, _OPPONENT_COUNT)
 
+    def _resolve_forced_training_cells(
+        self,
+        mask: torch.Tensor,
+        target_cells: torch.Tensor,
+        target_ids: torch.Tensor,
+        target_match: torch.Tensor,
+        unseen_counts: torch.Tensor,
+        seat_caps: torch.Tensor,
+        valid_rows: torch.Tensor,
+    ) -> torch.Tensor:
+        mask = mask.clone()
+        valid = valid_rows.view(-1, 1, 1)
+        for _ in range(_ALLOCATION_TOKEN_COUNT):
+            known_counts = target_cells * (~mask).long()
+            tile_remaining = unseen_counts - known_counts.sum(dim=2)
+            seat_remaining = seat_caps - known_counts.sum(dim=1)
+            forced, values = self._forced_cells(tile_remaining, seat_remaining, mask)
+            forced &= valid & target_match & (values == target_ids)
+            if not forced.any():
+                break
+            mask = mask & ~forced
+        return mask
+
+    def _sample_training_mask(
+        self,
+        target_cells: torch.Tensor,
+        target_ids: torch.Tensor,
+        target_match: torch.Tensor,
+        unseen_counts: torch.Tensor,
+        seat_caps: torch.Tensor,
+        target_sample_valid: torch.Tensor,
+        *,
+        decode_steps: int | None = None,
+    ) -> torch.Tensor:
+        mask = self._sample_random_mask(target_cells.shape[0], target_cells.device, decode_steps=decode_steps)
+        for attempt in range(_TRAINING_MASK_MAX_RETRIES):
+            mask = self._resolve_forced_training_cells(
+                mask,
+                target_cells,
+                target_ids,
+                target_match,
+                unseen_counts,
+                seat_caps,
+                target_sample_valid,
+            )
+            empty_valid_rows = target_sample_valid & ~mask.flatten(1).any(dim=1)
+            if not empty_valid_rows.any() or attempt == _TRAINING_MASK_MAX_RETRIES - 1:
+                break
+            retry_count = int(empty_valid_rows.long().sum().item())
+            mask[empty_valid_rows] = self._sample_random_mask(
+                retry_count,
+                target_cells.device,
+                decode_steps=decode_steps,
+            )
+        return mask
+
     @staticmethod
     def _cosine_target_unmasked(step: int, decode_steps: int) -> int:
         ratio_masked = math.cos(math.pi * float(step + 1) / (2.0 * float(decode_steps)))
@@ -880,6 +971,16 @@ class JointHiddenAllocationSampler(nn.Module):
         target_unmasked = JointHiddenAllocationSampler._cosine_target_unmasked(step, decode_steps)
         current_unmasked = _ALLOCATION_TOKEN_COUNT - remaining_count
         return max(0, min(target_unmasked - current_unmasked, remaining_count))
+
+    @staticmethod
+    def _scheduled_unmask_counts(step: int, decode_steps: int, remaining_counts: torch.Tensor) -> torch.Tensor:
+        if decode_steps == _ALLOCATION_TOKEN_COUNT:
+            return remaining_counts.clamp(max=1)
+        if step == decode_steps - 1:
+            return remaining_counts
+        target_unmasked = JointHiddenAllocationSampler._cosine_target_unmasked(step, decode_steps)
+        current_unmasked = _ALLOCATION_TOKEN_COUNT - remaining_counts
+        return (target_unmasked - current_unmasked).clamp(min=0).minimum(remaining_counts)
 
     @staticmethod
     def _confidence(
@@ -1020,7 +1121,15 @@ class JointHiddenAllocationSampler(nn.Module):
         target_cells = target_counts[:, :_OPPONENT_COUNT].permute(0, 2, 1).long()
         target_match = (target_cells >= 0) & (target_cells < _COUNT_CANDIDATES)
         target_ids = target_cells.clamp(min=0, max=_COUNT_CANDIDATES - 1)
-        mask = self._sample_random_mask(context.shape[0], context.device, decode_steps=self.decode_steps)
+        mask = self._sample_training_mask(
+            target_cells,
+            target_ids,
+            target_match,
+            unseen_counts,
+            rem[:, :_OPPONENT_COUNT],
+            target_sample_valid,
+            decode_steps=self.decode_steps,
+        )
         state_ids = target_ids.masked_fill(mask, self.mask_state_id)
         known_counts = target_cells * (~mask).long()
         tile_remaining = unseen_counts - known_counts.sum(dim=2)
@@ -1072,6 +1181,7 @@ class JointHiddenAllocationSampler(nn.Module):
         *,
         sample: bool,
         temp: float,
+        row_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if _PROFILE_RANGES_ENABLED:
             with _profile_range("belief/cell_lookup"):
@@ -1085,6 +1195,7 @@ class JointHiddenAllocationSampler(nn.Module):
                     state.is_masked,
                     tile37,
                     opponent,
+                    row_indices=row_indices,
                 )
             with _profile_range("belief/cell_sample"):
                 if sample:
@@ -1104,6 +1215,7 @@ class JointHiddenAllocationSampler(nn.Module):
                 state.is_masked,
                 tile37,
                 opponent,
+                row_indices=row_indices,
             )
             if sample:
                 cell_probs = F.softmax(cell_logits / temp, dim=1)
@@ -1112,6 +1224,31 @@ class JointHiddenAllocationSampler(nn.Module):
                 chosen = cell_logits.argmax(dim=1)
             state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
         return tile37, opponent, chosen
+
+    def _apply_forced_decode_cells(
+        self,
+        state: AllocationDecodeState,
+        token_lookup: AllocationDecodeTokenLookup,
+    ) -> int:
+        resolved = 0
+        for _ in range(_ALLOCATION_TOKEN_COUNT):
+            forced, values = self._forced_cells(state.tile_remaining, state.seat_remaining, state.is_masked)
+            if not forced.any():
+                break
+
+            state_index = forced.reshape(-1).nonzero(as_tuple=False).squeeze(1)
+            chosen = values.reshape(-1).index_select(0, state_index)
+            batch_index = torch.div(state_index, _ALLOCATION_TOKEN_COUNT, rounding_mode="floor")
+            token = state_index.remainder(_ALLOCATION_TOKEN_COUNT)
+            tile37 = token_lookup.tile37.index_select(0, token)
+            opponent = token_lookup.opponent.index_select(0, token)
+            allocation_offset = token_lookup.allocation_offset.index_select(0, token)
+            allocation_index = batch_index * (BUCKET_COUNT * TILE37_COUNT) + allocation_offset
+            tile_index = batch_index * TILE37_COUNT + tile37
+            seat_index = batch_index * _OPPONENT_COUNT + opponent
+            state.apply_flat_cell_updates(state_index, allocation_index, tile_index, seat_index, chosen)
+            resolved += int(state_index.numel())
+        return resolved
 
     def _iterative_decode(  # noqa: PLR0915
         self,
@@ -1146,12 +1283,15 @@ class JointHiddenAllocationSampler(nn.Module):
         )
         temp = max(float(temperature), 1e-6)
         batch_indices = torch.arange(batch_size, device=device)
-        batch_offsets = self._decode_batch_offsets(batch_indices)
         token_lookup = self._decode_token_lookup(device)
-        remaining_count = _ALLOCATION_TOKEN_COUNT
 
         with _profile_range("belief/iterative_decode"):
+            with _profile_range("belief/forced_initial_decode_cells"):
+                self._apply_forced_decode_cells(state, token_lookup)
+            remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
             for step in range(decode_steps):
+                if not remaining_counts.any():
+                    break
                 with _profile_range("belief/decode_step"):
                     neural_logits = self._denoise_neural_logits(
                         context,
@@ -1175,46 +1315,51 @@ class JointHiddenAllocationSampler(nn.Module):
                         confidence = self._confidence(probs, self.confidence_method, feasible)
                         confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
 
-                        n_to_unmask = self._scheduled_unmask_count(step, decode_steps, remaining_count)
+                        n_to_unmask = self._scheduled_unmask_counts(step, decode_steps, remaining_counts)
+                        max_to_unmask = int(n_to_unmask.max().item())
 
-                        if n_to_unmask == 0:
+                        if max_to_unmask == 0:
                             continue
                         token_order = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argsort(
                             dim=1,
                             descending=True,
                         )
-                        selected_token_order = token_order[:, :n_to_unmask]
-                        with _profile_range("belief/token_lookup_order"):
-                            selected_tokens = selected_token_order.reshape(-1)
-                            token_tile37_order = token_lookup.tile37.index_select(0, selected_tokens).reshape(
-                                batch_size,
-                                n_to_unmask,
-                            )
-                            token_opponent_order = token_lookup.opponent.index_select(0, selected_tokens).reshape(
-                                batch_size,
-                                n_to_unmask,
-                            )
-                            token_allocation_offset_order = token_lookup.allocation_offset.index_select(
-                                0,
-                                selected_tokens,
-                            ).reshape(batch_size, n_to_unmask)
+                        selected_token_order = token_order[:, :max_to_unmask]
                     with _profile_range("belief/cell_sampling_loop"):
-                        for rank in range(n_to_unmask):
-                            token = selected_token_order[:, rank]
+                        for rank in range(max_to_unmask):
+                            active = n_to_unmask > rank
+                            if not active.any():
+                                continue
+                            active_indices = batch_indices[active]
+                            token = selected_token_order[active, rank]
+                            tile37 = token_lookup.tile37.index_select(0, token)
+                            opponent = token_lookup.opponent.index_select(0, token)
+                            still_masked = state.is_masked[active_indices, tile37, opponent]
+                            if not still_masked.any():
+                                continue
+                            active_indices = active_indices[still_masked]
+                            token = token[still_masked]
+                            tile37 = tile37[still_masked]
+                            opponent = opponent[still_masked]
+                            allocation_offset = token_lookup.allocation_offset.index_select(0, token)
+                            batch_offsets = self._decode_batch_offsets(active_indices)
                             self._sample_and_apply_cell_step(
                                 neural_logits_cells,
                                 state,
                                 token,
-                                token_tile37_order[:, rank],
-                                token_opponent_order[:, rank],
-                                token_allocation_offset_order[:, rank],
+                                tile37,
+                                opponent,
+                                allocation_offset,
                                 batch_offsets,
                                 sample=sample,
                                 temp=temp,
+                                row_indices=active_indices,
                             )
-                    remaining_count -= n_to_unmask
-                    if remaining_count == 0:
-                        break
+                            with _profile_range("belief/forced_decode_cells"):
+                                self._apply_forced_decode_cells(state, token_lookup)
+                            remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
+                            if not remaining_counts.any():
+                                break
 
         state.allocation[:, BUCKET_COUNT - 1] = unseen_counts - state.allocation[:, :_OPPONENT_COUNT].sum(dim=1)
         return state.allocation
