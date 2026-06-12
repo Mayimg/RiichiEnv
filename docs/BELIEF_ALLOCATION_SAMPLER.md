@@ -94,6 +94,13 @@ seats in `S` must be no larger than the remaining tile capacity adjacent to at
 least one still-masked cell in `S`.  This prevents MaskGIT sampling from walking
 into a dead end.
 
+Cells with exactly one legal candidate under these constraints are resolved
+deterministically.  The sampler applies this forced-cell closure before the
+first decoder pass and after sampled cell updates, so cells such as
+zero-remaining tiles, opponents with no remaining concealed slots, and rare
+single-source remaining allocations become decided count states instead of
+staying as `[MASK]` targets.
+
 The logit for cell `(tile t, opponent b)` and count `k` is:
 
 ```text
@@ -151,6 +158,13 @@ each batch, the model samples a cosine-distributed mask ratio, replaces that man
 allocation-cell states with `[MASK]`, subtracts the unmasked ground-truth counts
 from tile and opponent remaining capacities, and applies cross entropy only on
 masked cells.
+
+After the random mask is sampled, training applies the same forced-cell closure
+against the ground-truth allocation.  Any masked cell whose legal count is
+already unique is unmasked and treated as a decided input state, so it does not
+contribute cross entropy.  If closure removes every masked cell for a valid
+sample, the mask is resampled up to a bounded retry count; samples that remain
+fully unmasked after retry simply contribute no masked-cell loss.
 
 For training, `BeliefAllocationDataset` can shuffle across more than one replay
 file before yielding samples.  Set `shuffle_buffer_files` in the belief sampler
@@ -219,11 +233,14 @@ allocation = model.sample_allocations(batch, num_samples=8)
 During inference sampling, `sample_allocations` runs the transformer observation
 encoder once for the input batch, then repeats the resulting public memory for
 the denoising decoder.  It starts from all `[MASK]` states and runs
-`decode_steps` iterations.  For the cosine schedule path, confidence selects the
-next allocation-cell positions in parallel; 5-way count sampling for those
-selected cells is then applied in confidence order while updating tile and
-opponent remaining capacities.  This keeps the sample legal without rerunning
-the transformer for each selected cell.
+`decode_steps` iterations, after first resolving any cells that are already
+forced by public counts and hand-size constraints.  For the cosine schedule
+path, confidence selects the next allocation-cell positions in parallel; 5-way
+count sampling for those selected cells is then applied in confidence order
+while updating tile and opponent remaining capacities.  After each sampled cell
+update, any newly forced cells are resolved before further decoding continues.
+This keeps the sample legal without rerunning the transformer for each selected
+cell.
 
 The 4-player sampler has 111 allocation cells: 37 tile types for each of the 3
 opponents.  When `decode_steps=111`, the confidence schedule selects exactly one
