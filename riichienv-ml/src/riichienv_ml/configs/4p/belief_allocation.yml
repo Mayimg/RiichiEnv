@@ -46,3 +46,4 @@ belief_sampler:
     denoise_dim_feedforward: 512
     decode_steps: 111
     confidence_method: max_prob
+    shanten_aux_loss_weight: 0.2

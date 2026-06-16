@@ -15,6 +15,7 @@ from torch.profiler import record_function
 
 from riichienv_ml.features.belief_features import (
     BUCKET_COUNT,
+    SHANTEN_CLASS_COUNT,
     TILE37_COUNT,
     TOTAL_TILE_COUNTS37,
     BeliefFeatureEncoder,
@@ -32,6 +33,7 @@ _CONFIDENCE_METHODS = ("max_prob", "neg_entropy", "legal_normalized_entropy")
 _TILE34_COUNT = 34
 _OPPONENT_COUNT = BUCKET_COUNT - 1
 _ALLOCATION_TOKEN_COUNT = TILE37_COUNT * _OPPONENT_COUNT
+_SHANTEN_TOKEN_COUNT = _OPPONENT_COUNT
 _MAX_LOGCOMB_COUNT = int(sum(TOTAL_TILE_COUNTS37))
 _TRAINING_MASK_MAX_RETRIES = 16
 
@@ -117,6 +119,8 @@ class AllocationSamplingContext:
     tile_emb: torch.Tensor
     seat_emb: torch.Tensor
     rem: torch.Tensor
+    shanten_logits: torch.Tensor
+    riichi_mask: torch.Tensor
 
     @property
     def batch_size(self) -> int:
@@ -301,7 +305,9 @@ class BeliefObservationEncoder(TransformerActorCritic):
         self.belief_phase_embed = nn.Embedding(BeliefFeatureEncoder.PHASE_DIMS, self.d_model)
         self.belief_hand_size_embed = nn.Embedding(BeliefFeatureEncoder.HAND_SIZE_DIMS, d_other)
         self.belief_hand_size_proj = SplitLinearLayerNorm([d_other, d_other], self.d_model)
-        self.belief_segment_embed = nn.Embedding(3, self.d_model)
+        self.belief_shanten_query_embed = nn.Embedding(1, self.d_model)
+        self.belief_shanten_head = nn.Linear(self.d_model, SHANTEN_CLASS_COUNT)
+        self.belief_segment_embed = nn.Embedding(4, self.d_model)
         self._init_weights()
 
     def _embed_belief_hand_sizes(
@@ -321,6 +327,17 @@ class BeliefObservationEncoder(TransformerActorCritic):
         )
         return self.belief_hand_size_proj.finish(raw)
 
+    def _embed_belief_shanten_queries(
+        self,
+        batch_size: int,
+        device: torch.device,
+        seat_model_table: torch.Tensor,
+    ) -> torch.Tensor:
+        seats = torch.arange(1, BUCKET_COUNT, dtype=torch.long, device=device)
+        seat_emb = self._seat_model(seats, _SEAT_ROLE_PLAYER_INFO, seat_model_table)
+        query_emb = self.belief_shanten_query_embed.weight[0].view(1, 1, self.d_model)
+        return seat_emb.unsqueeze(0).expand(batch_size, -1, -1) + query_emb
+
     def forward_context(self, x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int]) -> torch.Tensor:
         context, _memory, _memory_padding_mask = self.forward_context_and_memory(x)
         return context
@@ -330,8 +347,11 @@ class BeliefObservationEncoder(TransformerActorCritic):
         x: dict[str, torch.Tensor] | tuple[torch.Tensor, int, int],
         *,
         return_tile37_table: bool = False,
+        return_shanten_logits: bool = False,
     ) -> (
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
     ):
         (
             sparse,
@@ -414,9 +434,11 @@ class BeliefObservationEncoder(TransformerActorCritic):
             seat_model_table,
         ).unsqueeze(1)
         belief_hand_size_emb = self._embed_belief_hand_sizes(hand_sizes, seat_other_table)
+        belief_shanten_query_emb = self._embed_belief_shanten_queries(batch_size, device, seat_model_table)
 
-        belief_extra = torch.cat([phase_emb, current_actor_emb, belief_hand_size_emb], dim=1)
-        belief_seg_ids = torch.tensor([0, 1, 2, 2, 2, 2], dtype=torch.long, device=device).unsqueeze(0)
+        belief_extra = torch.cat([phase_emb, current_actor_emb, belief_hand_size_emb, belief_shanten_query_emb], dim=1)
+        belief_extra_len = int(belief_extra.shape[1])
+        belief_seg_ids = torch.tensor([0, 1, 2, 2, 2, 2, 3, 3, 3], dtype=torch.long, device=device).unsqueeze(0)
         belief_extra = belief_extra + self.belief_segment_embed(belief_seg_ids)
 
         prog_emb = self._embed_progression(
@@ -454,7 +476,7 @@ class BeliefObservationEncoder(TransformerActorCritic):
         seg_ids = torch.cat(
             [
                 seg_ids[:, : 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT],
-                torch.full((1, 6), 5, dtype=torch.long, device=device),
+                torch.full((1, belief_extra_len), 5, dtype=torch.long, device=device),
                 seg_ids[:, 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT :],
             ],
             dim=1,
@@ -467,7 +489,7 @@ class BeliefObservationEncoder(TransformerActorCritic):
         numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         visible_tile_count_valid = torch.zeros(batch_size, self._VC, dtype=torch.bool, device=device)
         agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=device)
-        belief_valid = torch.zeros(batch_size, 6, dtype=torch.bool, device=device)
+        belief_valid = torch.zeros(batch_size, belief_extra_len, dtype=torch.bool, device=device)
         pad_mask = torch.cat(
             [
                 cls_valid,
@@ -492,7 +514,10 @@ class BeliefObservationEncoder(TransformerActorCritic):
         player_offset = 1 + self._S + self._D
         sparse_meld_offset = player_offset + self._PI
         visible_offset = player_offset + self._PI + self._SM + self._H
-        prog_offset = visible_offset + self._VC + 1 + self._AT + 6
+        belief_offset = visible_offset + self._VC + 1 + self._AT
+        shanten_offset = belief_offset + 6
+        prog_offset = belief_offset + belief_extra_len
+        shanten_logits = self.belief_shanten_head(output[:, shanten_offset : shanten_offset + _SHANTEN_TOKEN_COUNT])
         memory = torch.cat(
             [
                 output[:, player_offset : player_offset + self._PI],
@@ -511,8 +536,12 @@ class BeliefObservationEncoder(TransformerActorCritic):
             ],
             dim=1,
         )
+        if return_tile37_table and return_shanten_logits:
+            return cls_out, memory, memory_padding_mask, tile37_table[:, :TILE37_COUNT], shanten_logits
         if return_tile37_table:
             return cls_out, memory, memory_padding_mask, tile37_table[:, :TILE37_COUNT]
+        if return_shanten_logits:
+            return cls_out, memory, memory_padding_mask, shanten_logits
         return cls_out, memory, memory_padding_mask
 
 
@@ -529,6 +558,7 @@ class JointHiddenAllocationSampler(nn.Module):
         decode_steps: int = 12,
         max_decode_steps: int | None = None,
         confidence_method: str = "max_prob",
+        shanten_aux_loss_weight: float = 0.2,
         **encoder_kwargs: Any,
     ):
         super().__init__()
@@ -550,6 +580,9 @@ class JointHiddenAllocationSampler(nn.Module):
             raise ValueError(f"confidence_method must be one of: '{allowed}'")
         self.confidence_method = confidence_method
         self.mask_state_id = _COUNT_CANDIDATES
+        self.shanten_aux_loss_weight = float(shanten_aux_loss_weight)
+        if self.shanten_aux_loss_weight < 0.0:
+            raise ValueError("shanten_aux_loss_weight must be non-negative")
 
         cross_attn_heads = int(encoder_kwargs.get("nhead", 8))
         dropout = float(encoder_kwargs.get("dropout", 0.1))
@@ -561,6 +594,7 @@ class JointHiddenAllocationSampler(nn.Module):
         self.alloc_tile_remaining_embed = nn.Embedding(5, d_model)
         self.alloc_seat_remaining_embed = nn.Embedding(BeliefFeatureEncoder.HAND_SIZE_DIMS, d_model)
         self.alloc_state_embed = nn.Embedding(_COUNT_CANDIDATES + 1, self.d_dec)
+        self.decoder_shanten_class_embed = nn.Embedding(SHANTEN_CLASS_COUNT, self.d_dec)
         d_ff = int(denoise_dim_feedforward or max(self.d_dec * 2, 512))
         self.denoise_decoder = DenoiseTransformer(
             self.d_dec,
@@ -617,6 +651,36 @@ class JointHiddenAllocationSampler(nn.Module):
     def _unseen_counts(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
         visible = features["visible_tile_counts"][:, :, 1].long()
         return (self.total_counts37.to(visible.device).unsqueeze(0) - visible).clamp(min=0, max=4)
+
+    @staticmethod
+    def _opponent_riichi_mask(features: dict[str, torch.Tensor]) -> torch.Tensor:
+        return features["player_stats"][:, 1:BUCKET_COUNT, 1].long().bool()
+
+    @staticmethod
+    def _apply_riichi_shanten_override(
+        shanten_classes: torch.Tensor,
+        riichi_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if riichi_mask is None:
+            return shanten_classes
+        return shanten_classes.masked_fill(riichi_mask.to(shanten_classes.device), 0)
+
+    def _sample_shanten_classes(
+        self,
+        shanten_logits: torch.Tensor,
+        riichi_mask: torch.Tensor | None,
+        *,
+        sample: bool,
+    ) -> torch.Tensor:
+        if sample:
+            probs = F.softmax(shanten_logits, dim=-1)
+            classes = torch.multinomial(probs.reshape(-1, SHANTEN_CLASS_COUNT), 1).view(
+                shanten_logits.shape[0],
+                _SHANTEN_TOKEN_COUNT,
+            )
+        else:
+            classes = shanten_logits.argmax(dim=-1)
+        return self._apply_riichi_shanten_override(classes, riichi_mask)
 
     def _initial_rem(self, features: dict[str, torch.Tensor], unseen_counts: torch.Tensor) -> torch.Tensor:
         hand_sizes = features["belief_hand_sizes"][:, :, 1].long()
@@ -682,6 +746,33 @@ class JointHiddenAllocationSampler(nn.Module):
         )
         return tokens.reshape(batch_size, _ALLOCATION_TOKEN_COUNT, self.d_dec)
 
+    def _shanten_condition_tokens(
+        self,
+        seat_emb: torch.Tensor,
+        shanten_classes: torch.Tensor | None,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if shanten_classes is None:
+            shanten_classes = torch.zeros(batch_size, _SHANTEN_TOKEN_COUNT, dtype=torch.long, device=device)
+        shanten_classes = shanten_classes.clamp(min=0, max=SHANTEN_CLASS_COUNT - 1).long()
+        seat_token = seat_emb.view(1, _SHANTEN_TOKEN_COUNT, self.d_dec).expand(batch_size, -1, -1)
+        return seat_token + self.decoder_shanten_class_embed(shanten_classes)
+
+    def _decoder_tokens(
+        self,
+        allocation_tokens: torch.Tensor,
+        seat_emb: torch.Tensor,
+        shanten_classes: torch.Tensor | None,
+    ) -> torch.Tensor:
+        shanten_tokens = self._shanten_condition_tokens(
+            seat_emb,
+            shanten_classes,
+            int(allocation_tokens.shape[0]),
+            allocation_tokens.device,
+        )
+        return torch.cat([shanten_tokens, allocation_tokens], dim=1)
+
     def _denoise_neural_logits(
         self,
         context: torch.Tensor,
@@ -692,16 +783,18 @@ class JointHiddenAllocationSampler(nn.Module):
         tile_remaining: torch.Tensor,
         seat_remaining: torch.Tensor,
         state_ids: torch.Tensor,
+        shanten_classes: torch.Tensor | None = None,
     ) -> torch.Tensor:
         with _profile_range("belief/denoise_neural_logits"):
             with _profile_range("belief/token_embeddings"):
-                tokens = self._token_embeddings(
+                allocation_tokens = self._token_embeddings(
                     tile_emb,
                     seat_emb,
                     tile_remaining,
                     seat_remaining,
                     state_ids,
                 )
+                tokens = self._decoder_tokens(allocation_tokens, seat_emb, shanten_classes)
             decoder_memory, decoder_memory_padding_mask = self._decoder_memory(
                 context,
                 memory,
@@ -709,7 +802,8 @@ class JointHiddenAllocationSampler(nn.Module):
             )
             with _profile_range("belief/denoise_decoder"):
                 logits = self.denoise_decoder(tokens, decoder_memory, decoder_memory_padding_mask)
-        return logits.reshape(context.shape[0], TILE37_COUNT, _OPPONENT_COUNT, _COUNT_CANDIDATES)
+        allocation_logits = logits[:, _SHANTEN_TOKEN_COUNT:]
+        return allocation_logits.reshape(context.shape[0], TILE37_COUNT, _OPPONENT_COUNT, _COUNT_CANDIDATES)
 
     def _hypergeom_prior(
         self,
@@ -1064,14 +1158,16 @@ class JointHiddenAllocationSampler(nn.Module):
         sample: bool = False,
         temperature: float = 1.0,
     ) -> dict[str, torch.Tensor]:
-        context, memory, memory_padding_mask, tile37_table = self.encoder.forward_context_and_memory(
+        context, memory, memory_padding_mask, tile37_table, shanten_logits = self.encoder.forward_context_and_memory(
             features,
             return_tile37_table=True,
+            return_shanten_logits=True,
         )
         unseen_counts = self._unseen_counts(features)
         tile_emb = self._shared_alloc_tile_embeddings(tile37_table)
         seat_emb = self._shared_alloc_seat_embeddings(context.device)
         rem = self._initial_rem(features, unseen_counts)
+        riichi_mask = self._opponent_riichi_mask(features)
         if target_counts is not None:
             return self._training_forward(
                 context,
@@ -1082,7 +1178,15 @@ class JointHiddenAllocationSampler(nn.Module):
                 seat_emb,
                 rem,
                 target_counts,
+                shanten_logits=shanten_logits,
+                target_shanten_classes=features.get("belief_shanten_labels"),
+                riichi_mask=riichi_mask,
             )
+        shanten_classes = self._sample_shanten_classes(
+            shanten_logits,
+            riichi_mask,
+            sample=sample,
+        )
         allocation = self._iterative_decode(
             context,
             memory,
@@ -1094,8 +1198,9 @@ class JointHiddenAllocationSampler(nn.Module):
             sample=sample,
             temperature=temperature,
             decode_steps=self.decode_steps,
+            shanten_classes=shanten_classes,
         )
-        return {"allocation": allocation}
+        return {"allocation": allocation, "shanten_logits": shanten_logits, "shanten_classes": shanten_classes}
 
     def _training_forward(
         self,
@@ -1107,8 +1212,22 @@ class JointHiddenAllocationSampler(nn.Module):
         seat_emb: torch.Tensor,
         rem: torch.Tensor,
         target_counts: torch.Tensor,
+        *,
+        shanten_logits: torch.Tensor | None = None,
+        target_shanten_classes: torch.Tensor | None = None,
+        riichi_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         target_counts = target_counts.long()
+        has_shanten_targets = target_shanten_classes is not None
+        if target_shanten_classes is not None:
+            target_shanten_classes = target_shanten_classes.to(context.device).long()
+            target_shanten_classes = self._apply_riichi_shanten_override(target_shanten_classes, riichi_mask)
+        elif shanten_logits is not None:
+            target_shanten_classes = self._sample_shanten_classes(
+                shanten_logits.detach(),
+                riichi_mask,
+                sample=False,
+            )
         target_sample_valid, target_teacher_path_valid = self._target_validity(
             target_counts,
             rem,
@@ -1144,6 +1263,7 @@ class JointHiddenAllocationSampler(nn.Module):
             tile_remaining,
             seat_remaining,
             state_ids,
+            shanten_classes=target_shanten_classes,
         )
         logits, feasible = self._apply_prior_and_legality(
             neural_logits,
@@ -1159,14 +1279,39 @@ class JointHiddenAllocationSampler(nn.Module):
             "allocation": target_counts,
             "invalid_target_rate": (~target_sample_valid).float().mean(),
         }
+        zero = context.sum() * 0.0
         if valid.any():
-            loss = F.cross_entropy(logits[valid], target_cells[valid], reduction="mean")
+            allocation_loss = F.cross_entropy(logits[valid], target_cells[valid], reduction="mean")
             pred = logits[valid].argmax(dim=1)
             acc = (pred == target_cells[valid]).float().mean()
-            out.update({"loss": loss, "acc": acc})
         else:
-            zero = context.sum() * 0.0
-            out.update({"loss": zero, "acc": zero.detach()})
+            allocation_loss = zero
+            acc = zero.detach()
+
+        loss = allocation_loss
+        out.update({"allocation_loss": allocation_loss, "acc": acc})
+        if has_shanten_targets and shanten_logits is not None and target_shanten_classes is not None:
+            shanten_valid = target_sample_valid
+            if shanten_valid.any():
+                shanten_loss = F.cross_entropy(
+                    shanten_logits[shanten_valid].reshape(-1, SHANTEN_CLASS_COUNT),
+                    target_shanten_classes[shanten_valid].reshape(-1),
+                    reduction="mean",
+                )
+                shanten_pred = shanten_logits[shanten_valid].argmax(dim=-1)
+                shanten_acc = (shanten_pred == target_shanten_classes[shanten_valid]).float().mean()
+                loss = loss + self.shanten_aux_loss_weight * shanten_loss
+            else:
+                shanten_loss = zero
+                shanten_acc = zero.detach()
+            out.update(
+                {
+                    "shanten_loss": shanten_loss,
+                    "shanten_acc": shanten_acc,
+                    "shanten_aux_loss_weight": loss.new_tensor(self.shanten_aux_loss_weight),
+                }
+            )
+        out["loss"] = loss
         return out
 
     def _sample_and_apply_cell_step(
@@ -1263,6 +1408,7 @@ class JointHiddenAllocationSampler(nn.Module):
         sample: bool,
         temperature: float,
         decode_steps: int,
+        shanten_classes: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if decode_steps <= 0:
             raise ValueError("decode_steps must be positive")
@@ -1302,6 +1448,7 @@ class JointHiddenAllocationSampler(nn.Module):
                         state.tile_remaining,
                         state.seat_remaining,
                         state.state_ids,
+                        shanten_classes=shanten_classes,
                     )
                     neural_logits_cells = neural_logits.reshape(batch_size * _ALLOCATION_TOKEN_COUNT, _COUNT_CANDIDATES)
                     logits, feasible = self._apply_prior_and_legality(
@@ -1370,14 +1517,22 @@ class JointHiddenAllocationSampler(nn.Module):
         features: dict[str, torch.Tensor],
     ) -> AllocationSamplingContext:
         with _profile_range("belief/prepare_allocation_sampling_context"):
-            context, memory, memory_padding_mask, tile37_table = self.encoder.forward_context_and_memory(
+            (
+                context,
+                memory,
+                memory_padding_mask,
+                tile37_table,
+                shanten_logits,
+            ) = self.encoder.forward_context_and_memory(
                 features,
                 return_tile37_table=True,
+                return_shanten_logits=True,
             )
             unseen_counts = self._unseen_counts(features)
             tile_emb = self._shared_alloc_tile_embeddings(tile37_table)
             seat_emb = self._shared_alloc_seat_embeddings(context.device)
             rem = self._initial_rem(features, unseen_counts)
+            riichi_mask = self._opponent_riichi_mask(features)
         return AllocationSamplingContext(
             context=context,
             memory=memory,
@@ -1386,6 +1541,8 @@ class JointHiddenAllocationSampler(nn.Module):
             tile_emb=tile_emb,
             seat_emb=seat_emb,
             rem=rem,
+            shanten_logits=shanten_logits,
+            riichi_mask=riichi_mask,
         )
 
     @torch.inference_mode()
@@ -1407,6 +1564,13 @@ class JointHiddenAllocationSampler(nn.Module):
                 memory_padding_mask = sampling_context.memory_padding_mask.repeat_interleave(num_samples, dim=0)
                 unseen_counts = sampling_context.unseen_counts.repeat_interleave(num_samples, dim=0)
                 rem = sampling_context.rem.repeat_interleave(num_samples, dim=0)
+                shanten_logits = sampling_context.shanten_logits.repeat_interleave(num_samples, dim=0)
+                riichi_mask = sampling_context.riichi_mask.repeat_interleave(num_samples, dim=0)
+                shanten_classes = self._sample_shanten_classes(
+                    shanten_logits,
+                    riichi_mask,
+                    sample=True,
+                )
             sampled = self._iterative_decode(
                 context,
                 memory,
@@ -1418,6 +1582,7 @@ class JointHiddenAllocationSampler(nn.Module):
                 sample=True,
                 temperature=temperature,
                 decode_steps=int(decode_steps or self.decode_steps),
+                shanten_classes=shanten_classes,
             )
         return sampled.reshape(sampling_context.batch_size, num_samples, BUCKET_COUNT, TILE37_COUNT)
 
