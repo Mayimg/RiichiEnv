@@ -13,3 +13,8 @@ mjsoul-parser
 /.venv/
 /models/
 /data/
+
+# Local agent/tool integration settings
+.claude/settings.local.json
+.codex/hooks.json
+.opencode/rules/agmsg.md
