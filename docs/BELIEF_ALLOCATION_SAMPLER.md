@@ -50,6 +50,17 @@ all other tile37 ids.
 The belief model reuses the existing transformer feature groups but does not
 consume candidate-action tokens in its context encoder.
 
+The belief observation encoder also appends three opponent shanten-query tokens
+after the public belief tokens.  Each query token is the sum of the shared
+observer-relative seat embedding and a learned shanten-query embedding.  A
+shared five-class head predicts opponent concealed-hand shanten as:
+
+```text
+0, 1, 2, 3, 4+
+```
+
+This head is trained as an auxiliary task from full-information training logs.
+
 ## Decoder
 
 For each `(tile37 id, opponent)` cell, the sampler predicts the number of copies
@@ -57,7 +68,8 @@ of that tile in that opponent's concealed hand.  Each cell has five classes:
 `0, 1, 2, 3, 4`.
 
 The neural decoder is a MaskGIT-style denoising transformer over
-`37 x 3 = 111` allocation-cell tokens.  Each token is the sum of:
+`37 x 3 = 111` allocation-cell tokens plus three opponent shanten-condition
+tokens.  Each allocation-cell token is the sum of:
 
 ```text
 token = projected shared tile embedding
@@ -65,7 +77,6 @@ token = projected shared tile embedding
       + current cell-state embedding
       + tile-remaining-count embedding
       + opponent remaining-slot embedding
-      + decode-step embedding
 ```
 
 The tile component reuses the observation encoder's shared, attribute-based
@@ -77,8 +88,11 @@ seat embedding.
 
 The current state is represented by the decided count `0..4`, with a dedicated
 `[MASK]` state id.  The transformer uses bidirectional self-attention over the
-111 allocation-cell tokens.  Each decoder layer cross-attends directly to cached
-public memory: the encoder CLS token plus selected encoder memory tokens.
+111 allocation-cell tokens and the three shanten-condition tokens.  A
+shanten-condition token is the sum of the shared observer-relative seat
+embedding and the embedding for its 0/1/2/3/4+ shanten class.  Each decoder
+layer cross-attends directly to cached public memory: the encoder CLS token plus
+selected encoder memory tokens.
 
 Every denoising step applies a legality mask.  A candidate count is allowed only
 if:
@@ -130,6 +144,12 @@ x_wall[t] = unseen[t] - x_shimocha[t] - x_toimen[t] - x_kamicha[t]
 In multi-sample inference, the observation encoder is computed once for the
 input batch before its public memory is repeated across samples.
 
+At inference time, true shanten classes are unknown.  The model samples one hard
+shanten class per opponent and per allocation sample from the encoder head's
+predicted distribution, then feeds those sampled classes into the decoder
+condition tokens.  If an opponent is publicly in riichi, the sampled class is
+overridden to 0 because riichi is a public tenpai guarantee.
+
 Current sparse meld memory is a soft public-state signal.  It lets each opponent
 allocation cell attend directly to owner-aligned chi/pon/kan structures without
 adding hard allocation constraints beyond the existing unseen-count legality and
@@ -150,14 +170,19 @@ For each decision point:
 
 1. encode the masked observation;
 2. count hidden hands for relative seats 1, 2, and 3;
-3. compute unseen counts from visible counts;
-4. set the wall target as the residual.
+3. compute each opponent hidden hand's shanten class as `0, 1, 2, 3, 4+`;
+4. compute unseen counts from visible counts;
+5. set the wall target as the residual.
 
 Training uses random masking instead of teacher-forced tile-order decoding.  For
 each batch, the model samples a cosine-distributed mask ratio, replaces that many
 allocation-cell states with `[MASK]`, subtracts the unmasked ground-truth counts
 from tile and opponent remaining capacities, and applies cross entropy only on
 masked cells.
+
+During training, the decoder receives the true opponent shanten classes as its
+three shanten-condition tokens.  The encoder shanten head is optimized with an
+auxiliary cross-entropy loss controlled by `shanten_aux_loss_weight`.
 
 After the random mask is sampled, training applies the same forced-cell closure
 against the ground-truth allocation.  Any masked cell whose legal count is
@@ -201,7 +226,10 @@ stratified_sample_keep_prob:
 
 Training logs include both epoch-running metrics and recent-window metrics:
 
-- `train/loss`, `train/cell_acc`: running averages from the start of the epoch.
+- `train/loss`, `train/allocation_loss`, `train/cell_acc`: running averages from
+  the start of the epoch.
+- `train/shanten_loss`, `train/shanten_acc`: auxiliary shanten-head metrics when
+  full-information shanten labels are available.
 - `train/window100_loss`, `train/window100_cell_acc`: averages since the previous
   100-step log line.
 - validation can also log sampled-allocation diagnostics:
@@ -243,12 +271,14 @@ This keeps the sample legal without rerunning the transformer for each selected
 cell.
 
 The 4-player sampler has 111 allocation cells: 37 tile types for each of the 3
-opponents.  When `decode_steps=111`, the confidence schedule selects exactly one
-cell per decode step.  Each step first chooses the next cell from still-masked
-cells using the configured `confidence_method`, then samples that cell's count
-from its legal 5-way output while updating tile and opponent remaining
-capacities.  Other `decode_steps` values keep the cosine schedule and may select
-zero or multiple cells in a single decode step.
+opponents.  The decoder also receives 3 shanten-condition tokens, but the
+confidence schedule applies only to the 111 allocation cells.  When
+`decode_steps=111`, the confidence schedule selects exactly one cell per decode
+step.  Each step first chooses the next cell from still-masked cells using the
+configured `confidence_method`, then samples that cell's count from its legal
+5-way output while updating tile and opponent remaining capacities.  Other
+`decode_steps` values keep the cosine schedule and may select zero or multiple
+cells in a single decode step.
 
 Supported confidence methods are:
 
@@ -268,8 +298,9 @@ context = model.prepare_allocation_sampling_context(batch)
 allocation = model.sample_allocations_from_context(context, num_samples=8)
 ```
 
-The prepared context contains the encoder output and public-memory tensors, so
-subsequent calls only rerun the allocation decoder.
+The prepared context contains the encoder output, public-memory tensors, shanten
+logits, and public riichi mask, so subsequent calls only rerun the allocation
+decoder and per-sample shanten-class draw.
 
 ## Log Annotation
 

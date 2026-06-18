@@ -190,7 +190,10 @@ class BeliefAllocationTrainer:
         epoch: int,
     ) -> tuple[dict[str, float], int, float, int]:
         loss_meter = AverageMeter("loss", ":.4f")
+        allocation_loss_meter = AverageMeter("allocation_loss", ":.4f")
         acc_meter = AverageMeter("acc", ":.4f")
+        shanten_loss_meter = AverageMeter("shanten_loss", ":.4f")
+        shanten_acc_meter = AverageMeter("shanten_acc", ":.4f")
         invalid_meter = AverageMeter("invalid", ":.4f")
         window_loss_meter = AverageMeter("window_loss", ":.4f")
         window_acc_meter = AverageMeter("window_acc", ":.4f")
@@ -210,7 +213,12 @@ class BeliefAllocationTrainer:
 
             batch_size = targets.shape[0]
             loss_meter.update(float(loss.item()), batch_size)
+            allocation_loss_meter.update(float(out.get("allocation_loss", loss).item()), batch_size)
             acc_meter.update(float(out["acc"].item()), batch_size)
+            if "shanten_loss" in out:
+                shanten_loss_meter.update(float(out["shanten_loss"].item()), batch_size)
+            if "shanten_acc" in out:
+                shanten_acc_meter.update(float(out["shanten_acc"].item()), batch_size)
             invalid_meter.update(float(out.get("invalid_target_rate", torch.tensor(0.0)).item()), batch_size)
             window_loss_meter.update(float(loss.item()), batch_size)
             window_acc_meter.update(float(out["acc"].item()), batch_size)
@@ -236,8 +244,13 @@ class BeliefAllocationTrainer:
 
         metrics = {
             "train/loss": loss_meter.avg,
+            "train/allocation_loss": allocation_loss_meter.avg,
             "train/cell_acc": acc_meter.avg,
         }
+        if shanten_loss_meter.count > 0:
+            metrics["train/shanten_loss"] = shanten_loss_meter.avg
+        if shanten_acc_meter.count > 0:
+            metrics["train/shanten_acc"] = shanten_acc_meter.avg
         logger.info(
             "Epoch {} train complete: loss={:.4f} cell_acc={:.4f}",
             epoch,
@@ -252,7 +265,10 @@ class BeliefAllocationTrainer:
         model.eval()
 
         loss_meter = AverageMeter("loss", ":.4f")
+        allocation_loss_meter = AverageMeter("allocation_loss", ":.4f")
         acc_meter = AverageMeter("acc", ":.4f")
+        shanten_loss_meter = AverageMeter("shanten_loss", ":.4f")
+        shanten_acc_meter = AverageMeter("shanten_acc", ":.4f")
         invalid_meter = AverageMeter("invalid", ":.4f")
         sample_meters = {
             "allocation_legal_rate": AverageMeter("allocation_legal_rate", ":.4f"),
@@ -266,7 +282,12 @@ class BeliefAllocationTrainer:
             out = model(features, target_counts=targets)
             batch_size = targets.shape[0]
             loss_meter.update(float(out["loss"].item()), batch_size)
+            allocation_loss_meter.update(float(out.get("allocation_loss", out["loss"]).item()), batch_size)
             acc_meter.update(float(out["acc"].item()), batch_size)
+            if "shanten_loss" in out:
+                shanten_loss_meter.update(float(out["shanten_loss"].item()), batch_size)
+            if "shanten_acc" in out:
+                shanten_acc_meter.update(float(out["shanten_acc"].item()), batch_size)
             invalid_meter.update(float(out.get("invalid_target_rate", torch.tensor(0.0)).item()), batch_size)
             if (
                 self.eval_num_samples > 0
@@ -284,9 +305,14 @@ class BeliefAllocationTrainer:
 
         metrics = {
             "val/loss": loss_meter.avg,
+            "val/allocation_loss": allocation_loss_meter.avg,
             "val/cell_acc": acc_meter.avg,
             "val/invalid_target_rate": invalid_meter.avg,
         }
+        if shanten_loss_meter.count > 0:
+            metrics["val/shanten_loss"] = shanten_loss_meter.avg
+        if shanten_acc_meter.count > 0:
+            metrics["val/shanten_acc"] = shanten_acc_meter.avg
         if sample_meters["allocation_legal_rate"].count > 0:
             metrics.update(
                 {

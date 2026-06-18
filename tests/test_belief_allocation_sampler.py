@@ -9,6 +9,7 @@ from riichienv_ml.config import BeliefLogSamplingConfig, GameConfig, ModelConfig
 from riichienv_ml.datasets.belief_allocation import BeliefAllocationDataset
 from riichienv_ml.features.belief_features import (
     BUCKET_COUNT,
+    SHANTEN_CLASS_COUNT,
     TILE37_COUNT,
     TOTAL_TILE_COUNTS37,
     BeliefFeatureEncoder,
@@ -60,6 +61,9 @@ def test_belief_dataset_target_matches_unseen_counts():
     assert target.shape == (4, 37)
     assert torch.equal(target.sum(dim=0), unseen)
     assert target[3].sum().item() > 0
+    assert features["belief_shanten_labels"].shape == (3,)
+    assert features["belief_shanten_labels"].min().item() >= 0
+    assert features["belief_shanten_labels"].max().item() < SHANTEN_CLASS_COUNT
 
 
 def test_belief_dataset_public_capacities_match_targets():
@@ -931,6 +935,44 @@ def test_belief_encoder_returns_public_cross_attention_memory():
         state_ids,
     )
     assert logits.shape == (2, TILE37_COUNT, BUCKET_COUNT - 1, 5)
+
+    context, memory, memory_padding_mask, tile37_table, shanten_logits = model.encoder.forward_context_and_memory(
+        features,
+        return_tile37_table=True,
+        return_shanten_logits=True,
+    )
+    assert context.shape == (2, 64)
+    assert memory.shape == (2, static_memory_len + prog_len, 64)
+    assert memory_padding_mask.shape == (2, static_memory_len + prog_len)
+    assert tile37_table.shape == (2, TILE37_COUNT, model.encoder.tile_embed.proj.weight.shape[0])
+    assert shanten_logits.shape == (2, BUCKET_COUNT - 1, SHANTEN_CLASS_COUNT)
+
+    decoder_tokens = model._decoder_tokens(
+        tokens,
+        seat_emb,
+        torch.zeros(2, BUCKET_COUNT - 1, dtype=torch.long),
+    )
+    assert decoder_tokens.shape == (2, TILE37_COUNT * (BUCKET_COUNT - 1) + BUCKET_COUNT - 1, 64)
+
+
+def test_belief_shanten_sampling_overrides_riichi_to_tenpai():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    logits = torch.zeros(2, BUCKET_COUNT - 1, SHANTEN_CLASS_COUNT)
+    logits[:, :, 1] = 10.0
+    riichi_mask = torch.tensor([[True, False, True], [False, False, False]])
+
+    classes = model._sample_shanten_classes(logits, riichi_mask, sample=False)
+
+    assert classes.tolist() == [[0, 1, 0], [1, 1, 1]]
 
 
 def test_belief_model_samples_reuse_single_encoder_context():

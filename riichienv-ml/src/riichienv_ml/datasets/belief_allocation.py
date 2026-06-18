@@ -10,7 +10,7 @@ import torch
 
 from riichienv import MjaiReplay
 from riichienv_ml.datasets.mjai_logs import BaseDataset
-from riichienv_ml.features.belief_features import make_hidden_allocation_target
+from riichienv_ml.features.belief_features import make_hidden_allocation_target, make_hidden_shanten_labels
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,7 @@ class BeliefAllocationDataset(BaseDataset):
                     keep_prob = self._decision_sample_keep_prob(obs)
                     features = self.encoder.encode(obs)
                     target = make_hidden_allocation_target(obs, hidden_hands, features)
+                    features["belief_shanten_labels"] = make_hidden_shanten_labels(obs, hidden_hands)
                     buffer.append(self._buffer_sample(features, target, keep_prob))
         except (RuntimeError, ValueError) as e:
             logger.warning("Skipping replay due to error: %s: %s", file_path, e)

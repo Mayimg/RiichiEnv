@@ -5,13 +5,15 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from riichienv import ActionType
+from riichienv import ActionType, calculate_shanten
 from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, collate_sequence_features
 
 TILE37_COUNT = 37
 BUCKET_COUNT = 4
 BUCKET_REL_SEATS = (1, 2, 3)
 MAX_HIDDEN_HAND_SIZE = 14
+SHANTEN_CLASS_COUNT = 5
+SHANTEN_MAX_CLASS = SHANTEN_CLASS_COUNT - 1
 
 TOTAL_TILE_COUNTS37 = np.full(TILE37_COUNT, 4, dtype=np.int64)
 TOTAL_TILE_COUNTS37[[0, 10, 20]] = 1
@@ -86,6 +88,12 @@ def public_hidden_hand_size_rows(obs) -> torch.Tensor:
     return torch.tensor(rows, dtype=torch.long)
 
 
+def shanten_to_class(shanten: int) -> int:
+    """Map raw shanten to the 0, 1, 2, 3, 4+ classes used by the belief sampler."""
+
+    return max(0, min(SHANTEN_MAX_CLASS, int(shanten)))
+
+
 class BeliefFeatureEncoder(SequenceFeatureEncoder):
     """Sequence encoder plus belief-sampler public state tokens.
 
@@ -143,10 +151,28 @@ def make_hidden_allocation_target(
     return torch.from_numpy(target.astype(np.int64, copy=False))
 
 
+def make_hidden_shanten_labels(obs, hidden_hands: list[list[int]]) -> torch.Tensor:
+    """Build opponent concealed-hand shanten labels in relative-seat order.
+
+    Labels are ``0, 1, 2, 3, 4`` where ``4`` means 4-shanten or worse.  Negative
+    shanten values are folded into class 0, matching the tenpai-or-better
+    conditioning used by the sampler.
+    """
+
+    pid = int(obs.player_id)
+    labels = []
+    for rel in BUCKET_REL_SEATS:
+        abs_seat = (pid + rel) % 4
+        labels.append(shanten_to_class(int(calculate_shanten([int(tile) for tile in hidden_hands[abs_seat]]))))
+    return torch.tensor(labels, dtype=torch.long)
+
+
 def collate_belief_features(features: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     batch = collate_sequence_features(features)
     for key in ("belief_phase", "belief_current_actor", "belief_hand_sizes"):
         batch[key] = torch.stack([feature[key] for feature in features])
+    if all("belief_shanten_labels" in feature for feature in features):
+        batch["belief_shanten_labels"] = torch.stack([feature["belief_shanten_labels"] for feature in features])
     return batch
 
 
