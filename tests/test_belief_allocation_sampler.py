@@ -15,7 +15,11 @@ from riichienv_ml.features.belief_features import (
     BeliefFeatureEncoder,
     collate_belief_features,
 )
-from riichienv_ml.models.belief_allocation import AllocationDecodeState, JointHiddenAllocationSampler
+from riichienv_ml.models.belief_allocation import (
+    AllocationDecodeState,
+    DenoiseTransformer,
+    JointHiddenAllocationSampler,
+)
 
 from riichienv import MjaiReplay
 
@@ -434,24 +438,24 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_two_stage_cell_decodin
         token,
         tile37,
         opponent,
-        allocation_offset,
-        batch_offsets,
+        batch_indices,
         *,
         sample,
         temp,
-        row_indices=None,
     ):
-        del neural_logits_cells, sample, temp, row_indices
+        del neural_logits_cells, sample, temp
         chosen = torch.zeros(1, dtype=torch.long)
-        state_index = batch_offsets.state + token
-        state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
+        update_mask = torch.zeros_like(state.is_masked)
+        update_mask[batch_indices, tile37, opponent] = True
+        update_values = chosen.view(-1, 1, 1).expand_as(state.state_ids)
+        state.apply_dense_cell_updates(update_mask, update_values)
         calls.append(int(token.item()))
         return tile37, opponent, chosen
 
     monkeypatch.setattr(model, "_denoise_neural_logits", fake_denoise_neural_logits)
     monkeypatch.setattr(model, "_apply_prior_and_legality", fake_apply_prior_and_legality)
-    monkeypatch.setattr(model, "_sample_and_apply_cell_step", fake_cell_step)
-    monkeypatch.setattr(model, "_apply_forced_decode_cells", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(model, "_sample_and_apply_dense_cell_step", fake_cell_step)
+    monkeypatch.setattr(model, "_apply_forced_decode_cells_dense_once", lambda *args, **kwargs: None)
 
     allocation = model._iterative_decode(
         torch.zeros(1, d_model),
@@ -469,6 +473,123 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_two_stage_cell_decodin
     assert len(calls) == token_count
     assert sorted(calls) == list(range(token_count))
     assert allocation.shape == (1, BUCKET_COUNT, TILE37_COUNT)
+
+
+def test_belief_decode_steps_equal_allocation_tokens_uses_fast_path_without_schedule(monkeypatch):
+    d_model = 64
+    model = JointHiddenAllocationSampler(
+        d_model=d_model,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    token_count = TILE37_COUNT * (BUCKET_COUNT - 1)
+    calls = []
+
+    def fake_denoise_neural_logits(*args, **kwargs):
+        del args, kwargs
+        return torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, 5)
+
+    def fake_apply_prior_and_legality(neural_logits, _tile_remaining, _seat_remaining, is_masked):
+        feasible = is_masked.unsqueeze(-1).expand_as(neural_logits)
+        return neural_logits.masked_fill(~feasible, torch.finfo(neural_logits.dtype).min), feasible
+
+    def fake_sample_and_apply_cell_step(
+        neural_logits_cells,
+        state,
+        token,
+        tile37,
+        opponent,
+        batch_indices,
+        *,
+        sample,
+        temp,
+    ):
+        del neural_logits_cells, sample, temp
+        chosen = torch.zeros_like(token)
+        update_mask = torch.zeros_like(state.is_masked)
+        update_mask[batch_indices, tile37, opponent] = True
+        update_values = chosen.view(-1, 1, 1).expand_as(state.state_ids)
+        state.apply_dense_cell_updates(update_mask, update_values)
+        calls.extend(token.tolist())
+        return tile37, opponent, chosen
+
+    def fail_scheduled_unmask_counts(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("one-cell decode fast path should not call the generic scheduler")
+
+    monkeypatch.setattr(model, "_denoise_neural_logits", fake_denoise_neural_logits)
+    monkeypatch.setattr(model, "_apply_prior_and_legality", fake_apply_prior_and_legality)
+    monkeypatch.setattr(model, "_sample_and_apply_dense_cell_step", fake_sample_and_apply_cell_step)
+    monkeypatch.setattr(model, "_apply_forced_decode_cells_dense_once", lambda *args, **kwargs: None)
+    monkeypatch.setattr(JointHiddenAllocationSampler, "_scheduled_unmask_counts", fail_scheduled_unmask_counts)
+
+    allocation = model._iterative_decode(
+        torch.zeros(1, d_model),
+        torch.zeros(1, 1, d_model),
+        torch.zeros(1, 1, dtype=torch.bool),
+        torch.zeros(1, TILE37_COUNT, dtype=torch.long),
+        torch.zeros(1, TILE37_COUNT, d_model),
+        torch.zeros(BUCKET_COUNT - 1, d_model),
+        torch.zeros(1, BUCKET_COUNT, dtype=torch.long),
+        sample=True,
+        temperature=1.0,
+        decode_steps=token_count,
+    )
+
+    assert len(calls) == token_count
+    assert calls == list(range(token_count))
+    assert allocation.shape == (1, BUCKET_COUNT, TILE37_COUNT)
+
+
+def test_belief_dense_cell_updates_match_flat_updates():
+    batch_size = 2
+    allocation = torch.zeros(batch_size, BUCKET_COUNT, TILE37_COUNT, dtype=torch.long)
+    state_ids = torch.full((batch_size, TILE37_COUNT, BUCKET_COUNT - 1), 5, dtype=torch.long)
+    tile_remaining = torch.full((batch_size, TILE37_COUNT), 4, dtype=torch.long)
+    seat_remaining = torch.full((batch_size, BUCKET_COUNT - 1), 13, dtype=torch.long)
+    is_masked = torch.ones(batch_size, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool)
+    flat_state = AllocationDecodeState(
+        allocation=allocation.clone(),
+        state_ids=state_ids.clone(),
+        tile_remaining=tile_remaining.clone(),
+        seat_remaining=seat_remaining.clone(),
+        is_masked=is_masked.clone(),
+    )
+    dense_state = AllocationDecodeState(
+        allocation=allocation.clone(),
+        state_ids=state_ids.clone(),
+        tile_remaining=tile_remaining.clone(),
+        seat_remaining=seat_remaining.clone(),
+        is_masked=is_masked.clone(),
+    )
+    batch_index = torch.tensor([0, 0, 1])
+    tile37 = torch.tensor([2, 2, 5])
+    opponent = torch.tensor([0, 1, 2])
+    chosen = torch.tensor([3, 1, 2])
+    token = tile37 * (BUCKET_COUNT - 1) + opponent
+    state_index = batch_index * (TILE37_COUNT * (BUCKET_COUNT - 1)) + token
+    allocation_offset = opponent * TILE37_COUNT + tile37
+    allocation_index = batch_index * (BUCKET_COUNT * TILE37_COUNT) + allocation_offset
+    tile_index = batch_index * TILE37_COUNT + tile37
+    seat_index = batch_index * (BUCKET_COUNT - 1) + opponent
+    update_mask = torch.zeros_like(dense_state.is_masked)
+    update_mask[batch_index, tile37, opponent] = True
+    values = torch.zeros_like(dense_state.state_ids)
+    values[batch_index, tile37, opponent] = chosen
+
+    flat_state.apply_flat_cell_updates(state_index, allocation_index, tile_index, seat_index, chosen)
+    dense_state.apply_dense_cell_updates(update_mask, values)
+
+    assert torch.equal(dense_state.allocation, flat_state.allocation)
+    assert torch.equal(dense_state.state_ids, flat_state.state_ids)
+    assert torch.equal(dense_state.tile_remaining, flat_state.tile_remaining)
+    assert torch.equal(dense_state.seat_remaining, flat_state.seat_remaining)
+    assert torch.equal(dense_state.is_masked, flat_state.is_masked)
 
 
 def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
@@ -510,6 +631,36 @@ def test_belief_model_decoder_uses_denoise_transformer_and_mask_state():
     assert model.tile37_to_tile34[0] == model.tile37_to_tile34[5] == 4
     assert model.tile37_to_tile34[10] == model.tile37_to_tile34[15] == 13
     assert model.tile37_to_tile34[20] == model.tile37_to_tile34[25] == 22
+
+
+def test_denoise_transformer_cross_attention_cache_matches_uncached_forward():
+    torch.manual_seed(41)
+    decoder = DenoiseTransformer(
+        16,
+        4,
+        2,
+        32,
+        0.0,
+        d_memory=12,
+        output_dim=5,
+    )
+    decoder.eval()
+    generator = torch.Generator().manual_seed(43)
+    tokens = torch.randn(3, 7, 16, generator=generator)
+    memory = torch.randn(3, 5, 12, generator=generator)
+    memory_padding_mask = torch.tensor(
+        [
+            [False, False, False, True, True],
+            [False, True, False, False, True],
+            [False, False, False, False, False],
+        ]
+    )
+
+    expected = decoder(tokens, memory, memory_padding_mask)
+    cache = decoder.build_cross_attention_cache(memory, memory_padding_mask)
+    actual = decoder(tokens, None, None, cross_attention_cache=cache)
+
+    assert torch.allclose(actual, expected, atol=1e-5, rtol=1e-5)
 
 
 def test_belief_model_ignores_legacy_joint_assignment_config_keys():
@@ -935,6 +1086,19 @@ def test_belief_encoder_returns_public_cross_attention_memory():
         state_ids,
     )
     assert logits.shape == (2, TILE37_COUNT, BUCKET_COUNT - 1, 5)
+    cross_attention_cache = model._build_decoder_cross_attention_cache(context, memory, memory_padding_mask)
+    cached_logits = model._denoise_neural_logits(
+        context,
+        memory,
+        memory_padding_mask,
+        tile_emb,
+        seat_emb,
+        unseen_counts,
+        rem[:, :3],
+        state_ids,
+        cross_attention_cache=cross_attention_cache,
+    )
+    assert torch.allclose(cached_logits, logits, atol=1e-5, rtol=1e-5)
 
     context, memory, memory_padding_mask, tile37_table, shanten_logits = model.encoder.forward_context_and_memory(
         features,
