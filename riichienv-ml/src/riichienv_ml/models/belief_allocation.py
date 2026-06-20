@@ -193,6 +193,33 @@ class AllocationDecodeState:
         self.seat_remaining.view(-1).scatter_add_(0, seat_index, neg_chosen)
         self.is_masked.view(-1).index_fill_(0, state_index, False)
 
+    def apply_dense_cell_updates(
+        self,
+        update_mask: torch.Tensor,
+        values: torch.Tensor,
+    ) -> None:
+        update_values = values.long() * update_mask.long()
+        opponent_update_mask = update_mask.transpose(1, 2)
+
+        self.allocation[:, :_OPPONENT_COUNT] = torch.where(
+            opponent_update_mask,
+            update_values.transpose(1, 2),
+            self.allocation[:, :_OPPONENT_COUNT],
+        )
+        self.state_ids = torch.where(update_mask, values.long(), self.state_ids)
+        self.tile_remaining = self.tile_remaining - update_values.sum(dim=2)
+        self.seat_remaining = self.seat_remaining - update_values.sum(dim=1)
+        self.is_masked = self.is_masked & ~update_mask
+
+
+@dataclass(frozen=True)
+class CrossAttentionKVCache:
+    """Per-layer cross-attention K/V tensors for fixed decoder memory."""
+
+    key: torch.Tensor
+    value: torch.Tensor
+    attention_mask: torch.Tensor | None
+
 
 class _DenoiseLayer(nn.Module):
     """Pre-LN bidirectional decoder layer with public-memory cross attention."""
@@ -227,11 +254,65 @@ class _DenoiseLayer(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
+    def _cross_projection_weights(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        if self.cross_attn.in_proj_weight is not None:
+            q_weight, k_weight, v_weight = self.cross_attn.in_proj_weight.chunk(3, dim=0)
+        else:
+            q_weight = self.cross_attn.q_proj_weight
+            k_weight = self.cross_attn.k_proj_weight
+            v_weight = self.cross_attn.v_proj_weight
+            if q_weight is None or k_weight is None or v_weight is None:
+                raise RuntimeError("cross attention projection weights are not initialized")
+
+        if self.cross_attn.in_proj_bias is None:
+            return q_weight, k_weight, v_weight, None, None, None
+        q_bias, k_bias, v_bias = self.cross_attn.in_proj_bias.chunk(3, dim=0)
+        return q_weight, k_weight, v_weight, q_bias, k_bias, v_bias
+
+    def _to_attention_heads(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, _dim = x.shape
+        return x.view(batch_size, seq_len, self.cross_attn.num_heads, self.cross_attn.head_dim).transpose(1, 2)
+
+    def build_cross_attention_cache(
+        self,
+        memory: torch.Tensor,
+        memory_padding_mask: torch.Tensor | None,
+    ) -> CrossAttentionKVCache:
+        _q_weight, k_weight, v_weight, _q_bias, k_bias, v_bias = self._cross_projection_weights()
+        key = self._to_attention_heads(F.linear(memory, k_weight, k_bias))
+        value = self._to_attention_heads(F.linear(memory, v_weight, v_bias))
+        attention_mask = None
+        if memory_padding_mask is not None:
+            attention_mask = ~memory_padding_mask[:, None, None, :]
+        return CrossAttentionKVCache(key=key, value=value, attention_mask=attention_mask)
+
+    def _cross_attention_from_cache(
+        self,
+        query: torch.Tensor,
+        cache: CrossAttentionKVCache,
+    ) -> torch.Tensor:
+        q_weight, _k_weight, _v_weight, q_bias, _k_bias, _v_bias = self._cross_projection_weights()
+        projected = self._to_attention_heads(F.linear(query, q_weight, q_bias))
+        dropout_p = float(self.cross_attn.dropout) if self.training else 0.0
+        attended = F.scaled_dot_product_attention(
+            projected,
+            cache.key,
+            cache.value,
+            attn_mask=cache.attention_mask,
+            dropout_p=dropout_p,
+        )
+        attended = attended.transpose(1, 2).contiguous().view(query.shape[0], query.shape[1], self.cross_attn.embed_dim)
+        return self.cross_attn.out_proj(attended)
+
     def forward(
         self,
         x: torch.Tensor,
-        memory: torch.Tensor,
-        memory_padding_mask: torch.Tensor,
+        memory: torch.Tensor | None,
+        memory_padding_mask: torch.Tensor | None,
+        *,
+        cross_attention_cache: CrossAttentionKVCache | None = None,
     ) -> torch.Tensor:
         residual = x
         x_norm = self.self_norm(x)
@@ -239,13 +320,19 @@ class _DenoiseLayer(nn.Module):
         x = residual + self.dropout(attended)
 
         residual = x
-        attended, _weights = self.cross_attn(
-            self.cross_norm(x),
-            memory,
-            memory,
-            key_padding_mask=memory_padding_mask,
-            need_weights=False,
-        )
+        cross_query = self.cross_norm(x)
+        if cross_attention_cache is None:
+            if memory is None:
+                raise ValueError("memory is required when cross_attention_cache is not provided")
+            attended, _weights = self.cross_attn(
+                cross_query,
+                memory,
+                memory,
+                key_padding_mask=memory_padding_mask,
+                need_weights=False,
+            )
+        else:
+            attended = self._cross_attention_from_cache(cross_query, cross_attention_cache)
         x = residual + self.dropout(attended)
 
         return x + self.dropout(self.ffn(self.ffn_norm(x)))
@@ -284,13 +371,25 @@ class DenoiseTransformer(nn.Module):
     def forward(
         self,
         tokens: torch.Tensor,
-        memory: torch.Tensor,
-        memory_padding_mask: torch.Tensor,
+        memory: torch.Tensor | None,
+        memory_padding_mask: torch.Tensor | None,
+        *,
+        cross_attention_cache: tuple[CrossAttentionKVCache, ...] | None = None,
     ) -> torch.Tensor:
+        if cross_attention_cache is not None and len(cross_attention_cache) != len(self.layers):
+            raise ValueError("cross_attention_cache length must match decoder layer count")
         x = tokens
-        for layer in self.layers:
-            x = layer(x, memory, memory_padding_mask)
+        for idx, layer in enumerate(self.layers):
+            layer_cache = None if cross_attention_cache is None else cross_attention_cache[idx]
+            x = layer(x, memory, memory_padding_mask, cross_attention_cache=layer_cache)
         return self.head(self.final_norm(x))
+
+    def build_cross_attention_cache(
+        self,
+        memory: torch.Tensor,
+        memory_padding_mask: torch.Tensor | None,
+    ) -> tuple[CrossAttentionKVCache, ...]:
+        return tuple(layer.build_cross_attention_cache(memory, memory_padding_mask) for layer in self.layers)
 
 
 class BeliefObservationEncoder(TransformerActorCritic):
@@ -722,6 +821,20 @@ class JointHiddenAllocationSampler(nn.Module):
         decoder_memory_padding_mask = torch.cat([prefix_mask, memory_padding_mask], dim=1)
         return decoder_memory, decoder_memory_padding_mask
 
+    def _build_decoder_cross_attention_cache(
+        self,
+        context: torch.Tensor,
+        memory: torch.Tensor,
+        memory_padding_mask: torch.Tensor,
+    ) -> tuple[CrossAttentionKVCache, ...]:
+        with _profile_range("belief/build_cross_attention_cache"):
+            decoder_memory, decoder_memory_padding_mask = self._decoder_memory(
+                context,
+                memory,
+                memory_padding_mask,
+            )
+            return self.denoise_decoder.build_cross_attention_cache(decoder_memory, decoder_memory_padding_mask)
+
     def _token_embeddings(
         self,
         tile_emb: torch.Tensor,
@@ -784,6 +897,7 @@ class JointHiddenAllocationSampler(nn.Module):
         seat_remaining: torch.Tensor,
         state_ids: torch.Tensor,
         shanten_classes: torch.Tensor | None = None,
+        cross_attention_cache: tuple[CrossAttentionKVCache, ...] | None = None,
     ) -> torch.Tensor:
         with _profile_range("belief/denoise_neural_logits"):
             with _profile_range("belief/token_embeddings"):
@@ -795,13 +909,21 @@ class JointHiddenAllocationSampler(nn.Module):
                     state_ids,
                 )
                 tokens = self._decoder_tokens(allocation_tokens, seat_emb, shanten_classes)
-            decoder_memory, decoder_memory_padding_mask = self._decoder_memory(
-                context,
-                memory,
-                memory_padding_mask,
-            )
+            decoder_memory = None
+            decoder_memory_padding_mask = None
+            if cross_attention_cache is None:
+                decoder_memory, decoder_memory_padding_mask = self._decoder_memory(
+                    context,
+                    memory,
+                    memory_padding_mask,
+                )
             with _profile_range("belief/denoise_decoder"):
-                logits = self.denoise_decoder(tokens, decoder_memory, decoder_memory_padding_mask)
+                logits = self.denoise_decoder(
+                    tokens,
+                    decoder_memory,
+                    decoder_memory_padding_mask,
+                    cross_attention_cache=cross_attention_cache,
+                )
         allocation_logits = logits[:, _SHANTEN_TOKEN_COUNT:]
         return allocation_logits.reshape(context.shape[0], TILE37_COUNT, _OPPONENT_COUNT, _COUNT_CANDIDATES)
 
@@ -1187,6 +1309,7 @@ class JointHiddenAllocationSampler(nn.Module):
             riichi_mask,
             sample=sample,
         )
+        cross_attention_cache = self._build_decoder_cross_attention_cache(context, memory, memory_padding_mask)
         allocation = self._iterative_decode(
             context,
             memory,
@@ -1199,6 +1322,7 @@ class JointHiddenAllocationSampler(nn.Module):
             temperature=temperature,
             decode_steps=self.decode_steps,
             shanten_classes=shanten_classes,
+            cross_attention_cache=cross_attention_cache,
         )
         return {"allocation": allocation, "shanten_logits": shanten_logits, "shanten_classes": shanten_classes}
 
@@ -1370,6 +1494,55 @@ class JointHiddenAllocationSampler(nn.Module):
             state.apply_cell_update(batch_offsets, state_index, tile37, opponent, allocation_offset, chosen)
         return tile37, opponent, chosen
 
+    def _sample_and_apply_dense_cell_step(
+        self,
+        neural_logits_cells: torch.Tensor,
+        state: AllocationDecodeState,
+        token: torch.Tensor,
+        tile37: torch.Tensor,
+        opponent: torch.Tensor,
+        batch_indices: torch.Tensor,
+        *,
+        sample: bool,
+        temp: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_offsets = self._decode_batch_offsets(batch_indices)
+        state_index = batch_offsets.state + token
+        with _profile_range("belief/cell_lookup"):
+            cell_neural_logits = neural_logits_cells.index_select(0, state_index)
+        with _profile_range("belief/cell_legality"):
+            cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
+                cell_neural_logits,
+                state.tile_remaining,
+                state.seat_remaining,
+                state.is_masked,
+                tile37,
+                opponent,
+            )
+        with _profile_range("belief/cell_sample"):
+            if sample:
+                cell_probs = F.softmax(cell_logits / temp, dim=1)
+                chosen = torch.multinomial(cell_probs, 1).squeeze(1)
+            else:
+                chosen = cell_logits.argmax(dim=1)
+        with _profile_range("belief/cell_state_update"):
+            update_mask = F.one_hot(token, num_classes=_ALLOCATION_TOKEN_COUNT).view(
+                token.shape[0],
+                TILE37_COUNT,
+                _OPPONENT_COUNT,
+            )
+            update_mask = update_mask.to(torch.bool) & state.is_masked
+            update_values = chosen.view(-1, 1, 1).expand_as(state.state_ids)
+            state.apply_dense_cell_updates(update_mask, update_values)
+        return tile37, opponent, chosen
+
+    def _apply_forced_decode_cells_dense_once(
+        self,
+        state: AllocationDecodeState,
+    ) -> None:
+        forced, values = self._forced_cells(state.tile_remaining, state.seat_remaining, state.is_masked)
+        state.apply_dense_cell_updates(forced, values)
+
     def _apply_forced_decode_cells(
         self,
         state: AllocationDecodeState,
@@ -1409,6 +1582,7 @@ class JointHiddenAllocationSampler(nn.Module):
         temperature: float,
         decode_steps: int,
         shanten_classes: torch.Tensor | None = None,
+        cross_attention_cache: tuple[CrossAttentionKVCache, ...] | None = None,
     ) -> torch.Tensor:
         if decode_steps <= 0:
             raise ValueError("decode_steps must be positive")
@@ -1432,81 +1606,138 @@ class JointHiddenAllocationSampler(nn.Module):
         token_lookup = self._decode_token_lookup(device)
 
         with _profile_range("belief/iterative_decode"):
-            with _profile_range("belief/forced_initial_decode_cells"):
-                self._apply_forced_decode_cells(state, token_lookup)
-            remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
-            for step in range(decode_steps):
-                if not remaining_counts.any():
-                    break
-                with _profile_range("belief/decode_step"):
-                    neural_logits = self._denoise_neural_logits(
-                        context,
-                        memory,
-                        memory_padding_mask,
-                        tile_emb,
-                        seat_emb,
-                        state.tile_remaining,
-                        state.seat_remaining,
-                        state.state_ids,
-                        shanten_classes=shanten_classes,
-                    )
-                    neural_logits_cells = neural_logits.reshape(batch_size * _ALLOCATION_TOKEN_COUNT, _COUNT_CANDIDATES)
-                    logits, feasible = self._apply_prior_and_legality(
-                        neural_logits,
-                        state.tile_remaining,
-                        state.seat_remaining,
-                        state.is_masked,
-                    )
-                    with _profile_range("belief/confidence_order"):
-                        probs = F.softmax(logits / temp, dim=-1)
-                        confidence = self._confidence(probs, self.confidence_method, feasible)
-                        confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
-
-                        n_to_unmask = self._scheduled_unmask_counts(step, decode_steps, remaining_counts)
-                        max_to_unmask = int(n_to_unmask.max().item())
-
-                        if max_to_unmask == 0:
-                            continue
-                        token_order = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argsort(
-                            dim=1,
-                            descending=True,
+            if decode_steps == _ALLOCATION_TOKEN_COUNT:
+                with _profile_range("belief/forced_initial_decode_cells"):
+                    self._apply_forced_decode_cells_dense_once(state)
+                remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
+                for _step in range(decode_steps):
+                    if not remaining_counts.any():
+                        break
+                    with _profile_range("belief/decode_step"):
+                        neural_logits = self._denoise_neural_logits(
+                            context,
+                            memory,
+                            memory_padding_mask,
+                            tile_emb,
+                            seat_emb,
+                            state.tile_remaining,
+                            state.seat_remaining,
+                            state.state_ids,
+                            shanten_classes=shanten_classes,
+                            cross_attention_cache=cross_attention_cache,
                         )
-                        selected_token_order = token_order[:, :max_to_unmask]
-                    with _profile_range("belief/cell_sampling_loop"):
-                        for rank in range(max_to_unmask):
-                            active = n_to_unmask > rank
-                            if not active.any():
-                                continue
-                            active_indices = batch_indices[active]
-                            token = selected_token_order[active, rank]
+                        neural_logits_cells = neural_logits.reshape(
+                            batch_size * _ALLOCATION_TOKEN_COUNT,
+                            _COUNT_CANDIDATES,
+                        )
+                        logits, feasible = self._apply_prior_and_legality(
+                            neural_logits,
+                            state.tile_remaining,
+                            state.seat_remaining,
+                            state.is_masked,
+                        )
+                        with _profile_range("belief/confidence_order"):
+                            probs = F.softmax(logits / temp, dim=-1)
+                            confidence = self._confidence(probs, self.confidence_method, feasible)
+                            confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
+                            token = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argmax(dim=1)
+
+                        with _profile_range("belief/cell_sampling_loop"):
                             tile37 = token_lookup.tile37.index_select(0, token)
                             opponent = token_lookup.opponent.index_select(0, token)
-                            still_masked = state.is_masked[active_indices, tile37, opponent]
-                            if not still_masked.any():
-                                continue
-                            active_indices = active_indices[still_masked]
-                            token = token[still_masked]
-                            tile37 = tile37[still_masked]
-                            opponent = opponent[still_masked]
-                            allocation_offset = token_lookup.allocation_offset.index_select(0, token)
-                            batch_offsets = self._decode_batch_offsets(active_indices)
-                            self._sample_and_apply_cell_step(
+                            self._sample_and_apply_dense_cell_step(
                                 neural_logits_cells,
                                 state,
                                 token,
                                 tile37,
                                 opponent,
-                                allocation_offset,
-                                batch_offsets,
+                                batch_indices,
                                 sample=sample,
                                 temp=temp,
-                                row_indices=active_indices,
                             )
                             with _profile_range("belief/forced_decode_cells"):
-                                self._apply_forced_decode_cells(state, token_lookup)
+                                self._apply_forced_decode_cells_dense_once(state)
                             remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
-                            if not remaining_counts.any():
-                                break
+            else:
+                with _profile_range("belief/forced_initial_decode_cells"):
+                    self._apply_forced_decode_cells(state, token_lookup)
+                remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
+                for step in range(decode_steps):
+                    if not remaining_counts.any():
+                        break
+                    with _profile_range("belief/decode_step"):
+                        neural_logits = self._denoise_neural_logits(
+                            context,
+                            memory,
+                            memory_padding_mask,
+                            tile_emb,
+                            seat_emb,
+                            state.tile_remaining,
+                            state.seat_remaining,
+                            state.state_ids,
+                            shanten_classes=shanten_classes,
+                            cross_attention_cache=cross_attention_cache,
+                        )
+                        neural_logits_cells = neural_logits.reshape(
+                            batch_size * _ALLOCATION_TOKEN_COUNT,
+                            _COUNT_CANDIDATES,
+                        )
+                        logits, feasible = self._apply_prior_and_legality(
+                            neural_logits,
+                            state.tile_remaining,
+                            state.seat_remaining,
+                            state.is_masked,
+                        )
+                        with _profile_range("belief/confidence_order"):
+                            probs = F.softmax(logits / temp, dim=-1)
+                            confidence = self._confidence(probs, self.confidence_method, feasible)
+                            confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
+
+                            n_to_unmask = self._scheduled_unmask_counts(step, decode_steps, remaining_counts)
+                            max_to_unmask = int(n_to_unmask.max().item())
+
+                            if max_to_unmask == 0:
+                                continue
+                            token_order = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argsort(
+                                dim=1,
+                                descending=True,
+                            )
+                            selected_token_order = token_order[:, :max_to_unmask]
+                        with _profile_range("belief/cell_sampling_loop"):
+                            for rank in range(max_to_unmask):
+                                active = n_to_unmask > rank
+                                if not active.any():
+                                    continue
+                                active_indices = batch_indices[active]
+                                token = selected_token_order[active, rank]
+                                tile37 = token_lookup.tile37.index_select(0, token)
+                                opponent = token_lookup.opponent.index_select(0, token)
+                                still_masked = state.is_masked[active_indices, tile37, opponent]
+                                if not still_masked.any():
+                                    continue
+                                active_indices = active_indices[still_masked]
+                                token = token[still_masked]
+                                tile37 = tile37[still_masked]
+                                opponent = opponent[still_masked]
+                                allocation_offset = token_lookup.allocation_offset.index_select(0, token)
+                                batch_offsets = self._decode_batch_offsets(active_indices)
+                                self._sample_and_apply_cell_step(
+                                    neural_logits_cells,
+                                    state,
+                                    token,
+                                    tile37,
+                                    opponent,
+                                    allocation_offset,
+                                    batch_offsets,
+                                    sample=sample,
+                                    temp=temp,
+                                    row_indices=active_indices,
+                                )
+                                with _profile_range("belief/forced_decode_cells"):
+                                    self._apply_forced_decode_cells(state, token_lookup)
+                                remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
+                                if not remaining_counts.any():
+                                    break
 
         state.allocation[:, BUCKET_COUNT - 1] = unseen_counts - state.allocation[:, :_OPPONENT_COUNT].sum(dim=1)
         return state.allocation
@@ -1571,6 +1802,7 @@ class JointHiddenAllocationSampler(nn.Module):
                     riichi_mask,
                     sample=True,
                 )
+            cross_attention_cache = self._build_decoder_cross_attention_cache(context, memory, memory_padding_mask)
             sampled = self._iterative_decode(
                 context,
                 memory,
@@ -1583,6 +1815,7 @@ class JointHiddenAllocationSampler(nn.Module):
                 temperature=temperature,
                 decode_steps=int(decode_steps or self.decode_steps),
                 shanten_classes=shanten_classes,
+                cross_attention_cache=cross_attention_cache,
             )
         return sampled.reshape(sampling_context.batch_size, num_samples, BUCKET_COUNT, TILE37_COUNT)
 
