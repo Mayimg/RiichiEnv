@@ -703,6 +703,82 @@ def test_belief_model_logcomb_lookup_matches_clamped_lgamma():
     assert torch.allclose(model._safe_logcomb(n, k), expected)
 
 
+def test_belief_model_logcomb_lookup_stays_fp32_after_bf16_buffer_cast():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    model.logcomb_table = model.logcomb_table.to(torch.bfloat16)
+    n = torch.tensor([[4, 4, 3]])
+    k = torch.tensor([[0, 2, 1]])
+
+    actual = model._safe_logcomb(n, k)
+
+    assert actual.dtype == torch.float32
+    expected = _build_expected_logcomb(n, k)
+    assert torch.allclose(actual, expected)
+
+
+def _build_expected_logcomb(n: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+    n_f = n.float().clamp_min(0.0)
+    k_f = k.float().clamp_min(0.0)
+    k_f = torch.minimum(k_f, n_f)
+    return torch.lgamma(n_f + 1.0) - torch.lgamma(k_f + 1.0) - torch.lgamma(n_f - k_f + 1.0)
+
+
+def test_belief_model_bf16_logits_use_fp32_sampling_math():
+    torch.manual_seed(17)
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    shanten_logits = torch.randn(2, 3, SHANTEN_CLASS_COUNT).to(torch.bfloat16)
+
+    shanten_classes = model._sample_shanten_classes(shanten_logits, None, sample=True)
+
+    assert shanten_classes.shape == (2, 3)
+    assert shanten_classes.dtype == torch.long
+
+
+def test_belief_model_prior_legality_returns_fp32_for_bf16_neural_logits():
+    model = JointHiddenAllocationSampler(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=4,
+        dropout=0.0,
+    )
+    neural_logits = torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, 5, dtype=torch.bfloat16)
+    tile_remaining = torch.zeros(1, TILE37_COUNT, dtype=torch.long)
+    seat_remaining = torch.zeros(1, BUCKET_COUNT - 1, dtype=torch.long)
+    is_masked = torch.zeros(1, TILE37_COUNT, BUCKET_COUNT - 1, dtype=torch.bool)
+
+    logits, feasible = model._apply_prior_and_legality(
+        neural_logits,
+        tile_remaining,
+        seat_remaining,
+        is_masked,
+    )
+
+    assert logits.dtype == torch.float32
+    assert feasible.dtype == torch.bool
+
+
 def _reference_cell_hall_feasible(
     model: JointHiddenAllocationSampler,
     tile_remaining: torch.Tensor,

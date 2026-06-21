@@ -12,6 +12,7 @@ import torch
 from riichienv_ml.belief_sampling_benchmark import BeliefSamplingBenchmark, _feature_metadata
 from riichienv_ml.config import load_config
 from riichienv_ml.models.belief_allocation import belief_profile_ranges
+from riichienv_ml.utils import inference_autocast
 from torch.profiler import ProfilerActivity, profile, record_function
 
 try:
@@ -41,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_decisions", type=int, default=None)
     parser.add_argument("--include_single_action", action="store_true")
     parser.add_argument("--matmul_precision", choices=["highest", "high", "medium"], default=None)
+    parser.add_argument("--inference_dtype", choices=["fp32", "bf16"], default=None)
     parser.add_argument("--activities", choices=["auto", "cpu", "cuda", "both"], default="auto")
     parser.add_argument("--sort_by", type=str, default=None)
     parser.add_argument("--row_limit", type=int, default=80)
@@ -63,6 +65,7 @@ def _apply_overrides(cfg, args: argparse.Namespace):
         "decision_stride",
         "max_decisions",
         "matmul_precision",
+        "inference_dtype",
     ):
         value = getattr(args, field, None)
         if value is not None:
@@ -163,14 +166,16 @@ def _run_warmup(
     decode_steps: int | None,
 ) -> None:
     with torch.inference_mode(), record_function("belief/profile_warmup"):
-        warmup_context = benchmark.model.prepare_allocation_sampling_context(features)
+        with inference_autocast(benchmark.device, benchmark.inference_dtype):
+            warmup_context = benchmark.model.prepare_allocation_sampling_context(features)
         for _ in range(args.warmup_calls):
-            samples = benchmark.model.sample_allocations_from_context(
-                warmup_context,
-                num_samples=samples_per_call,
-                temperature=temperature,
-                decode_steps=decode_steps,
-            )
+            with inference_autocast(benchmark.device, benchmark.inference_dtype):
+                samples = benchmark.model.sample_allocations_from_context(
+                    warmup_context,
+                    num_samples=samples_per_call,
+                    temperature=temperature,
+                    decode_steps=decode_steps,
+                )
             benchmark._sync()
             del samples
 
@@ -189,7 +194,8 @@ def _run_profile(
     benchmark._sync()
     context = None
     if not args.profile_context:
-        context = benchmark.model.prepare_allocation_sampling_context(features)
+        with inference_autocast(benchmark.device, benchmark.inference_dtype):
+            context = benchmark.model.prepare_allocation_sampling_context(features)
         benchmark._sync()
 
     started_at = time.perf_counter()
@@ -202,18 +208,20 @@ def _run_profile(
     ) as prof, belief_profile_ranges():
         with record_function("belief/profile"):
             if args.profile_context:
-                context = benchmark.model.prepare_allocation_sampling_context(features)
+                with inference_autocast(benchmark.device, benchmark.inference_dtype):
+                    context = benchmark.model.prepare_allocation_sampling_context(features)
                 benchmark._sync()
             if context is None:
                 raise RuntimeError("sampling context was not prepared")
             for call_idx in range(args.profile_calls):
                 with record_function(f"belief/profile_sample_call_{call_idx}"):
-                    samples = benchmark.model.sample_allocations_from_context(
-                        context,
-                        num_samples=samples_per_call,
-                        temperature=temperature,
-                        decode_steps=decode_steps,
-                    )
+                    with inference_autocast(benchmark.device, benchmark.inference_dtype):
+                        samples = benchmark.model.sample_allocations_from_context(
+                            context,
+                            num_samples=samples_per_call,
+                            temperature=temperature,
+                            decode_steps=decode_steps,
+                        )
                     benchmark._sync()
                     del samples
     return prof, (time.perf_counter() - started_at) * 1000.0
@@ -253,6 +261,7 @@ def _build_metadata(
         },
         "profile": {
             "device": str(benchmark.device),
+            "inference_dtype": benchmark.inference_dtype,
             "activities": [activity.name for activity in activities],
             "samples_per_call": samples_per_call,
             "profile_calls": args.profile_calls,

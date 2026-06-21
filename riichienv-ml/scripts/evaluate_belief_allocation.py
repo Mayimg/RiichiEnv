@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include_opponents_in_summary", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--semantic_features", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--matmul_precision", choices=["highest", "high", "medium"], default=None)
+    parser.add_argument("--inference_dtype", choices=["fp32", "bf16"], default=None)
     return parser.parse_args()
 
 
@@ -88,6 +89,7 @@ def main() -> None:
         "include_opponents_in_summary",
         "semantic_features",
         "matmul_precision",
+        "inference_dtype",
     ):
         val = getattr(args, field, None)
         if val is not None:

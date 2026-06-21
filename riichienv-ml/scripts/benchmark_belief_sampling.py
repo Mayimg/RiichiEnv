@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--include_decisions_in_summary", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--matmul_precision", choices=["highest", "high", "medium"], default=None)
+    parser.add_argument("--inference_dtype", choices=["fp32", "bf16"], default=None)
     return parser.parse_args()
 
 
@@ -72,6 +73,7 @@ def main() -> None:
         "progress_interval",
         "include_decisions_in_summary",
         "matmul_precision",
+        "inference_dtype",
     ):
         val = getattr(args, field, None)
         if val is not None:

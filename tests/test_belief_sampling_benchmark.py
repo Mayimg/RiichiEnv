@@ -55,6 +55,8 @@ def test_belief_sampling_benchmark_writes_summary_and_csv(tmp_path):
     assert "encoder_cache_ms" in summary["decisions"][0]
     assert "decoder_elapsed_ms" in summary["decisions"][0]
     assert "encoder_cache_ms" in summary["overall"]
+    assert summary["device_info"]["inference_dtype"] == "bf16"
+    assert summary["config"]["inference_dtype"] == "bf16"
     assert (tmp_path / "summary.json").exists()
     assert (tmp_path / "decisions.csv").exists()
     assert (tmp_path / "prog_len.csv").exists()
@@ -114,6 +116,7 @@ def test_belief_sampling_benchmark_reuses_encoder_cache_within_decision(monkeypa
         target_duration_ms=7.0,
     )
     benchmark.device = torch.device("cpu")
+    benchmark.inference_dtype = "bf16"
     benchmark.model = CountingSampler()
     record = _BenchmarkDecisionRecord(
         feature=feature,

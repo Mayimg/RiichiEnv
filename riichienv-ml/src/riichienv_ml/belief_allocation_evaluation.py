@@ -35,7 +35,13 @@ from riichienv_ml.features.belief_features import (
     collate_belief_features,
     make_hidden_allocation_target,
 )
-from riichienv_ml.utils import build_encoder, configure_matmul_precision, load_model_weights
+from riichienv_ml.utils import (
+    build_encoder,
+    configure_inference_dtype,
+    configure_matmul_precision,
+    inference_autocast,
+    load_model_weights,
+)
 
 _OPPONENT_COUNT = BUCKET_COUNT - 1
 _OPPONENT_REL_SEATS = (1, 2, 3)
@@ -887,6 +893,7 @@ class BeliefAllocationEvaluator:
             raise ValueError("progress_interval must be positive")
         self.cfg = cfg
         self.device = torch.device(cfg.device)
+        self.inference_dtype = configure_inference_dtype(cfg.inference_dtype, self.device)
         self.output_dir = Path(cfg.output_dir)
         self.report_path = Path(cfg.report_path) if cfg.report_path else self.output_dir / "report.md"
         self.summary_path = Path(cfg.summary_path) if cfg.summary_path else self.output_dir / "summary.json"
@@ -1175,12 +1182,13 @@ class BeliefAllocationEvaluator:
         self._sync()
         started_at = time.perf_counter()
         for _ in range(self.cfg.warmup_batches):
-            samples = self.model.sample_allocations(
-                features,
-                num_samples=self.cfg.samples_per_decision,
-                temperature=self.cfg.temperature,
-                decode_steps=self.cfg.decode_steps,
-            )
+            with inference_autocast(self.device, self.inference_dtype):
+                samples = self.model.sample_allocations(
+                    features,
+                    num_samples=self.cfg.samples_per_decision,
+                    temperature=self.cfg.temperature,
+                    decode_steps=self.cfg.decode_steps,
+                )
             self._sync()
             del samples
         elapsed = time.perf_counter() - started_at
@@ -1207,12 +1215,13 @@ class BeliefAllocationEvaluator:
 
         self._sync()
         started_at = time.perf_counter()
-        samples = self.model.sample_allocations(
-            features,
-            num_samples=self.cfg.samples_per_decision,
-            temperature=self.cfg.temperature,
-            decode_steps=self.cfg.decode_steps,
-        )
+        with inference_autocast(self.device, self.inference_dtype):
+            samples = self.model.sample_allocations(
+                features,
+                num_samples=self.cfg.samples_per_decision,
+                temperature=self.cfg.temperature,
+                decode_steps=self.cfg.decode_steps,
+            )
         self._sync()
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
 
@@ -1415,6 +1424,7 @@ class BeliefAllocationEvaluator:
             "temperature": self.cfg.temperature,
             "decode_steps": self.cfg.decode_steps,
             "effective_decode_steps": int(self.cfg.decode_steps or getattr(self.model, "decode_steps", 0)),
+            "inference_dtype": self.inference_dtype,
             "skip_single_action": self.cfg.skip_single_action,
             "seed": self.cfg.seed,
             "semantic_features": self.cfg.semantic_features,

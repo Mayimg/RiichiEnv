@@ -26,7 +26,13 @@ from riichienv_ml.belief_log_sampling import (
 )
 from riichienv_ml.config import BeliefSamplingBenchmarkConfig, import_class
 from riichienv_ml.features.belief_features import BeliefFeatureEncoder, collate_belief_features
-from riichienv_ml.utils import build_encoder, configure_matmul_precision, load_model_weights
+from riichienv_ml.utils import (
+    build_encoder,
+    configure_inference_dtype,
+    configure_matmul_precision,
+    inference_autocast,
+    load_model_weights,
+)
 
 _PROG_LEN_BUCKETS = (
     (0, 4),
@@ -236,6 +242,7 @@ class BeliefSamplingBenchmark:
 
         self.cfg = cfg
         self.device = torch.device(cfg.device)
+        self.inference_dtype = configure_inference_dtype(cfg.inference_dtype, self.device)
         self.output_dir = Path(cfg.output_dir)
         self.summary_path = Path(cfg.summary_path) if cfg.summary_path else self.output_dir / "summary.json"
         self.decisions_csv_path = (
@@ -386,15 +393,17 @@ class BeliefSamplingBenchmark:
         features, _feature_prepare_ms = self._prepare_feature_batch(record.feature)
         self._sync()
         started_at = time.perf_counter()
-        sampling_context = self.model.prepare_allocation_sampling_context(features)
+        with inference_autocast(self.device, self.inference_dtype):
+            sampling_context = self.model.prepare_allocation_sampling_context(features)
         self._sync()
         for _ in range(self.cfg.warmup_calls):
-            samples = self.model.sample_allocations_from_context(
-                sampling_context,
-                num_samples=samples_per_call,
-                temperature=self.cfg.temperature,
-                decode_steps=self.cfg.decode_steps,
-            )
+            with inference_autocast(self.device, self.inference_dtype):
+                samples = self.model.sample_allocations_from_context(
+                    sampling_context,
+                    num_samples=samples_per_call,
+                    temperature=self.cfg.temperature,
+                    decode_steps=self.cfg.decode_steps,
+                )
             self._sync()
             del samples
         elapsed = time.perf_counter() - started_at
@@ -425,18 +434,20 @@ class BeliefSamplingBenchmark:
         total_samples = 0
         started_at = time.perf_counter()
         cache_started_at = time.perf_counter()
-        sampling_context = self.model.prepare_allocation_sampling_context(features)
+        with inference_autocast(self.device, self.inference_dtype):
+            sampling_context = self.model.prepare_allocation_sampling_context(features)
         self._sync()
         encoder_cache_ms = (time.perf_counter() - cache_started_at) * 1000.0
         elapsed = time.perf_counter() - started_at
         while not call_durations_ms or elapsed < target_seconds:
             call_started_at = time.perf_counter()
-            samples = self.model.sample_allocations_from_context(
-                sampling_context,
-                num_samples=self.cfg.samples_per_call,
-                temperature=self.cfg.temperature,
-                decode_steps=self.cfg.decode_steps,
-            )
+            with inference_autocast(self.device, self.inference_dtype):
+                samples = self.model.sample_allocations_from_context(
+                    sampling_context,
+                    num_samples=self.cfg.samples_per_call,
+                    temperature=self.cfg.temperature,
+                    decode_steps=self.cfg.decode_steps,
+                )
             self._sync()
             call_elapsed_ms = (time.perf_counter() - call_started_at) * 1000.0
             total_samples += int(samples.shape[1])
@@ -479,6 +490,7 @@ class BeliefSamplingBenchmark:
             "device": str(self.device),
             "torch_version": torch.__version__,
             "matmul_precision": torch.get_float32_matmul_precision(),
+            "inference_dtype": self.inference_dtype,
             "cuda_available": torch.cuda.is_available(),
         }
         if self.device.type == "cuda" and torch.cuda.is_available():
