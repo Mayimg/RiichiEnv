@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from inspect import signature
 from pathlib import Path
@@ -39,6 +40,48 @@ def configure_matmul_precision(precision: str | None) -> str:
     current = torch.get_float32_matmul_precision()
     logger.info(f"Float32 matmul precision: {current}")
     return current
+
+
+def normalize_inference_dtype(inference_dtype: str | None) -> str:
+    """Normalize and validate inference dtype config values."""
+    dtype = (inference_dtype or "fp32").lower()
+    aliases = {
+        "float32": "fp32",
+        "bfloat16": "bf16",
+    }
+    dtype = aliases.get(dtype, dtype)
+    if dtype not in {"fp32", "bf16"}:
+        raise ValueError(f"Unsupported inference_dtype={inference_dtype!r}")
+    return dtype
+
+
+def configure_inference_dtype(inference_dtype: str | None, device: str | torch.device) -> str:
+    """Validate inference dtype and log the effective mode."""
+    dtype = normalize_inference_dtype(inference_dtype)
+    torch_device = torch.device(device)
+    if dtype == "bf16" and torch_device.type == "cuda" and torch.cuda.is_available():
+        is_supported = getattr(torch.cuda, "is_bf16_supported", None)
+        if callable(is_supported) and not is_supported():
+            raise ValueError(f"inference_dtype='bf16' is not supported on CUDA device {torch_device}")
+    logger.info(f"Inference dtype: {dtype}")
+    return dtype
+
+
+@contextmanager
+def inference_autocast(device: str | torch.device, inference_dtype: str | None):
+    """Autocast neural inference to the requested dtype.
+
+    The model parameters stay in FP32; this keeps dtype-sensitive buffers and
+    non-matmul logic stable while allowing CUDA kernels to use bf16.
+    """
+    dtype = normalize_inference_dtype(inference_dtype)
+    torch_device = torch.device(device)
+    if dtype == "fp32":
+        with nullcontext():
+            yield
+        return
+    with torch.autocast(device_type=torch_device.type, dtype=torch.bfloat16):
+        yield
 
 
 def setup_logging(output_dir: str, script_name: str) -> Path:
@@ -200,14 +243,14 @@ def load_model_weights(
     state = load_torch_state_dict(path, map_location=map_location)
     result = model.load_state_dict(state, strict=strict)
     if result.missing_keys:
-        warnings.warn(f"Missing keys when loading weights from {path}: {result.missing_keys}")
+        warnings.warn(f"Missing keys when loading weights from {path}: {result.missing_keys}", stacklevel=2)
     if result.unexpected_keys:
-        warnings.warn(f"Unexpected keys when loading weights from {path}: {result.unexpected_keys}")
+        warnings.warn(f"Unexpected keys when loading weights from {path}: {result.unexpected_keys}", stacklevel=2)
     logger.info(f"Loaded initial weights from {path}")
     return result
 
 
-class AverageMeter(object):
+class AverageMeter:
     """Computes and stores the average and current value"""
     def __init__(self, name, fmt=':f'):
         self.name = name

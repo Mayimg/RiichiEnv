@@ -772,7 +772,7 @@ class JointHiddenAllocationSampler(nn.Module):
         sample: bool,
     ) -> torch.Tensor:
         if sample:
-            probs = F.softmax(shanten_logits, dim=-1)
+            probs = F.softmax(shanten_logits.float(), dim=-1)
             classes = torch.multinomial(probs.reshape(-1, SHANTEN_CLASS_COUNT), 1).view(
                 shanten_logits.shape[0],
                 _SHANTEN_TOKEN_COUNT,
@@ -802,8 +802,11 @@ class JointHiddenAllocationSampler(nn.Module):
 
     def _safe_logcomb(self, n: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
         table = self.logcomb_table
-        if table.device != n.device:
-            table = table.to(n.device)
+        if table.dtype != torch.float32:
+            table = _build_logcomb_table().to(device=n.device)
+            self.logcomb_table = table
+        elif table.device != n.device:
+            table = table.to(device=n.device)
         n_idx = n.clamp(min=0, max=_MAX_LOGCOMB_COUNT).long()
         k_idx = k.clamp(min=0, max=_MAX_LOGCOMB_COUNT).long()
         k_idx = torch.minimum(k_idx, n_idx)
@@ -993,7 +996,7 @@ class JointHiddenAllocationSampler(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         with _profile_range("belief/apply_prior_legality"):
             feasible = self._cell_hall_feasible(tile_remaining, seat_remaining, is_masked)
-            logits = self._hypergeom_prior(tile_remaining, seat_remaining, is_masked) + neural_logits
+            logits = self._hypergeom_prior(tile_remaining, seat_remaining, is_masked) + neural_logits.float()
             return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible
 
     def _forced_cells(
@@ -1083,7 +1086,7 @@ class JointHiddenAllocationSampler(nn.Module):
             u_t,
         )
 
-        logits = prior + neural_logits
+        logits = prior + neural_logits.float()
         return logits.masked_fill(~feasible, torch.finfo(logits.dtype).min), feasible
 
     @staticmethod
@@ -1468,7 +1471,7 @@ class JointHiddenAllocationSampler(nn.Module):
                 )
             with _profile_range("belief/cell_sample"):
                 if sample:
-                    cell_probs = F.softmax(cell_logits / temp, dim=1)
+                    cell_probs = F.softmax((cell_logits / temp).float(), dim=1)
                     chosen = torch.multinomial(cell_probs, 1).squeeze(1)
                 else:
                     chosen = cell_logits.argmax(dim=1)
@@ -1487,7 +1490,7 @@ class JointHiddenAllocationSampler(nn.Module):
                 row_indices=row_indices,
             )
             if sample:
-                cell_probs = F.softmax(cell_logits / temp, dim=1)
+                cell_probs = F.softmax((cell_logits / temp).float(), dim=1)
                 chosen = torch.multinomial(cell_probs, 1).squeeze(1)
             else:
                 chosen = cell_logits.argmax(dim=1)
@@ -1521,7 +1524,7 @@ class JointHiddenAllocationSampler(nn.Module):
             )
         with _profile_range("belief/cell_sample"):
             if sample:
-                cell_probs = F.softmax(cell_logits / temp, dim=1)
+                cell_probs = F.softmax((cell_logits / temp).float(), dim=1)
                 chosen = torch.multinomial(cell_probs, 1).squeeze(1)
             else:
                 chosen = cell_logits.argmax(dim=1)
@@ -1637,7 +1640,7 @@ class JointHiddenAllocationSampler(nn.Module):
                             state.is_masked,
                         )
                         with _profile_range("belief/confidence_order"):
-                            probs = F.softmax(logits / temp, dim=-1)
+                            probs = F.softmax((logits / temp).float(), dim=-1)
                             confidence = self._confidence(probs, self.confidence_method, feasible)
                             confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
                             token = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argmax(dim=1)
@@ -1689,7 +1692,7 @@ class JointHiddenAllocationSampler(nn.Module):
                             state.is_masked,
                         )
                         with _profile_range("belief/confidence_order"):
-                            probs = F.softmax(logits / temp, dim=-1)
+                            probs = F.softmax((logits / temp).float(), dim=-1)
                             confidence = self._confidence(probs, self.confidence_method, feasible)
                             confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
 

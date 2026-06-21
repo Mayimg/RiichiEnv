@@ -22,7 +22,13 @@ from riichienv_ml.features.belief_features import (
     BeliefFeatureEncoder,
     collate_belief_features,
 )
-from riichienv_ml.utils import build_encoder, configure_matmul_precision, load_model_weights
+from riichienv_ml.utils import (
+    build_encoder,
+    configure_inference_dtype,
+    configure_matmul_precision,
+    inference_autocast,
+    load_model_weights,
+)
 
 _RESPONSE_SOURCE_TYPES = {"dahai", "kakan", "ankan"}
 _PASS_TYPE = "none"
@@ -227,6 +233,7 @@ class BeliefLogSampler:
             raise ValueError("batch_size must be positive")
         self.cfg = cfg
         self.device = torch.device(cfg.device)
+        self.inference_dtype = configure_inference_dtype(cfg.inference_dtype, self.device)
         self.output_dir = Path(cfg.output_dir)
         self.summary_path = Path(cfg.summary_path) if cfg.summary_path else self.output_dir / "summary.json"
         self.encoder = self._build_encoder()
@@ -338,11 +345,12 @@ class BeliefLogSampler:
             batch_records = records[start : start + self.cfg.batch_size]
             features = collate_belief_features([record.feature for record in batch_records])
             features = _to_device(features, self.device)
-            allocations_device = self.model.sample_allocations(
-                features,
-                num_samples=self.cfg.num_samples,
-                temperature=self.cfg.temperature,
-            )
+            with inference_autocast(self.device, self.inference_dtype):
+                allocations_device = self.model.sample_allocations(
+                    features,
+                    num_samples=self.cfg.num_samples,
+                    temperature=self.cfg.temperature,
+                )
             if hasattr(self.model, "allocation_diagnostics"):
                 diagnostics = self.model.allocation_diagnostics(features, allocations_device)
                 batch_size = len(batch_records)
@@ -418,6 +426,7 @@ class BeliefLogSampler:
             "num_samples": self.cfg.num_samples,
             "skip_single_action": self.cfg.skip_single_action,
             "compress_output": self.cfg.compress_output,
+            "inference_dtype": self.inference_dtype,
             "metadata_key": self.cfg.metadata_key,
             "response_metadata_key": self.cfg.response_metadata_key,
             "elapsed_seconds": elapsed,

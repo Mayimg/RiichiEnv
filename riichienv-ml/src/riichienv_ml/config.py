@@ -327,6 +327,7 @@ class BeliefLogSamplingConfig(BaseModel):
     seed: int | None = None
     temperature: float = 1.0
     matmul_precision: Literal["highest", "high", "medium"] = "high"
+    inference_dtype: Literal["fp32", "bf16"] = "bf16"
     metadata_key: str = "belief_allocation"
     response_metadata_key: str = "belief_response_allocations"
     model: ModelConfig = ModelConfig()
@@ -359,6 +360,7 @@ class BeliefSamplingBenchmarkConfig(BaseModel):
     temperature: float = 1.0
     decode_steps: int | None = None
     matmul_precision: Literal["highest", "high", "medium"] = "high"
+    inference_dtype: Literal["fp32", "bf16"] = "bf16"
     progress_interval: int = 50
     include_decisions_in_summary: bool = True
     model: ModelConfig = ModelConfig()
@@ -395,6 +397,7 @@ class BeliefAllocationEvaluationConfig(BaseModel):
     temperature: float = 1.0
     decode_steps: int | None = None
     matmul_precision: Literal["highest", "high", "medium"] = "high"
+    inference_dtype: Literal["fp32", "bf16"] = "bf16"
     progress_interval: int = 50
     include_decisions_in_summary: bool = False
     include_opponents_in_summary: bool = False

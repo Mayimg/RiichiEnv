@@ -16,6 +16,7 @@ belief_log_sampling:
   seed: null
   temperature: 1.0
   matmul_precision: high
+  inference_dtype: bf16
   metadata_key: belief_allocation
   response_metadata_key: belief_response_allocations
   model_class: riichienv_ml.models.belief_allocation.JointHiddenAllocationSampler
