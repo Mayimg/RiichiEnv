@@ -221,6 +221,21 @@ class CrossAttentionKVCache:
     attention_mask: torch.Tensor | None
 
 
+@dataclass(frozen=True)
+class ActiveAllocationDecodeInputs:
+    """Batch tensors for one active-row decode step."""
+
+    context: torch.Tensor
+    memory: torch.Tensor
+    memory_padding_mask: torch.Tensor
+    tile_emb: torch.Tensor
+    state: AllocationDecodeState
+    shanten_classes: torch.Tensor | None
+    cross_attention_cache: tuple[CrossAttentionKVCache, ...] | None
+    batch_indices: torch.Tensor
+    uses_full_batch: bool
+
+
 class _DenoiseLayer(nn.Module):
     """Pre-LN bidirectional decoder layer with public-memory cross attention."""
 
@@ -658,6 +673,7 @@ class JointHiddenAllocationSampler(nn.Module):
         max_decode_steps: int | None = None,
         confidence_method: str = "max_prob",
         shanten_aux_loss_weight: float = 0.2,
+        active_row_compaction: bool = False,
         **encoder_kwargs: Any,
     ):
         super().__init__()
@@ -678,6 +694,7 @@ class JointHiddenAllocationSampler(nn.Module):
             allowed = "', '".join(_CONFIDENCE_METHODS)
             raise ValueError(f"confidence_method must be one of: '{allowed}'")
         self.confidence_method = confidence_method
+        self.active_row_compaction = bool(active_row_compaction)
         self.mask_state_id = _COUNT_CANDIDATES
         self.shanten_aux_loss_weight = float(shanten_aux_loss_weight)
         if self.shanten_aux_loss_weight < 0.0:
@@ -837,6 +854,85 @@ class JointHiddenAllocationSampler(nn.Module):
                 memory_padding_mask,
             )
             return self.denoise_decoder.build_cross_attention_cache(decoder_memory, decoder_memory_padding_mask)
+
+    @staticmethod
+    def _index_cross_attention_cache(
+        cross_attention_cache: tuple[CrossAttentionKVCache, ...] | None,
+        row_indices: torch.Tensor,
+    ) -> tuple[CrossAttentionKVCache, ...] | None:
+        if cross_attention_cache is None:
+            return None
+        return tuple(
+            CrossAttentionKVCache(
+                key=cache.key.index_select(0, row_indices),
+                value=cache.value.index_select(0, row_indices),
+                attention_mask=None
+                if cache.attention_mask is None
+                else cache.attention_mask.index_select(0, row_indices),
+            )
+            for cache in cross_attention_cache
+        )
+
+    @staticmethod
+    def _index_decode_state(state: AllocationDecodeState, row_indices: torch.Tensor) -> AllocationDecodeState:
+        return AllocationDecodeState(
+            allocation=state.allocation.index_select(0, row_indices),
+            state_ids=state.state_ids.index_select(0, row_indices),
+            tile_remaining=state.tile_remaining.index_select(0, row_indices),
+            seat_remaining=state.seat_remaining.index_select(0, row_indices),
+            is_masked=state.is_masked.index_select(0, row_indices),
+        )
+
+    @staticmethod
+    def _scatter_decode_state(
+        state: AllocationDecodeState,
+        row_indices: torch.Tensor,
+        compact_state: AllocationDecodeState,
+    ) -> None:
+        state.allocation.index_copy_(0, row_indices, compact_state.allocation)
+        state.state_ids.index_copy_(0, row_indices, compact_state.state_ids)
+        state.tile_remaining.index_copy_(0, row_indices, compact_state.tile_remaining)
+        state.seat_remaining.index_copy_(0, row_indices, compact_state.seat_remaining)
+        state.is_masked.index_copy_(0, row_indices, compact_state.is_masked)
+
+    def _active_decode_inputs(
+        self,
+        context: torch.Tensor,
+        memory: torch.Tensor,
+        memory_padding_mask: torch.Tensor,
+        tile_emb: torch.Tensor,
+        state: AllocationDecodeState,
+        shanten_classes: torch.Tensor | None,
+        cross_attention_cache: tuple[CrossAttentionKVCache, ...] | None,
+        active_indices: torch.Tensor,
+        full_batch_indices: torch.Tensor,
+    ) -> ActiveAllocationDecodeInputs:
+        active_count = int(active_indices.shape[0])
+        if active_count == context.shape[0]:
+            return ActiveAllocationDecodeInputs(
+                context=context,
+                memory=memory,
+                memory_padding_mask=memory_padding_mask,
+                tile_emb=tile_emb,
+                state=state,
+                shanten_classes=shanten_classes,
+                cross_attention_cache=cross_attention_cache,
+                batch_indices=full_batch_indices,
+                uses_full_batch=True,
+            )
+
+        with _profile_range("belief/compact_active_rows"):
+            return ActiveAllocationDecodeInputs(
+                context=context.index_select(0, active_indices),
+                memory=memory.index_select(0, active_indices),
+                memory_padding_mask=memory_padding_mask.index_select(0, active_indices),
+                tile_emb=tile_emb.index_select(0, active_indices),
+                state=self._index_decode_state(state, active_indices),
+                shanten_classes=None if shanten_classes is None else shanten_classes.index_select(0, active_indices),
+                cross_attention_cache=self._index_cross_attention_cache(cross_attention_cache, active_indices),
+                batch_indices=torch.arange(active_count, device=context.device),
+                uses_full_batch=False,
+            )
 
     def _token_embeddings(
         self,
@@ -1571,6 +1667,102 @@ class JointHiddenAllocationSampler(nn.Module):
             resolved += int(state_index.numel())
         return resolved
 
+    def _iterative_decode_compacted_fast_path(
+        self,
+        context: torch.Tensor,
+        memory: torch.Tensor,
+        memory_padding_mask: torch.Tensor,
+        tile_emb: torch.Tensor,
+        seat_emb: torch.Tensor,
+        state: AllocationDecodeState,
+        *,
+        sample: bool,
+        temp: float,
+        decode_steps: int,
+        shanten_classes: torch.Tensor | None,
+        cross_attention_cache: tuple[CrossAttentionKVCache, ...] | None,
+    ) -> None:
+        batch_size = context.shape[0]
+        device = context.device
+        token_lookup = self._decode_token_lookup(device)
+
+        with _profile_range("belief/forced_initial_decode_cells"):
+            self._apply_forced_decode_cells_dense_once(state)
+        remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
+        active_indices = remaining_counts.nonzero(as_tuple=False).squeeze(1)
+        full_batch_indices = torch.arange(batch_size, device=device)
+
+        for _step in range(decode_steps):
+            active_count = int(active_indices.shape[0])
+            if active_count == 0:
+                break
+            active = self._active_decode_inputs(
+                context,
+                memory,
+                memory_padding_mask,
+                tile_emb,
+                state,
+                shanten_classes,
+                cross_attention_cache,
+                active_indices,
+                full_batch_indices,
+            )
+
+            with _profile_range("belief/decode_step"):
+                neural_logits = self._denoise_neural_logits(
+                    active.context,
+                    active.memory,
+                    active.memory_padding_mask,
+                    active.tile_emb,
+                    seat_emb,
+                    active.state.tile_remaining,
+                    active.state.seat_remaining,
+                    active.state.state_ids,
+                    shanten_classes=active.shanten_classes,
+                    cross_attention_cache=active.cross_attention_cache,
+                )
+                neural_logits_cells = neural_logits.reshape(
+                    active_count * _ALLOCATION_TOKEN_COUNT,
+                    _COUNT_CANDIDATES,
+                )
+                logits, feasible = self._apply_prior_and_legality(
+                    neural_logits,
+                    active.state.tile_remaining,
+                    active.state.seat_remaining,
+                    active.state.is_masked,
+                )
+                with _profile_range("belief/confidence_order"):
+                    probs = F.softmax((logits / temp).float(), dim=-1)
+                    confidence = self._confidence(probs, self.confidence_method, feasible)
+                    confidence = confidence.masked_fill(~active.state.is_masked, torch.finfo(confidence.dtype).min)
+                    token = confidence.reshape(active_count, _ALLOCATION_TOKEN_COUNT).argmax(dim=1)
+
+                with _profile_range("belief/cell_sampling_loop"):
+                    tile37 = token_lookup.tile37.index_select(0, token)
+                    opponent = token_lookup.opponent.index_select(0, token)
+                    self._sample_and_apply_dense_cell_step(
+                        neural_logits_cells,
+                        active.state,
+                        token,
+                        tile37,
+                        opponent,
+                        active.batch_indices,
+                        sample=sample,
+                        temp=temp,
+                    )
+                    with _profile_range("belief/forced_decode_cells"):
+                        self._apply_forced_decode_cells_dense_once(active.state)
+                    active_remaining_counts = active.state.is_masked.flatten(1).long().sum(dim=1)
+
+            if not active.uses_full_batch:
+                with _profile_range("belief/scatter_active_rows"):
+                    self._scatter_decode_state(state, active_indices, active.state)
+                    remaining_counts.index_copy_(0, active_indices, active_remaining_counts)
+            else:
+                remaining_counts = active_remaining_counts
+            still_active = active_remaining_counts > 0
+            active_indices = active_indices.index_select(0, still_active.nonzero(as_tuple=False).squeeze(1))
+
     def _iterative_decode(  # noqa: PLR0915
         self,
         context: torch.Tensor,
@@ -1610,57 +1802,72 @@ class JointHiddenAllocationSampler(nn.Module):
 
         with _profile_range("belief/iterative_decode"):
             if decode_steps == _ALLOCATION_TOKEN_COUNT:
-                with _profile_range("belief/forced_initial_decode_cells"):
-                    self._apply_forced_decode_cells_dense_once(state)
-                remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
-                for _step in range(decode_steps):
-                    if not remaining_counts.any():
-                        break
-                    with _profile_range("belief/decode_step"):
-                        neural_logits = self._denoise_neural_logits(
-                            context,
-                            memory,
-                            memory_padding_mask,
-                            tile_emb,
-                            seat_emb,
-                            state.tile_remaining,
-                            state.seat_remaining,
-                            state.state_ids,
-                            shanten_classes=shanten_classes,
-                            cross_attention_cache=cross_attention_cache,
-                        )
-                        neural_logits_cells = neural_logits.reshape(
-                            batch_size * _ALLOCATION_TOKEN_COUNT,
-                            _COUNT_CANDIDATES,
-                        )
-                        logits, feasible = self._apply_prior_and_legality(
-                            neural_logits,
-                            state.tile_remaining,
-                            state.seat_remaining,
-                            state.is_masked,
-                        )
-                        with _profile_range("belief/confidence_order"):
-                            probs = F.softmax((logits / temp).float(), dim=-1)
-                            confidence = self._confidence(probs, self.confidence_method, feasible)
-                            confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
-                            token = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argmax(dim=1)
-
-                        with _profile_range("belief/cell_sampling_loop"):
-                            tile37 = token_lookup.tile37.index_select(0, token)
-                            opponent = token_lookup.opponent.index_select(0, token)
-                            self._sample_and_apply_dense_cell_step(
-                                neural_logits_cells,
-                                state,
-                                token,
-                                tile37,
-                                opponent,
-                                batch_indices,
-                                sample=sample,
-                                temp=temp,
+                if self.active_row_compaction:
+                    self._iterative_decode_compacted_fast_path(
+                        context,
+                        memory,
+                        memory_padding_mask,
+                        tile_emb,
+                        seat_emb,
+                        state,
+                        sample=sample,
+                        temp=temp,
+                        decode_steps=decode_steps,
+                        shanten_classes=shanten_classes,
+                        cross_attention_cache=cross_attention_cache,
+                    )
+                else:
+                    with _profile_range("belief/forced_initial_decode_cells"):
+                        self._apply_forced_decode_cells_dense_once(state)
+                    remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
+                    for _step in range(decode_steps):
+                        if not remaining_counts.any():
+                            break
+                        with _profile_range("belief/decode_step"):
+                            neural_logits = self._denoise_neural_logits(
+                                context,
+                                memory,
+                                memory_padding_mask,
+                                tile_emb,
+                                seat_emb,
+                                state.tile_remaining,
+                                state.seat_remaining,
+                                state.state_ids,
+                                shanten_classes=shanten_classes,
+                                cross_attention_cache=cross_attention_cache,
                             )
-                            with _profile_range("belief/forced_decode_cells"):
-                                self._apply_forced_decode_cells_dense_once(state)
-                            remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
+                            neural_logits_cells = neural_logits.reshape(
+                                batch_size * _ALLOCATION_TOKEN_COUNT,
+                                _COUNT_CANDIDATES,
+                            )
+                            logits, feasible = self._apply_prior_and_legality(
+                                neural_logits,
+                                state.tile_remaining,
+                                state.seat_remaining,
+                                state.is_masked,
+                            )
+                            with _profile_range("belief/confidence_order"):
+                                probs = F.softmax((logits / temp).float(), dim=-1)
+                                confidence = self._confidence(probs, self.confidence_method, feasible)
+                                confidence = confidence.masked_fill(~state.is_masked, torch.finfo(confidence.dtype).min)
+                                token = confidence.reshape(batch_size, _ALLOCATION_TOKEN_COUNT).argmax(dim=1)
+
+                            with _profile_range("belief/cell_sampling_loop"):
+                                tile37 = token_lookup.tile37.index_select(0, token)
+                                opponent = token_lookup.opponent.index_select(0, token)
+                                self._sample_and_apply_dense_cell_step(
+                                    neural_logits_cells,
+                                    state,
+                                    token,
+                                    tile37,
+                                    opponent,
+                                    batch_indices,
+                                    sample=sample,
+                                    temp=temp,
+                                )
+                                with _profile_range("belief/forced_decode_cells"):
+                                    self._apply_forced_decode_cells_dense_once(state)
+                                remaining_counts = state.is_masked.flatten(1).long().sum(dim=1)
             else:
                 with _profile_range("belief/forced_initial_decode_cells"):
                     self._apply_forced_decode_cells(state, token_lookup)

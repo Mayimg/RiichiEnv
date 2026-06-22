@@ -31,3 +31,4 @@ belief_log_sampling:
     denoise_dim_feedforward: 512
     decode_steps: 111
     confidence_method: max_prob
+    active_row_compaction: true
