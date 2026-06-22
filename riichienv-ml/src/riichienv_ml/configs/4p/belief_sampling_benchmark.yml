@@ -3,11 +3,11 @@ belief_sampling_benchmark:
     n_players: 4
     replay_rule: tenhou
   input_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
-  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test23
-  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test23/summary.json
-  decisions_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test23/decisions.csv
-  prog_len_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test23/prog_len.csv
-  prog_len_bucket_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test23/prog_len_buckets.csv
+  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test24
+  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test24/summary.json
+  decisions_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test24/decisions.csv
+  prog_len_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test24/prog_len.csv
+  prog_len_bucket_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_sampling_benchmark/test24/prog_len_buckets.csv
   model_path: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test28/model.pth
   device: cuda
   num_logs: 10
@@ -38,3 +38,4 @@ belief_sampling_benchmark:
     denoise_dim_feedforward: 512
     decode_steps: 111
     confidence_method: max_prob
+    active_row_compaction: true

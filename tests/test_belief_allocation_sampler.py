@@ -17,6 +17,7 @@ from riichienv_ml.features.belief_features import (
 )
 from riichienv_ml.models.belief_allocation import (
     AllocationDecodeState,
+    CrossAttentionKVCache,
     DenoiseTransformer,
     JointHiddenAllocationSampler,
 )
@@ -544,6 +545,108 @@ def test_belief_decode_steps_equal_allocation_tokens_uses_fast_path_without_sche
     assert len(calls) == token_count
     assert calls == list(range(token_count))
     assert allocation.shape == (1, BUCKET_COUNT, TILE37_COUNT)
+
+
+def test_belief_decode_active_row_compaction_removes_completed_rows(monkeypatch):
+    d_model = 64
+    model = JointHiddenAllocationSampler(
+        d_model=d_model,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        denoise_num_layers=1,
+        denoise_dim_feedforward=128,
+        decode_steps=TILE37_COUNT * (BUCKET_COUNT - 1),
+        dropout=0.0,
+        active_row_compaction=True,
+    )
+    seen_batch_sizes = []
+    forced_calls = 0
+
+    def fake_denoise_neural_logits(context, *args, **kwargs):
+        del args, kwargs
+        seen_batch_sizes.append(context.shape[0])
+        return torch.zeros(context.shape[0], TILE37_COUNT, BUCKET_COUNT - 1, 5)
+
+    def fake_apply_prior_and_legality(neural_logits, _tile_remaining, _seat_remaining, is_masked):
+        feasible = is_masked.unsqueeze(-1).expand_as(neural_logits)
+        return neural_logits.masked_fill(~feasible, torch.finfo(neural_logits.dtype).min), feasible
+
+    def fake_sample_and_apply_cell_step(
+        neural_logits_cells,
+        state,
+        token,
+        tile37,
+        opponent,
+        batch_indices,
+        *,
+        sample,
+        temp,
+    ):
+        del neural_logits_cells, sample, temp
+        chosen = torch.zeros_like(token)
+        update_mask = torch.zeros_like(state.is_masked)
+        update_mask[batch_indices, tile37, opponent] = True
+        update_values = chosen.view(-1, 1, 1).expand_as(state.state_ids)
+        state.apply_dense_cell_updates(update_mask, update_values)
+        return tile37, opponent, chosen
+
+    def fake_apply_forced_decode_cells_dense_once(state):
+        nonlocal forced_calls
+        forced_calls += 1
+        if forced_calls == 2:
+            state.is_masked[0] = False
+        elif forced_calls == 3:
+            state.is_masked[:] = False
+
+    def fail_scheduled_unmask_counts(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("active row compaction fast path should not call the generic scheduler")
+
+    monkeypatch.setattr(model, "_denoise_neural_logits", fake_denoise_neural_logits)
+    monkeypatch.setattr(model, "_apply_prior_and_legality", fake_apply_prior_and_legality)
+    monkeypatch.setattr(model, "_sample_and_apply_dense_cell_step", fake_sample_and_apply_cell_step)
+    monkeypatch.setattr(model, "_apply_forced_decode_cells_dense_once", fake_apply_forced_decode_cells_dense_once)
+    monkeypatch.setattr(JointHiddenAllocationSampler, "_scheduled_unmask_counts", fail_scheduled_unmask_counts)
+
+    allocation = model._iterative_decode(
+        torch.zeros(2, d_model),
+        torch.zeros(2, 1, d_model),
+        torch.zeros(2, 1, dtype=torch.bool),
+        torch.zeros(2, TILE37_COUNT, dtype=torch.long),
+        torch.zeros(2, TILE37_COUNT, d_model),
+        torch.zeros(BUCKET_COUNT - 1, d_model),
+        torch.zeros(2, BUCKET_COUNT, dtype=torch.long),
+        sample=True,
+        temperature=1.0,
+        decode_steps=TILE37_COUNT * (BUCKET_COUNT - 1),
+    )
+
+    assert seen_batch_sizes == [2, 1]
+    assert allocation.shape == (2, BUCKET_COUNT, TILE37_COUNT)
+
+
+def test_belief_cross_attention_cache_index_selects_rows():
+    key = torch.arange(3 * 2 * 4 * 5).reshape(3, 2, 4, 5)
+    value = key + 1000
+    attention_mask = torch.tensor(
+        [
+            [[[-1, 0, 0, 0]]],
+            [[[0, -1, 0, 0]]],
+            [[[0, 0, -1, 0]]],
+        ],
+        dtype=torch.bool,
+    )
+    cache = CrossAttentionKVCache(key=key, value=value, attention_mask=attention_mask)
+    row_indices = torch.tensor([2, 0])
+
+    indexed = JointHiddenAllocationSampler._index_cross_attention_cache((cache,), row_indices)
+
+    assert indexed is not None
+    assert torch.equal(indexed[0].key, key.index_select(0, row_indices))
+    assert torch.equal(indexed[0].value, value.index_select(0, row_indices))
+    assert indexed[0].attention_mask is not None
+    assert torch.equal(indexed[0].attention_mask, attention_mask.index_select(0, row_indices))
 
 
 def test_belief_dense_cell_updates_match_flat_updates():

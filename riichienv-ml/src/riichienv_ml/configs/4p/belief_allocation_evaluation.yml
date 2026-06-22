@@ -3,15 +3,15 @@ belief_allocation_evaluation:
     n_players: 4
     replay_rule: tenhou
   input_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
-  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52
-  report_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52/report.md
-  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52/summary.json
-  decisions_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52/decisions.csv
-  opponents_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52/opponents.csv
-  opponent_state_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52/opponent_state.csv
-  opponent_discard_count_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52/opponent_discard_count.csv
-  opponent_state_discard_count_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52/opponent_state_discard_count.csv
-  shanten_distribution_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test52/shanten_distributions.csv
+  output_dir: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53
+  report_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53/report.md
+  summary_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53/summary.json
+  decisions_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53/decisions.csv
+  opponents_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53/opponents.csv
+  opponent_state_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53/opponent_state.csv
+  opponent_discard_count_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53/opponent_discard_count.csv
+  opponent_state_discard_count_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53/opponent_state_discard_count.csv
+  shanten_distribution_csv_path: /home/naoyuki/mahjong01/RiichiEnv/data/belief_allocation_evaluation/test53/shanten_distributions.csv
   model_path: /home/naoyuki/mahjong01/RiichiEnv/models/belief_sampler/test28/model.pth
   device: cuda
   num_logs: 1000
@@ -46,3 +46,4 @@ belief_allocation_evaluation:
     denoise_dim_feedforward: 512
     decode_steps: 111
     confidence_method: max_prob
+    active_row_compaction: true
