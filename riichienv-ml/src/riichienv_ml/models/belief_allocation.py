@@ -1595,7 +1595,7 @@ class JointHiddenAllocationSampler(nn.Module):
 
     def _sample_and_apply_dense_cell_step(
         self,
-        neural_logits_cells: torch.Tensor,
+        logits_cells: torch.Tensor,
         state: AllocationDecodeState,
         token: torch.Tensor,
         tile37: torch.Tensor,
@@ -1608,16 +1608,7 @@ class JointHiddenAllocationSampler(nn.Module):
         batch_offsets = self._decode_batch_offsets(batch_indices)
         state_index = batch_offsets.state + token
         with _profile_range("belief/cell_lookup"):
-            cell_neural_logits = neural_logits_cells.index_select(0, state_index)
-        with _profile_range("belief/cell_legality"):
-            cell_logits, _cell_feasible = self._apply_prior_and_legality_for_cells(
-                cell_neural_logits,
-                state.tile_remaining,
-                state.seat_remaining,
-                state.is_masked,
-                tile37,
-                opponent,
-            )
+            cell_logits = logits_cells.index_select(0, state_index)
         with _profile_range("belief/cell_sample"):
             if sample:
                 cell_probs = F.softmax((cell_logits / temp).float(), dim=1)
@@ -1721,16 +1712,13 @@ class JointHiddenAllocationSampler(nn.Module):
                     shanten_classes=active.shanten_classes,
                     cross_attention_cache=active.cross_attention_cache,
                 )
-                neural_logits_cells = neural_logits.reshape(
-                    active_count * _ALLOCATION_TOKEN_COUNT,
-                    _COUNT_CANDIDATES,
-                )
                 logits, feasible = self._apply_prior_and_legality(
                     neural_logits,
                     active.state.tile_remaining,
                     active.state.seat_remaining,
                     active.state.is_masked,
                 )
+                logits_cells = logits.reshape(active_count * _ALLOCATION_TOKEN_COUNT, _COUNT_CANDIDATES)
                 with _profile_range("belief/confidence_order"):
                     probs = F.softmax((logits / temp).float(), dim=-1)
                     confidence = self._confidence(probs, self.confidence_method, feasible)
@@ -1741,7 +1729,7 @@ class JointHiddenAllocationSampler(nn.Module):
                     tile37 = token_lookup.tile37.index_select(0, token)
                     opponent = token_lookup.opponent.index_select(0, token)
                     self._sample_and_apply_dense_cell_step(
-                        neural_logits_cells,
+                        logits_cells,
                         active.state,
                         token,
                         tile37,
@@ -1836,16 +1824,13 @@ class JointHiddenAllocationSampler(nn.Module):
                                 shanten_classes=shanten_classes,
                                 cross_attention_cache=cross_attention_cache,
                             )
-                            neural_logits_cells = neural_logits.reshape(
-                                batch_size * _ALLOCATION_TOKEN_COUNT,
-                                _COUNT_CANDIDATES,
-                            )
                             logits, feasible = self._apply_prior_and_legality(
                                 neural_logits,
                                 state.tile_remaining,
                                 state.seat_remaining,
                                 state.is_masked,
                             )
+                            logits_cells = logits.reshape(batch_size * _ALLOCATION_TOKEN_COUNT, _COUNT_CANDIDATES)
                             with _profile_range("belief/confidence_order"):
                                 probs = F.softmax((logits / temp).float(), dim=-1)
                                 confidence = self._confidence(probs, self.confidence_method, feasible)
@@ -1856,7 +1841,7 @@ class JointHiddenAllocationSampler(nn.Module):
                                 tile37 = token_lookup.tile37.index_select(0, token)
                                 opponent = token_lookup.opponent.index_select(0, token)
                                 self._sample_and_apply_dense_cell_step(
-                                    neural_logits_cells,
+                                    logits_cells,
                                     state,
                                     token,
                                     tile37,
