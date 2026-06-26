@@ -43,7 +43,7 @@ class SequenceFeatureEncoder:
 
     DEALER_DIMS = 4
 
-    PLAYER_INFO_DIMS = (4, 2, 5, 13, 13)
+    PLAYER_INFO_DIMS = (4, 2, 5, 21, 21)
     PLAYER_INFO_TOKENS = 4
     PLAYER_INFO_WIDTH = len(PLAYER_INFO_DIMS)
 

@@ -173,8 +173,8 @@ Each row is:
 | `relative_seat` | 0=self, 1=shimocha, 2=toimen, 3=kamicha | row owner |
 | `riichi_active` | 0=no, 1=yes | `riichi_declared || riichi_stage` |
 | `meld_count` | 0-4 | current meld count, including closed kan; kakan does not add a second meld |
-| `discard_count` | 0-12 | all discards, clipped at 12 |
-| `tedashi_count` | 0-12 | hand discards, clipped at 12 |
+| `discard_count` | 0-20 | all discards, clipped at 20 |
+| `tedashi_count` | 0-20 | hand discards, clipped at 20 |
 
 For `tedashi_count`, a discard with MJAI `tsumogiri=false` is counted as tedashi.
 Chi and pon are followed by a discard without an intervening draw, so their post-call discard is naturally encoded as tedashi. Kans are followed by a rinshan draw; the subsequent discard is treated as a normal drawn-turn discard. External MJAI logs are unchanged; these rows are internal observation features derived from public state.
@@ -562,7 +562,7 @@ for pid, obs in obs_dict.items():
 SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 261
 SequenceFeatureEncoder.MAX_SPARSE_LEN     # 8
 SequenceFeatureEncoder.DEALER_DIMS         # 4
-SequenceFeatureEncoder.PLAYER_INFO_DIMS    # (4, 2, 5, 13, 13)
+SequenceFeatureEncoder.PLAYER_INFO_DIMS    # (4, 2, 5, 21, 21)
 SequenceFeatureEncoder.PLAYER_INFO_TOKENS  # 4
 SequenceFeatureEncoder.PLAYER_INFO_WIDTH   # 5
 SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 16
