@@ -670,7 +670,7 @@ class TransformerActorCritic(nn.Module):
         # Vocab sizes (from SequenceFeatureEncoder)
         sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,  # 261
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 260
-        player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,13,13)
+        player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,21,21)
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
         visible_tile_count_dims: tuple = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS,  # (37,5)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,80,3,3,5)

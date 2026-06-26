@@ -421,7 +421,7 @@ def test_sequence_feature_encoder_includes_player_stats():
     events.extend({"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": False} for _ in range(2))
     events.append({"type": "dahai", "actor": 0, "pai": "2m", "tsumogiri": True})
     events.extend({"type": "dahai", "actor": 1, "pai": "3m", "tsumogiri": False} for _ in range(2))
-    events.extend({"type": "dahai", "actor": 3, "pai": "4m", "tsumogiri": False} for _ in range(13))
+    events.extend({"type": "dahai", "actor": 3, "pai": "4m", "tsumogiri": False} for _ in range(21))
 
     obs = Observation(
         2,
@@ -435,7 +435,7 @@ def test_sequence_feature_encoder_includes_player_stats():
                 Meld(MeldType.Kakan, [116, 117, 118, 119], True, 1, 116),
             ],
         ],
-        [[0, 4, 8], [12, 16], [], list(range(13))],
+        [[0, 4, 8], [12, 16], [], list(range(21))],
         [],
         [25000, 25000, 25000, 25000],
         [False, True, False, False],
@@ -463,7 +463,7 @@ def test_sequence_feature_encoder_includes_player_stats():
     )
     assert features["player_stats"].tolist() == [
         [0, 0, 0, 0, 0],
-        [1, 0, 2, 12, 12],
+        [1, 0, 2, 20, 20],
         [2, 0, 1, 3, 2],
         [3, 1, 0, 2, 2],
     ]

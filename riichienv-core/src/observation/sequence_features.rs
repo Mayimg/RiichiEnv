@@ -28,7 +28,7 @@ pub const DEALER_DIMS: u16 = 4;
 /// Player summary tuple dimensions:
 /// (relative_seat, riichi_active, meld_count, discard_count, tedashi_count).
 #[allow(dead_code)]
-pub const PLAYER_INFO_DIMS: [u16; 5] = [4, 2, 5, 13, 13];
+pub const PLAYER_INFO_DIMS: [u16; 5] = [4, 2, 5, 21, 21];
 #[allow(dead_code)]
 pub const PLAYER_INFO_TOKENS: usize = 4;
 #[allow(dead_code)]
@@ -123,7 +123,7 @@ const PROG_TYPE_ANKAN: u16 = 41;
 const PROG_TYPE_KAKAN: u16 = 42;
 const PROG_TYPE_DORA_OFFSET: u16 = 43;
 const PLAYER_MELD_COUNT_CAP: u16 = 4;
-const PLAYER_DISCARD_COUNT_CAP: u16 = 12;
+const PLAYER_DISCARD_COUNT_CAP: u16 = 20;
 
 fn normalize_score(score: i32) -> f32 {
     (score as f32 - SCORE_NORM_BASE) / SCORE_NORM_SCALE
@@ -539,7 +539,7 @@ impl Observation {
     ///
     /// Each row is `(relative_seat, riichi_active, meld_count, discard_count, tedashi_count)`.
     /// Counts are clipped to the embedding vocabularies: meld count 0-4, discard
-    /// and tedashi counts 0-12. `riichi_active` includes the transient reach
+    /// and tedashi counts 0-20. `riichi_active` includes the transient reach
     /// stage between a `reach` event and the committing discard.
     pub fn encode_seq_player_stats(&self) -> Vec<[u16; PLAYER_INFO_WIDTH]> {
         let mut out = Vec::with_capacity(PLAYER_INFO_TOKENS);
@@ -1405,7 +1405,7 @@ mod tests {
                     ),
                 ],
             ],
-            [vec![0, 4, 8], vec![12, 16], vec![], (0..13).collect()],
+            [vec![0, 4, 8], vec![12, 16], vec![], (0..21).collect()],
             vec![],
             [25000, 25000, 25000, 25000],
             [false, true, false, false],
@@ -1429,14 +1429,14 @@ mod tests {
             vec![true, false, true],
             vec![true, true],
             vec![],
-            vec![true; 13],
+            vec![true; 21],
         ];
 
         assert_eq!(
             obs.encode_seq_player_stats(),
             vec![
                 [0, 0, 0, 0, 0],
-                [1, 1, 2, 12, 12],
+                [1, 1, 2, 20, 20],
                 [2, 0, 1, 3, 2],
                 [3, 1, 0, 2, 2],
             ]
