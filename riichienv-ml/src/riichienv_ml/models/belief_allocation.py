@@ -566,7 +566,6 @@ class BeliefObservationEncoder(TransformerActorCritic):
             prog_meld_type,
             seat_other_table,
         )
-        prog_emb = prog_emb + self._progression_pe(prog_len, device, prog_emb.dtype)
 
         cls = self.cls_token.expand(batch_size, -1, -1)
         tokens = torch.cat(
@@ -621,7 +620,14 @@ class BeliefObservationEncoder(TransformerActorCritic):
             dim=1,
         )
 
-        output = self.transformer(tokens, src_key_padding_mask=pad_mask)
+        prog_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT + belief_extra_len
+        output = self._transformer_with_progression_bias(
+            tokens,
+            pad_mask,
+            prog,
+            prog_mask,
+            prog_offset=prog_offset,
+        )
         output = self.final_norm(output)
 
         cls_out = output[:, 0]
