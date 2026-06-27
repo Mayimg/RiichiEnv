@@ -780,16 +780,114 @@ def test_transformer_progression_discard_clock_uses_exclusive_prefix():
     )
     prog_mask = torch.ones(1, 5, dtype=torch.bool)
 
-    clock, total = model._progression_discard_clock(progression, prog_mask)
+    clock, total, player_clock, player_total = model._progression_discard_clock(progression, prog_mask)
     dist = clock[:, None, :] - clock[:, :, None]
 
     assert clock.tolist() == [[0, 1, 1, 1, 1]]
     assert total.tolist() == [2]
+    assert player_clock.tolist() == [
+        [
+            [0, 0, 0, 0],
+            [1, 0, 0, 0],
+            [1, 0, 0, 0],
+            [1, 0, 0, 0],
+            [1, 0, 0, 0],
+        ]
+    ]
+    assert player_total.tolist() == [[1, 0, 0, 1]]
     assert dist[0, 1, 0].item() == -1  # a -> s
     assert dist[0, 0, 1].item() == 1  # s -> a
     assert dist[0, 1, 4].item() == 0  # a -> t
     assert dist[0, 4, 1].item() == 0  # t -> a
     assert torch.equal(torch.diagonal(dist[0]), torch.zeros(5, dtype=torch.long))
+
+
+def test_transformer_progression_player_discard_clock_uses_actor_exclusive_prefix():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    progression = torch.tensor(
+        [
+            [
+                [0, 1, 0, 0, 4],  # actor 0 discard
+                [1, 38, 2, 2, 0],  # actor 1 call
+                [1, 2, 0, 0, 4],  # actor 1 discard
+                [2, 3, 0, 0, 4],  # actor 2 discard
+                [1, 4, 0, 0, 4],  # actor 1 later discard
+            ]
+        ],
+        dtype=torch.long,
+    )
+    prog_mask = torch.ones(1, 5, dtype=torch.bool)
+
+    clock, total, player_clock, player_total = model._progression_discard_clock(progression, prog_mask)
+
+    assert clock.tolist() == [[0, 1, 1, 2, 3]]
+    assert total.tolist() == [4]
+    assert player_clock.tolist() == [
+        [
+            [0, 0, 0, 0],
+            [1, 0, 0, 0],
+            [1, 0, 0, 0],
+            [1, 1, 0, 0],
+            [1, 1, 1, 0],
+        ]
+    ]
+    assert player_total.tolist() == [[1, 2, 1, 0]]
+    actor1_clock = player_clock[:, :, 1]
+    actor1_dist = actor1_clock[:, None, :] - actor1_clock[:, :, None]
+    assert actor1_dist[0, 1, 2].item() == 0  # call -> its following discard
+    assert actor1_dist[0, 1, 4].item() == 1  # call -> actor 1 later discard
+
+
+def test_transformer_progression_player_discard_clock_handles_batched_actor_timelines():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    progression = torch.tensor(
+        [
+            [
+                [0, 1, 0, 0, 4],
+                [1, 2, 0, 0, 4],
+                [1, 3, 0, 0, 4],
+            ],
+            [
+                [2, 1, 0, 0, 4],
+                [2, 2, 0, 0, 4],
+                [0, 3, 0, 0, 4],
+            ],
+        ],
+        dtype=torch.long,
+    )
+    prog_mask = torch.ones(2, 3, dtype=torch.bool)
+
+    clock, total, player_clock, player_total = model._progression_discard_clock(progression, prog_mask)
+
+    assert clock.tolist() == [[0, 1, 2], [0, 1, 2]]
+    assert total.tolist() == [3, 3]
+    assert player_total.tolist() == [[1, 2, 0, 0], [1, 0, 2, 0]]
+    assert player_clock.tolist() == [
+        [
+            [0, 0, 0, 0],
+            [1, 0, 0, 0],
+            [1, 1, 0, 0],
+        ],
+        [
+            [0, 0, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 2, 0],
+        ],
+    ]
 
 
 def test_transformer_progression_attention_bias_targets_progression_keys_only():
@@ -805,6 +903,8 @@ def test_transformer_progression_attention_bias_targets_progression_keys_only():
     with torch.no_grad():
         model.progression_relative_bias.zero_()
         model.progression_recency_bias.zero_()
+        model.progression_player_relative_bias.zero_()
+        model.progression_player_recency_bias.zero_()
         model.progression_relative_bias[0] = torch.arange(7, dtype=torch.float32)
         model.progression_recency_bias[0] = 100 + torch.arange(4, dtype=torch.float32)
 
@@ -840,6 +940,59 @@ def test_transformer_progression_attention_bias_targets_progression_keys_only():
     assert head0[0, 1].item() == 0  # non-progression pairs have no bias
 
 
+def test_transformer_progression_attention_bias_adds_key_actor_player_clock():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        progression_relative_position_cap=3,
+        progression_player_relative_position_cap=2,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    with torch.no_grad():
+        model.progression_relative_bias.zero_()
+        model.progression_recency_bias.zero_()
+        model.progression_player_relative_bias.zero_()
+        model.progression_player_recency_bias.zero_()
+        model.progression_player_relative_bias[0, 0] = 20 + torch.arange(5, dtype=torch.float32)
+        model.progression_player_relative_bias[1, 0] = 10 + torch.arange(5, dtype=torch.float32)
+        model.progression_player_recency_bias[1, 0] = 100 + torch.arange(3, dtype=torch.float32)
+
+    progression = torch.tensor(
+        [
+            [
+                [0, 1, 0, 0, 4],  # actor 0 discard
+                [1, 38, 2, 2, 0],  # actor 1 call
+                [1, 2, 0, 0, 4],  # actor 1 discard
+                [2, 3, 0, 0, 4],  # actor 2 discard
+                [1, 4, 0, 0, 4],  # actor 1 later discard
+                [4, 43, 2, 2, 4],  # actorless dora reveal
+            ]
+        ],
+        dtype=torch.long,
+    )
+    prog_mask = torch.ones(1, 6, dtype=torch.bool)
+
+    bias = model._progression_attention_bias(
+        progression,
+        prog_mask,
+        total_len=8,
+        prog_offset=2,
+        dtype=torch.float32,
+    )
+    assert bias is not None
+    head0 = bias[0]
+
+    assert head0[3, 4].item() == 12  # actor 1 call -> following actor 1 discard, bucket 0
+    assert head0[3, 6].item() == 13  # actor 1 call -> later actor 1 discard, bucket +1
+    assert head0[6, 3].item() == 11  # later actor 1 discard -> actor 1 call, bucket -1
+    assert head0[3, 2].item() == 21  # actor 1 call -> actor 0 discard, actor 0 bucket -1
+    assert head0[3, 7].item() == 0  # actorless dora key receives no player-specific bias
+    assert head0[0, 6].item() == 101  # non-progression query uses actor 1 recency bucket -1
+
+
 def test_transformer_progression_attention_bias_zeroes_padded_keys():
     model = TransformerPolicyNetwork(
         d_model=64,
@@ -853,6 +1006,8 @@ def test_transformer_progression_attention_bias_zeroes_padded_keys():
     with torch.no_grad():
         model.progression_relative_bias.fill_(1.0)
         model.progression_recency_bias.fill_(1.0)
+        model.progression_player_relative_bias.fill_(1.0)
+        model.progression_player_recency_bias.fill_(1.0)
 
     progression = torch.tensor(
         [
@@ -966,8 +1121,12 @@ def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
     assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
     assert model.progression_relative_bias.shape == (4, 121)
     assert model.progression_recency_bias.shape == (4, 61)
+    assert model.progression_player_relative_bias.shape == (4, 4, 31)
+    assert model.progression_player_recency_bias.shape == (4, 4, 16)
     assert torch.count_nonzero(model.progression_relative_bias).item() == 0
     assert torch.count_nonzero(model.progression_recency_bias).item() == 0
+    assert torch.count_nonzero(model.progression_player_relative_bias).item() == 0
+    assert torch.count_nonzero(model.progression_player_recency_bias).item() == 0
 
     winner_seats = torch.arange(SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS).unsqueeze(0).expand(2, -1)
     seat_emb = model.relative_seat_embed(winner_seats, _SEAT_ROLE_AGARI_WINNER, out="model")

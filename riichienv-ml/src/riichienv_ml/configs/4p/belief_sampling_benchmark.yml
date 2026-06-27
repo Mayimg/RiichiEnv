@@ -34,6 +34,8 @@ belief_sampling_benchmark:
     num_layers: 4
     dim_feedforward: 1024
     dropout: 0.1
+    progression_relative_position_cap: 60
+    progression_player_relative_position_cap: 15
     denoise_num_layers: 3
     denoise_dim_feedforward: 512
     decode_steps: 111

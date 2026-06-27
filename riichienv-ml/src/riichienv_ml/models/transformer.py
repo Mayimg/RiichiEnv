@@ -102,6 +102,7 @@ _SEAT_ROLE_AGARI_WINNER = 6
 _SEAT_ROLE_PLAYER_INFO = 7
 _SEAT_NUM_ROLES = 8
 _SEAT_PAD_OR_NA = 4
+_PLAYER_COUNT = 4
 
 _ROUND_WIND_FLAG_YES = 0
 _ROUND_WIND_FLAG_NO = 1
@@ -668,6 +669,7 @@ class TransformerActorCritic(nn.Module):
         d_type: int = 96,  # type field embedding dim
         d_other: int = 32,  # other field embedding dim
         progression_relative_position_cap: int = 60,
+        progression_player_relative_position_cap: int = 15,
         # Accepted for old configs; sequence lengths are now dynamic.
         max_prog_len: int | None = None,
         max_cand_len: int | None = None,
@@ -691,6 +693,10 @@ class TransformerActorCritic(nn.Module):
         if self.progression_relative_position_cap < 0:
             raise ValueError("progression_relative_position_cap must be non-negative")
         self._RPB = self.progression_relative_position_cap * 2 + 1
+        self.progression_player_relative_position_cap = int(progression_player_relative_position_cap)
+        if self.progression_player_relative_position_cap < 0:
+            raise ValueError("progression_player_relative_position_cap must be non-negative")
+        self._PLAYER_RPB = self.progression_player_relative_position_cap * 2 + 1
 
         # V1 backward compat: uniform d_sub overrides asymmetric dims
         if d_sub is not None:
@@ -785,6 +791,12 @@ class TransformerActorCritic(nn.Module):
         self.progression_recency_bias = nn.Parameter(
             torch.zeros(self.nhead, self.progression_relative_position_cap + 1)
         )
+        self.progression_player_relative_bias = nn.Parameter(
+            torch.zeros(_PLAYER_COUNT, self.nhead, self._PLAYER_RPB)
+        )
+        self.progression_player_recency_bias = nn.Parameter(
+            torch.zeros(_PLAYER_COUNT, self.nhead, self.progression_player_relative_position_cap + 1)
+        )
 
         # --- Transformer encoder (pre-LN for stability) ---
         encoder_layer = nn.TransformerEncoderLayer(
@@ -844,24 +856,34 @@ class TransformerActorCritic(nn.Module):
         self,
         prog: torch.Tensor,
         prog_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return exclusive discard-count clocks for progression rows.
 
         A discard token is in the same clock tick as non-discard tokens that
         precede it after the previous discard. This makes call/kan/dora rows
         positionally close to the following discard while same-position
-        distances remain zero.
+        distances remain zero. Player clocks use the same rule, but advance
+        only on discards by the corresponding actor.
         """
+        batch_size = int(prog.shape[0])
         if prog.shape[1] == 0:
-            empty = torch.empty(prog.shape[0], 0, dtype=torch.long, device=prog.device)
-            total = torch.zeros(prog.shape[0], dtype=torch.long, device=prog.device)
-            return empty, total
+            empty = torch.empty(batch_size, 0, dtype=torch.long, device=prog.device)
+            empty_player = torch.empty(batch_size, 0, _PLAYER_COUNT, dtype=torch.long, device=prog.device)
+            total = torch.zeros(batch_size, dtype=torch.long, device=prog.device)
+            player_total = torch.zeros(batch_size, _PLAYER_COUNT, dtype=torch.long, device=prog.device)
+            return empty, total, empty_player, player_total
         action_kind = self.prog_type_action_kind[prog[:, :, 1].clamp(min=0, max=self.prog_type_action_kind.numel() - 1)]
         is_discard = (action_kind == _ACTION_KIND_DISCARD) & prog_mask
         increments = is_discard.long()
         clock = increments.cumsum(dim=1) - increments
         total = increments.sum(dim=1)
-        return clock, total
+
+        actor = prog[:, :, 0].clamp(min=0, max=_SEAT_PAD_OR_NA)
+        player_ids = torch.arange(_PLAYER_COUNT, dtype=torch.long, device=prog.device).view(1, 1, _PLAYER_COUNT)
+        player_increments = (is_discard[:, :, None] & (actor[:, :, None] == player_ids)).long()
+        player_clock = player_increments.cumsum(dim=1) - player_increments
+        player_total = player_increments.sum(dim=1)
+        return clock, total, player_clock, player_total
 
     @staticmethod
     def _additive_padding_mask(pad_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
@@ -883,7 +905,7 @@ class TransformerActorCritic(nn.Module):
 
         batch_size = int(prog.shape[0])
         device = prog.device
-        prog_clock, total_clock = self._progression_discard_clock(prog, prog_mask)
+        prog_clock, total_clock, player_clock, player_total_clock = self._progression_discard_clock(prog, prog_mask)
 
         token_clock = total_clock[:, None].expand(batch_size, total_len).clone()
         token_clock[:, prog_offset : prog_offset + prog_len] = prog_clock
@@ -900,6 +922,49 @@ class TransformerActorCritic(nn.Module):
         query_is_prog = torch.zeros(batch_size, total_len, dtype=torch.bool, device=device)
         query_is_prog[:, prog_offset : prog_offset + prog_len] = prog_mask
         values = torch.where(query_is_prog[:, :, None, None], prog_query_values, recency_values)
+
+        key_actor = prog[:, :, 0].clamp(min=0, max=_SEAT_PAD_OR_NA)
+        key_actor_is_player = (key_actor < _PLAYER_COUNT) & prog_mask
+        key_actor_index = key_actor.clamp(max=_PLAYER_COUNT - 1)
+
+        token_player_clock = player_total_clock[:, None, :].expand(batch_size, total_len, _PLAYER_COUNT).clone()
+        token_player_clock[:, prog_offset : prog_offset + prog_len, :] = player_clock
+        key_player_clock = player_clock.gather(2, key_actor_index[:, :, None]).squeeze(2)
+        query_player_clock = token_player_clock.gather(
+            2,
+            key_actor_index[:, None, :].expand(batch_size, total_len, prog_len),
+        )
+        player_dist = key_player_clock[:, None, :] - query_player_clock
+
+        player_cap = self.progression_player_relative_position_cap
+        player_buckets = player_dist.clamp(min=-player_cap, max=player_cap) + player_cap
+        player_recency_buckets = player_dist.clamp(min=-player_cap, max=0) + player_cap
+
+        player_bucket_count = self._PLAYER_RPB
+        player_recency_bucket_count = self.progression_player_relative_position_cap + 1
+        player_prog_table = self.progression_player_relative_bias.permute(0, 2, 1).reshape(
+            _PLAYER_COUNT * player_bucket_count,
+            self.nhead,
+        )
+        player_recency_table = self.progression_player_recency_bias.permute(0, 2, 1).reshape(
+            _PLAYER_COUNT * player_recency_bucket_count,
+            self.nhead,
+        )
+        player_prog_indices = key_actor_index[:, None, :] * player_bucket_count + player_buckets
+        player_recency_indices = key_actor_index[:, None, :] * player_recency_bucket_count + player_recency_buckets
+        player_prog_values = F.embedding(player_prog_indices, player_prog_table)
+        player_recency_values = F.embedding(player_recency_indices, player_recency_table)
+        player_values = torch.where(
+            query_is_prog[:, :, None, None],
+            player_prog_values,
+            player_recency_values,
+        )
+        player_values = torch.where(
+            key_actor_is_player[:, None, :, None],
+            player_values,
+            torch.zeros_like(player_values),
+        )
+        values = values + player_values
         values = torch.where(prog_mask[:, None, :, None], values, torch.zeros_like(values))
 
         bias = torch.zeros(
