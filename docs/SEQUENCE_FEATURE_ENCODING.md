@@ -28,7 +28,7 @@ Progression and candidate groups stay variable-length for a single observation a
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes visible tile-count tokens with the shared tile embedding plus a count embedding shared by all tile types, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens. Sinusoidal positional encoding is applied only to progression tokens, starting at position 0 for the first progression row.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes visible tile-count tokens with the shared tile embedding plus a count embedding shared by all tile types, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens. Progression order is represented with a learned relative attention bias based on discard-count distance, not with absolute event-index positional embeddings.
 
 The feature vocabulary and external MJAI log format are independent of the projection implementation described here. The optimized transformer follows the encoded feature groups and vocabularies listed in this document, but evaluates several projections with fixed-shape table/gather operations to reduce small CUDA kernels and GPU-to-CPU synchronization points.
 
@@ -449,6 +449,35 @@ Batch padding uses `(4, 0, 2, 2, 4)` and is ignored by `prog_mask`.
 - `tsumo`, `reach_accepted` events are **not** included in progression
 - `actor_rel` and `target_rel` are relative to the observing player, not to the event actor.
 - Dora reveal rows use the external MJAI `dora_marker` tile. They do not change the MJAI log format; this is only an internal sequence-feature expansion.
+
+### Relative Position Encoding
+
+Transformer models that consume sequence features use a learned relative attention
+bias for progression history. The position clock is the number of discard rows
+strictly before a token:
+
+```text
+is_discard[j] = 1 if progression[j].type is in 1..37 else 0
+clock[j] = sum_{i < j} is_discard[i]
+distance(query q, key k) = clock[k] - clock[q]
+```
+
+Progression queries attending to progression keys use a signed learned table
+with distances clipped to `[-60, 60]`. Current-state, CLS, belief, and candidate
+queries attending to progression keys use a separate recency table with
+distances clipped to `[-60, 0]`, because these query tokens are anchored at the
+current discard clock and therefore never attend to a future progression clock.
+Distances with key tokens outside the progression block receive no
+relative-position bias.
+
+This exclusive-prefix definition keeps same-token distance at `0`. If a discard
+row `s` is followed by non-discard rows `a, b, c` and then the next discard row
+`t`, then `a/b/c -> s` has distance `-1`, `s -> a/b/c` has distance `+1`, and
+`a/b/c <-> t` has distance `0`. This intentionally groups call/kan/dora rows
+with the following discard decision rather than with the discard they responded
+to. In riichi mahjong, chi/pon/kan actions usually imply the actor's immediate
+post-call discard plan, while the preceding discard is an observed trigger from
+another actor.
 
 ### Rust API
 

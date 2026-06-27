@@ -15,6 +15,9 @@ with a shared projection and the shared relative-seat embedding.
 Visible tile-count tokens embed each tile37 id through the shared tile embedding
 and combine it with a count embedding shared by all tile types.
 
+Progression order is encoded with learned relative attention bias over a
+discard-count clock. Absolute event-index positional embeddings are not used.
+
 Output: (logits, value) — same interface as ActorCriticNetwork.
 
 NOTE: Sanma (3-player) is not supported. The sparse/progression/candidate
@@ -664,6 +667,7 @@ class TransformerActorCritic(nn.Module):
         d_sub: int | None = None,  # V1 compat: if set, d_type=d_other=d_sub
         d_type: int = 96,  # type field embedding dim
         d_other: int = 32,  # other field embedding dim
+        progression_relative_position_cap: int = 60,
         # Accepted for old configs; sequence lengths are now dynamic.
         max_prog_len: int | None = None,
         max_cand_len: int | None = None,
@@ -679,9 +683,14 @@ class TransformerActorCritic(nn.Module):
     ):
         super().__init__()
         self.d_model = d_model
+        self.nhead = int(nhead)
         self.num_actions = num_actions
         self.policy_head_type = policy_head_type
         self.emit_value = emit_value
+        self.progression_relative_position_cap = int(progression_relative_position_cap)
+        if self.progression_relative_position_cap < 0:
+            raise ValueError("progression_relative_position_cap must be non-negative")
+        self._RPB = self.progression_relative_position_cap * 2 + 1
 
         # V1 backward compat: uniform d_sub overrides asymmetric dims
         if d_sub is not None:
@@ -769,9 +778,13 @@ class TransformerActorCritic(nn.Module):
         # --- Segment embeddings (8 groups: sparse / player / hand / visible-count / numeric / agari / prog / cand) ---
         self.segment_embed = nn.Embedding(8, d_model)
 
-        # --- Progression-only positional encoding (sinusoidal) ---
-        inv_freq = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        self.register_buffer("prog_pe_inv_freq", inv_freq, persistent=False)
+        # Progression relative attention bias, indexed by signed discard-clock distance.
+        self.progression_relative_bias = nn.Parameter(torch.zeros(self.nhead, self._RPB))
+        # Non-progression queries use a recency-only table. Distances are always
+        # non-positive because those queries are anchored at the current clock.
+        self.progression_recency_bias = nn.Parameter(
+            torch.zeros(self.nhead, self.progression_relative_position_cap + 1)
+        )
 
         # --- Transformer encoder (pre-LN for stability) ---
         encoder_layer = nn.TransformerEncoderLayer(
@@ -827,16 +840,97 @@ class TransformerActorCritic(nn.Module):
         self._init_weights()
 
     # ------------------------------------------------------------------
-    def _progression_pe(self, length: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        if length == 0:
-            return torch.empty(1, 0, self.d_model, device=device, dtype=dtype)
-        inv_freq = self.prog_pe_inv_freq.to(device=device)
-        pos = torch.arange(length, device=device, dtype=inv_freq.dtype).unsqueeze(1)
-        angles = pos * inv_freq.unsqueeze(0)
-        pe = torch.zeros(length, self.d_model, device=device, dtype=inv_freq.dtype)
-        pe[:, 0::2] = angles.sin()
-        pe[:, 1::2] = angles.cos()[:, : pe[:, 1::2].shape[1]]
-        return pe.to(dtype=dtype).unsqueeze(0)
+    def _progression_discard_clock(
+        self,
+        prog: torch.Tensor,
+        prog_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return exclusive discard-count clocks for progression rows.
+
+        A discard token is in the same clock tick as non-discard tokens that
+        precede it after the previous discard. This makes call/kan/dora rows
+        positionally close to the following discard while same-position
+        distances remain zero.
+        """
+        if prog.shape[1] == 0:
+            empty = torch.empty(prog.shape[0], 0, dtype=torch.long, device=prog.device)
+            total = torch.zeros(prog.shape[0], dtype=torch.long, device=prog.device)
+            return empty, total
+        action_kind = self.prog_type_action_kind[prog[:, :, 1].clamp(min=0, max=self.prog_type_action_kind.numel() - 1)]
+        is_discard = (action_kind == _ACTION_KIND_DISCARD) & prog_mask
+        increments = is_discard.long()
+        clock = increments.cumsum(dim=1) - increments
+        total = increments.sum(dim=1)
+        return clock, total
+
+    @staticmethod
+    def _additive_padding_mask(pad_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        out = torch.zeros(pad_mask.shape, dtype=dtype, device=pad_mask.device)
+        return out.masked_fill(pad_mask, torch.finfo(dtype).min)
+
+    def _progression_attention_bias(
+        self,
+        prog: torch.Tensor,
+        prog_mask: torch.Tensor,
+        *,
+        total_len: int,
+        prog_offset: int,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        prog_len = int(prog.shape[1])
+        if prog_len == 0:
+            return None
+
+        batch_size = int(prog.shape[0])
+        device = prog.device
+        prog_clock, total_clock = self._progression_discard_clock(prog, prog_mask)
+
+        token_clock = total_clock[:, None].expand(batch_size, total_len).clone()
+        token_clock[:, prog_offset : prog_offset + prog_len] = prog_clock
+        dist = prog_clock[:, None, :] - token_clock[:, :, None]
+        cap = self.progression_relative_position_cap
+        buckets = dist.clamp(min=-cap, max=cap) + cap
+        recency_buckets = dist.clamp(min=-cap, max=0) + cap
+
+        prog_table = self.progression_relative_bias.transpose(0, 1).contiguous()
+        recency_table = self.progression_recency_bias.transpose(0, 1).contiguous()
+        prog_query_values = F.embedding(buckets, prog_table)
+        recency_values = F.embedding(recency_buckets, recency_table)
+
+        query_is_prog = torch.zeros(batch_size, total_len, dtype=torch.bool, device=device)
+        query_is_prog[:, prog_offset : prog_offset + prog_len] = prog_mask
+        values = torch.where(query_is_prog[:, :, None, None], prog_query_values, recency_values)
+        values = torch.where(prog_mask[:, None, :, None], values, torch.zeros_like(values))
+
+        bias = torch.zeros(
+            batch_size,
+            total_len,
+            total_len,
+            self.nhead,
+            dtype=values.dtype,
+            device=device,
+        )
+        bias[:, :, prog_offset : prog_offset + prog_len, :] = values
+        return bias.permute(0, 3, 1, 2).reshape(batch_size * self.nhead, total_len, total_len).to(dtype=dtype)
+
+    def _transformer_with_progression_bias(
+        self,
+        tokens: torch.Tensor,
+        pad_mask: torch.Tensor,
+        prog: torch.Tensor,
+        prog_mask: torch.Tensor,
+        *,
+        prog_offset: int,
+    ) -> torch.Tensor:
+        attn_bias = self._progression_attention_bias(
+            prog,
+            prog_mask,
+            total_len=int(tokens.shape[1]),
+            prog_offset=prog_offset,
+            dtype=tokens.dtype,
+        )
+        padding_mask = self._additive_padding_mask(pad_mask, tokens.dtype)
+        return self.transformer(tokens, mask=attn_bias, src_key_padding_mask=padding_mask)
 
     def _segment_ids(self, prog_len: int, cand_len: int, device: torch.device) -> torch.Tensor:
         return torch.cat(
@@ -1399,7 +1493,6 @@ class TransformerActorCritic(nn.Module):
             prog_meld_type,
             seat_other_table,
         )
-        prog_emb = prog_emb + self._progression_pe(prog_len, device, prog_emb.dtype)
 
         # Embed candidate tuples: (B, C, d)
         cand_emb = self._embed_candidates(
@@ -1465,7 +1558,14 @@ class TransformerActorCritic(nn.Module):
         )
 
         # Transformer
-        output = self.transformer(tokens, src_key_padding_mask=pad_mask)
+        prog_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT
+        output = self._transformer_with_progression_bias(
+            tokens,
+            pad_mask,
+            prog,
+            prog_mask,
+            prog_offset=prog_offset,
+        )
         output = self.final_norm(output)
 
         # CLS output is shared by policy and value heads.

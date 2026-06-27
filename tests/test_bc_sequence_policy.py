@@ -757,6 +757,150 @@ def test_transformer_tile_only_action_type_lookups_ignore_meld_patterns():
     assert model.cand_type_action_kind[44].item() == _ACTION_KIND_PAD
 
 
+def test_transformer_progression_discard_clock_uses_exclusive_prefix():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    progression = torch.tensor(
+        [
+            [
+                [0, 1, 0, 0, 4],  # discard s
+                [1, 38, 2, 2, 0],  # non-discard a
+                [4, 43, 2, 2, 4],  # non-discard b
+                [2, 39, 2, 2, 1],  # non-discard c
+                [3, 2, 0, 0, 4],  # discard t
+            ]
+        ],
+        dtype=torch.long,
+    )
+    prog_mask = torch.ones(1, 5, dtype=torch.bool)
+
+    clock, total = model._progression_discard_clock(progression, prog_mask)
+    dist = clock[:, None, :] - clock[:, :, None]
+
+    assert clock.tolist() == [[0, 1, 1, 1, 1]]
+    assert total.tolist() == [2]
+    assert dist[0, 1, 0].item() == -1  # a -> s
+    assert dist[0, 0, 1].item() == 1  # s -> a
+    assert dist[0, 1, 4].item() == 0  # a -> t
+    assert dist[0, 4, 1].item() == 0  # t -> a
+    assert torch.equal(torch.diagonal(dist[0]), torch.zeros(5, dtype=torch.long))
+
+
+def test_transformer_progression_attention_bias_targets_progression_keys_only():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        progression_relative_position_cap=3,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    with torch.no_grad():
+        model.progression_relative_bias.zero_()
+        model.progression_recency_bias.zero_()
+        model.progression_relative_bias[0] = torch.arange(7, dtype=torch.float32)
+        model.progression_recency_bias[0] = 100 + torch.arange(4, dtype=torch.float32)
+
+    progression = torch.tensor(
+        [
+            [
+                [0, 1, 0, 0, 4],
+                [1, 38, 2, 2, 0],
+                [4, 43, 2, 2, 4],
+                [2, 39, 2, 2, 1],
+                [3, 2, 0, 0, 4],
+            ]
+        ],
+        dtype=torch.long,
+    )
+    prog_mask = torch.ones(1, 5, dtype=torch.bool)
+
+    bias = model._progression_attention_bias(
+        progression,
+        prog_mask,
+        total_len=8,
+        prog_offset=2,
+        dtype=torch.float32,
+    )
+    assert bias is not None
+    head0 = bias[0]
+
+    assert head0[3, 2].item() == 2  # progression query a -> progression key s, bucket -1
+    assert head0[2, 3].item() == 4  # progression query s -> progression key a, bucket +1
+    assert head0[3, 6].item() == 3  # progression query a -> progression key t, bucket 0
+    assert head0[0, 3].item() == 102  # non-progression query -> progression key a, recency bucket -1
+    assert head0[2, 0].item() == 0  # progression query -> non-progression key has no bias
+    assert head0[0, 1].item() == 0  # non-progression pairs have no bias
+
+
+def test_transformer_progression_attention_bias_zeroes_padded_keys():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        progression_relative_position_cap=3,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    with torch.no_grad():
+        model.progression_relative_bias.fill_(1.0)
+        model.progression_recency_bias.fill_(1.0)
+
+    progression = torch.tensor(
+        [
+            [
+                [0, 1, 0, 0, 4],
+                [1, 38, 2, 2, 0],
+                [3, 2, 0, 0, 4],
+            ]
+        ],
+        dtype=torch.long,
+    )
+    prog_mask = torch.tensor([[True, True, False]])
+
+    bias = model._progression_attention_bias(
+        progression,
+        prog_mask,
+        total_len=6,
+        prog_offset=2,
+        dtype=torch.float32,
+    )
+    assert bias is not None
+    assert torch.count_nonzero(bias[:, :, 4]).item() == 0
+
+
+def test_transformer_relative_position_forward_handles_padding_and_empty_progression():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        dropout=0.0,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    padded = _dummy_sequence_batch(batch_size=2, prog_len=5, cand_len=3)
+    padded["progression"][:, :, 1] = torch.tensor([1, 38, 2, 39, 2])
+    padded["prog_mask"][:, 3:] = False
+
+    logits = model(padded)
+    assert logits.shape == (2, 3)
+    assert torch.isfinite(logits).all()
+
+    empty = _dummy_sequence_batch(batch_size=2, prog_len=0, cand_len=3)
+    empty_logits = model(empty)
+    assert empty_logits.shape == (2, 3)
+    assert torch.isfinite(empty_logits).all()
+
+
 def test_transformer_embedding_padding_rows_remain_zero_after_custom_init():
     model = TransformerPolicyNetwork(
         d_model=64,
@@ -820,7 +964,10 @@ def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
 
     assert emb.shape == (2, SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS, 64)
     assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
-    assert model._progression_pe(5, torch.device("cpu"), torch.float32).shape == (1, 5, 64)
+    assert model.progression_relative_bias.shape == (4, 121)
+    assert model.progression_recency_bias.shape == (4, 61)
+    assert torch.count_nonzero(model.progression_relative_bias).item() == 0
+    assert torch.count_nonzero(model.progression_recency_bias).item() == 0
 
     winner_seats = torch.arange(SequenceFeatureEncoder.AGARI_OVERTAKE_TOKENS).unsqueeze(0).expand(2, -1)
     seat_emb = model.relative_seat_embed(winner_seats, _SEAT_ROLE_AGARI_WINNER, out="model")
