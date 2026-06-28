@@ -470,8 +470,8 @@ anchored at the current discard clock and therefore never attend to a future
 progression clock. Distances with key tokens outside the progression block
 receive no relative-position bias.
 
-The model also adds a key-actor-specific player-local discard-clock bias. For
-each relative player seat `p`:
+The model also adds a shared player-local discard-clock bias. For each relative
+player seat `p`:
 
 ```text
 player_clock[p][j] =
@@ -486,12 +486,14 @@ p = progression[k].actor_rel
 player_distance(query q, key k) = player_clock[p][k] - player_clock[p][q]
 ```
 
-Progression queries use a signed player-local table with distances clipped to
-`[-15, 15]`. Current-state, CLS, belief, and candidate queries use a separate
-player-local recency table with distances clipped to `[-15, 0]`. These
-player-local biases are added to the global bias. Keys whose `actor_rel` is
-`4` (padding / not applicable, including dora reveal rows) receive only the
-global bias and no player-local bias.
+Progression queries use one shared signed player-local table with distances
+clipped to `[-15, 15]`. Current-state, CLS, belief, and candidate queries use a
+separate shared player-local recency table with distances clipped to `[-15, 0]`.
+These player-local biases are added to the global bias. The key actor selects
+which player's clock defines the distance, but the learned player-local table is
+shared across seats. Keys whose `actor_rel` is `4` (padding / not applicable,
+including dora reveal rows) receive only the global bias and no player-local
+bias.
 
 This exclusive-prefix definition keeps same-token distance at `0`. If a discard
 row `s` is followed by non-discard rows `a, b, c` and then the next discard row

@@ -956,9 +956,8 @@ def test_transformer_progression_attention_bias_adds_key_actor_player_clock():
         model.progression_recency_bias.zero_()
         model.progression_player_relative_bias.zero_()
         model.progression_player_recency_bias.zero_()
-        model.progression_player_relative_bias[0, 0] = 20 + torch.arange(5, dtype=torch.float32)
-        model.progression_player_relative_bias[1, 0] = 10 + torch.arange(5, dtype=torch.float32)
-        model.progression_player_recency_bias[1, 0] = 100 + torch.arange(3, dtype=torch.float32)
+        model.progression_player_relative_bias[0] = 10 + torch.arange(5, dtype=torch.float32)
+        model.progression_player_recency_bias[0] = 100 + torch.arange(3, dtype=torch.float32)
 
     progression = torch.tensor(
         [
@@ -988,7 +987,7 @@ def test_transformer_progression_attention_bias_adds_key_actor_player_clock():
     assert head0[3, 4].item() == 12  # actor 1 call -> following actor 1 discard, bucket 0
     assert head0[3, 6].item() == 13  # actor 1 call -> later actor 1 discard, bucket +1
     assert head0[6, 3].item() == 11  # later actor 1 discard -> actor 1 call, bucket -1
-    assert head0[3, 2].item() == 21  # actor 1 call -> actor 0 discard, actor 0 bucket -1
+    assert head0[3, 2].item() == 11  # actor 1 call -> actor 0 discard, actor 0 clock bucket -1
     assert head0[3, 7].item() == 0  # actorless dora key receives no player-specific bias
     assert head0[0, 6].item() == 101  # non-progression query uses actor 1 recency bucket -1
 
@@ -1121,8 +1120,8 @@ def test_transformer_embeds_agari_overtakes_as_winner_seat_tokens():
     assert model.agari_overtake_proj[0].in_features == SequenceFeatureEncoder.AGARI_OVERTAKE_TOKEN_DIM
     assert model.progression_relative_bias.shape == (4, 121)
     assert model.progression_recency_bias.shape == (4, 61)
-    assert model.progression_player_relative_bias.shape == (4, 4, 31)
-    assert model.progression_player_recency_bias.shape == (4, 4, 16)
+    assert model.progression_player_relative_bias.shape == (4, 31)
+    assert model.progression_player_recency_bias.shape == (4, 16)
     assert torch.count_nonzero(model.progression_relative_bias).item() == 0
     assert torch.count_nonzero(model.progression_recency_bias).item() == 0
     assert torch.count_nonzero(model.progression_player_relative_bias).item() == 0

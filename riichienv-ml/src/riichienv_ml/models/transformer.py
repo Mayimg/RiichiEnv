@@ -791,11 +791,9 @@ class TransformerActorCritic(nn.Module):
         self.progression_recency_bias = nn.Parameter(
             torch.zeros(self.nhead, self.progression_relative_position_cap + 1)
         )
-        self.progression_player_relative_bias = nn.Parameter(
-            torch.zeros(_PLAYER_COUNT, self.nhead, self._PLAYER_RPB)
-        )
+        self.progression_player_relative_bias = nn.Parameter(torch.zeros(self.nhead, self._PLAYER_RPB))
         self.progression_player_recency_bias = nn.Parameter(
-            torch.zeros(_PLAYER_COUNT, self.nhead, self.progression_player_relative_position_cap + 1)
+            torch.zeros(self.nhead, self.progression_player_relative_position_cap + 1)
         )
 
         # --- Transformer encoder (pre-LN for stability) ---
@@ -940,20 +938,10 @@ class TransformerActorCritic(nn.Module):
         player_buckets = player_dist.clamp(min=-player_cap, max=player_cap) + player_cap
         player_recency_buckets = player_dist.clamp(min=-player_cap, max=0) + player_cap
 
-        player_bucket_count = self._PLAYER_RPB
-        player_recency_bucket_count = self.progression_player_relative_position_cap + 1
-        player_prog_table = self.progression_player_relative_bias.permute(0, 2, 1).reshape(
-            _PLAYER_COUNT * player_bucket_count,
-            self.nhead,
-        )
-        player_recency_table = self.progression_player_recency_bias.permute(0, 2, 1).reshape(
-            _PLAYER_COUNT * player_recency_bucket_count,
-            self.nhead,
-        )
-        player_prog_indices = key_actor_index[:, None, :] * player_bucket_count + player_buckets
-        player_recency_indices = key_actor_index[:, None, :] * player_recency_bucket_count + player_recency_buckets
-        player_prog_values = F.embedding(player_prog_indices, player_prog_table)
-        player_recency_values = F.embedding(player_recency_indices, player_recency_table)
+        player_prog_table = self.progression_player_relative_bias.transpose(0, 1).contiguous()
+        player_recency_table = self.progression_player_recency_bias.transpose(0, 1).contiguous()
+        player_prog_values = F.embedding(player_buckets, player_prog_table)
+        player_recency_values = F.embedding(player_recency_buckets, player_recency_table)
         player_values = torch.where(
             query_is_prog[:, :, None, None],
             player_prog_values,
