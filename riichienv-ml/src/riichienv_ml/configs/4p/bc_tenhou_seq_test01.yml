@@ -31,5 +31,7 @@ bc:
     num_layers: 6
     dim_feedforward: 1536
     dropout: 0.1
+    progression_relative_position_cap: 60
+    progression_player_relative_position_cap: 15
     num_actions: 82
     policy_head_type: pointer

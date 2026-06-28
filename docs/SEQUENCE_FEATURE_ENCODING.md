@@ -452,23 +452,48 @@ Batch padding uses `(4, 0, 2, 2, 4)` and is ignored by `prog_mask`.
 
 ### Relative Position Encoding
 
-Transformer models that consume sequence features use a learned relative attention
-bias for progression history. The position clock is the number of discard rows
-strictly before a token:
+Transformer models that consume sequence features use learned relative attention
+biases for progression history. The global position clock is the number of
+discard rows, by any player, strictly before a token:
 
 ```text
 is_discard[j] = 1 if progression[j].type is in 1..37 else 0
-clock[j] = sum_{i < j} is_discard[i]
-distance(query q, key k) = clock[k] - clock[q]
+global_clock[j] = sum_{i < j} is_discard[i]
+global_distance(query q, key k) = global_clock[k] - global_clock[q]
 ```
 
 Progression queries attending to progression keys use a signed learned table
-with distances clipped to `[-60, 60]`. Current-state, CLS, belief, and candidate
-queries attending to progression keys use a separate recency table with
-distances clipped to `[-60, 0]`, because these query tokens are anchored at the
-current discard clock and therefore never attend to a future progression clock.
-Distances with key tokens outside the progression block receive no
-relative-position bias.
+with global distances clipped to `[-60, 60]`. Current-state, CLS, belief, and
+candidate queries attending to progression keys use a separate recency table
+with global distances clipped to `[-60, 0]`, because these query tokens are
+anchored at the current discard clock and therefore never attend to a future
+progression clock. Distances with key tokens outside the progression block
+receive no relative-position bias.
+
+The model also adds a shared player-local discard-clock bias. For each relative
+player seat `p`:
+
+```text
+player_clock[p][j] =
+    sum_{i < j} (is_discard[i] and progression[i].actor_rel == p)
+```
+
+For a progression key `k` whose `actor_rel` is one of `0..3`, the player-local
+bias uses only that key actor's clock:
+
+```text
+p = progression[k].actor_rel
+player_distance(query q, key k) = player_clock[p][k] - player_clock[p][q]
+```
+
+Progression queries use one shared signed player-local table with distances
+clipped to `[-15, 15]`. Current-state, CLS, belief, and candidate queries use a
+separate shared player-local recency table with distances clipped to `[-15, 0]`.
+These player-local biases are added to the global bias. The key actor selects
+which player's clock defines the distance, but the learned player-local table is
+shared across seats. Keys whose `actor_rel` is `4` (padding / not applicable,
+including dora reveal rows) receive only the global bias and no player-local
+bias.
 
 This exclusive-prefix definition keeps same-token distance at `0`. If a discard
 row `s` is followed by non-discard rows `a, b, c` and then the next discard row
@@ -478,6 +503,13 @@ with the following discard decision rather than with the discard they responded
 to. In riichi mahjong, chi/pon/kan actions usually imply the actor's immediate
 post-call discard plan, while the preceding discard is an observed trigger from
 another actor.
+
+The player-local clock preserves the same grouping on each actor's own timeline.
+For example, a chi/pon/kan row by player `p` and that player's following discard
+usually share the same `player_clock[p]` tick, even if other players act between
+them. This is intended to make attention to a particular player's history more
+direct, especially for hidden-allocation belief models that predict each
+opponent's concealed tiles.
 
 ### Rust API
 
