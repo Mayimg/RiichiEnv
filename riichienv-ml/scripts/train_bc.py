@@ -12,6 +12,7 @@ from pathlib import Path
 
 import torch
 import torch.multiprocessing
+from loguru import logger
 
 try:
     from dotenv import load_dotenv
@@ -43,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--label_smoothing", type=float, default=None)
+    parser.add_argument("--shuffle_buffer_files", type=int, default=None)
     parser.add_argument("--matmul_precision", choices=["highest", "high", "medium"], default=None)
     parser.add_argument("--num_blocks", type=int, default=None)
     parser.add_argument("--conv_channels", type=int, default=None)
@@ -59,6 +61,7 @@ def main():
     for field in [
         "data_glob", "val_data_glob", "grp_model", "load_model", "output", "device", "batch_size", "lr",
         "lr_min", "alpha", "gamma", "num_epochs", "num_workers", "limit", "label_smoothing", "matmul_precision",
+        "shuffle_buffer_files",
     ]:
         val = getattr(args, field, None)
         if val is not None:
@@ -76,6 +79,11 @@ def main():
 
     log_dir = str(Path(cfg.output).parent)
     setup_logging(log_dir, "train_bc")
+    if cfg.offline_algorithm != "behavior_cloning" and cfg.shuffle_buffer_files != 1:
+        logger.warning(
+            "shuffle_buffer_files is only used by offline behavior_cloning; ignoring value {}",
+            cfg.shuffle_buffer_files,
+        )
     configure_matmul_precision(cfg.matmul_precision)
     init_wandb(cfg, config_path=args.config)
 
@@ -134,6 +142,7 @@ def main():
             weight_decay=cfg.weight_decay,
             label_smoothing=cfg.label_smoothing,
             max_grad_norm=cfg.max_grad_norm,
+            shuffle_buffer_files=cfg.shuffle_buffer_files,
             model_config=cfg.model.model_dump(),
             model_class=cfg.model_class,
             dataset_class=cfg.dataset_class,

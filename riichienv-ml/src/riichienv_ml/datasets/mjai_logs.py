@@ -133,11 +133,50 @@ class MCDataset(BaseDataset):
 class BehaviorCloningDataset(BaseDataset):
     """Yields (features, candidate_index, candidate_mask) tuples for pure action cloning."""
 
+    def __init__(self, *args, shuffle_buffer_files: int = 1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.shuffle_buffer_files = int(shuffle_buffer_files)
+        if self.shuffle_buffer_files < 1:
+            raise ValueError("shuffle_buffer_files must be >= 1")
+
     def _candidate_mask(self, obs) -> np.ndarray:
         return np.ones(len(obs.candidate_actions()), dtype=np.uint8)
 
+    def _load_file_samples(self, file_path: str):
+        try:
+            replay = MjaiReplay.from_jsonl(file_path, rule=self.replay_rule)
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Skipping unparseable replay: %s: %s", file_path, e)
+            return None
+
+        buffer = []
+        try:
+            for kyoku in replay.take_kyokus():
+                for player_id in range(self.n_players):
+                    for obs, action in kyoku.steps(player_id):
+                        features = self.encoder.encode(obs)
+                        action_id = obs.find_candidate_index(action)
+                        if action_id is None:
+                            raise ValueError(f"action {action} is not in candidate actions")
+
+                        mask = self._candidate_mask(obs)
+                        if not 0 <= action_id < mask.shape[0]:
+                            raise ValueError(f"candidate index {action_id} exceeds candidate_count={mask.shape[0]}")
+                        if mask[action_id] != 1:
+                            raise ValueError(f"candidate index {action_id} is not legal")
+                        buffer.append((features, action_id, mask))
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Skipping replay due to error: %s: %s", file_path, e)
+            return None
+
+        return buffer
+
+    def _yield_shuffled(self, buffer: list):
+        random.shuffle(buffer)
+        yield from buffer
+
     def __iter__(self):
-        files = self._get_files()
+        files = list(self._get_files())
         if self.is_train:
             random.shuffle(files)
 
@@ -148,40 +187,35 @@ class BehaviorCloningDataset(BaseDataset):
         skipped = 0
         total = len(files)
 
+        if self.is_train:
+            shuffle_buffer = []
+            buffered_files = 0
+            for file_path in files:
+                samples = self._load_file_samples(file_path)
+                if samples is None:
+                    skipped += 1
+                    continue
+
+                shuffle_buffer.extend(samples)
+                buffered_files += 1
+                if buffered_files >= self.shuffle_buffer_files:
+                    yield from self._yield_shuffled(shuffle_buffer)
+                    shuffle_buffer = []
+                    buffered_files = 0
+
+            if shuffle_buffer:
+                yield from self._yield_shuffled(shuffle_buffer)
+
+            if skipped > 0:
+                logger.warning("Skipped %d / %d replay files due to errors", skipped, total)
+            return
+
         for file_path in files:
-            try:
-                replay = MjaiReplay.from_jsonl(file_path, rule=self.replay_rule)
-            except (RuntimeError, ValueError) as e:
-                logger.warning("Skipping unparseable replay: %s: %s", file_path, e)
+            samples = self._load_file_samples(file_path)
+            if samples is None:
                 skipped += 1
                 continue
-
-            buffer = []
-
-            try:
-                for kyoku in replay.take_kyokus():
-                    for player_id in range(self.n_players):
-                        for obs, action in kyoku.steps(player_id):
-                            features = self.encoder.encode(obs)
-                            action_id = obs.find_candidate_index(action)
-                            if action_id is None:
-                                raise ValueError(f"action {action} is not in candidate actions")
-
-                            mask = self._candidate_mask(obs)
-                            if not 0 <= action_id < mask.shape[0]:
-                                raise ValueError(f"candidate index {action_id} exceeds candidate_count={mask.shape[0]}")
-                            if mask[action_id] != 1:
-                                raise ValueError(f"candidate index {action_id} is not legal")
-                            buffer.append((features, action_id, mask))
-            except (RuntimeError, ValueError) as e:
-                logger.warning("Skipping replay due to error: %s: %s", file_path, e)
-                skipped += 1
-                continue
-
-            if self.is_train:
-                random.shuffle(buffer)
-
-            yield from buffer
+            yield from samples
 
         if skipped > 0:
             logger.warning("Skipped %d / %d replay files due to errors", skipped, total)

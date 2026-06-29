@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,14 @@ def _batch_candidate_masks(features, batch_masks, device: torch.device) -> torch
     return batch_masks.to(device, non_blocking=True)
 
 
+def _accepts_kwarg(callable_obj, name: str) -> bool:
+    try:
+        parameters = inspect.signature(callable_obj).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+
 class BCPolicyTrainer:
     def __init__(
         self,
@@ -74,6 +83,7 @@ class BCPolicyTrainer:
         weight_decay: float = 0.0,
         label_smoothing: float = 0.0,
         max_grad_norm: float = 10.0,
+        shuffle_buffer_files: int = 1,
         model_config: dict | None = None,
         model_class: str = "riichienv_ml.models.transformer.TransformerPolicyNetwork",
         dataset_class: str = "riichienv_ml.datasets.mjai_logs.BehaviorCloningDataset",
@@ -97,6 +107,9 @@ class BCPolicyTrainer:
         self.weight_decay = weight_decay
         self.label_smoothing = label_smoothing
         self.max_grad_norm = max_grad_norm
+        self.shuffle_buffer_files = int(shuffle_buffer_files)
+        if self.shuffle_buffer_files < 1:
+            raise ValueError("shuffle_buffer_files must be >= 1")
         self.model_config = model_config or {}
         self.model_class = model_class
         self.dataset_class = dataset_class
@@ -136,6 +149,23 @@ class BCPolicyTrainer:
             kwargs["persistent_workers"] = is_train
             kwargs["prefetch_factor"] = 4
         return DataLoader(**kwargs)
+
+    def _create_dataset(self, dataset_cls, files: list[str], *, is_train: bool, encoder):
+        kwargs = {
+            "is_train": is_train,
+            "n_players": self.n_players,
+            "replay_rule": self.replay_rule,
+            "encoder": encoder,
+        }
+        if _accepts_kwarg(dataset_cls, "shuffle_buffer_files"):
+            kwargs["shuffle_buffer_files"] = self.shuffle_buffer_files
+        elif self.shuffle_buffer_files != 1:
+            logger.warning(
+                "Dataset class {} does not accept shuffle_buffer_files; ignoring value {}",
+                self.dataset_class,
+                self.shuffle_buffer_files,
+            )
+        return dataset_cls(files, **kwargs)
 
     @staticmethod
     def _mask_logits(logits: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
@@ -181,24 +211,12 @@ class BCPolicyTrainer:
         encoder = build_encoder(encoder_cls, tile_dim=self.tile_dim, model_config=self.model_config)
 
         dataset_cls = import_class(self.dataset_class)
-        train_dataset = dataset_cls(
-            train_files,
-            is_train=True,
-            n_players=self.n_players,
-            replay_rule=self.replay_rule,
-            encoder=encoder,
-        )
+        train_dataset = self._create_dataset(dataset_cls, train_files, is_train=True, encoder=encoder)
         train_loader = self._create_dataloader(train_dataset, is_train=True)
 
         val_loader = None
         if val_files:
-            val_dataset = dataset_cls(
-                val_files,
-                is_train=False,
-                n_players=self.n_players,
-                replay_rule=self.replay_rule,
-                encoder=encoder,
-            )
+            val_dataset = self._create_dataset(dataset_cls, val_files, is_train=False, encoder=encoder)
             val_loader = self._create_dataloader(val_dataset, is_train=False)
 
         model_cls = import_class(self.model_class)

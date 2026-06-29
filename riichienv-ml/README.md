@@ -37,6 +37,10 @@ uv run --package riichienv-ml python riichienv-ml/scripts/run_self_match.py \
 
 The Tenhou behavior cloning config writes the model, log file, and offline W&B run data under
 `models/behavior_cloning/test01/`.
+Offline behavior cloning can shuffle samples across multiple log files per worker with
+`bc.shuffle_buffer_files` or `train_bc.py --shuffle_buffer_files`. The default is `1`, which preserves the
+original per-file shuffling behavior. Sequence features are memory-heavy, so increase this value cautiously:
+the buffer is held independently by each DataLoader worker.
 The continued-training config shows how to load an existing BC checkpoint via `load_model` and save the
 next run to a separate output path.
 The self-match config writes MJAI logs and a summary under `data/self_match/BC/test01/`.
