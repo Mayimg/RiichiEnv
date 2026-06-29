@@ -157,6 +157,7 @@ class BcConfig(OfflineTrainConfig):
     # LR scheduler
     lr_min: float = 1e-5
     label_smoothing: float = 0.0
+    shuffle_buffer_files: int = 1
     warmup_steps: int = 0  # linear warmup (in collection rounds, same unit as num_steps)
     max_grad_norm: float = 10.0  # gradient clipping max norm
     # Online teacher settings (used when online=True)

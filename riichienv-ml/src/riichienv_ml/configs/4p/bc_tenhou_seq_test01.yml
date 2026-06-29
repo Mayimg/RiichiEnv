@@ -7,13 +7,15 @@ bc:
   matmul_precision: high
   data_glob: /home/naoyuki/mahjong01/Mortal/data/training/**/*.json.gz
   val_data_glob: /home/naoyuki/mahjong01/Mortal/data/validation/**/*.json.gz
-  output: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test08/model.pth
+  output: /home/naoyuki/mahjong01/RiichiEnv/models/behavior_cloning/test42/model.pth
   device: cuda
   batch_size: 64
   lr: 1e-4
   lr_min: 1e-6
   num_epochs: 1
-  num_workers: 8
+  num_workers: 16
+  # Buffers this many log files per worker before shuffling. Keep modest for sequence features.
+  shuffle_buffer_files: 64
   limit: 500000
   weight_decay: 0.01
   label_smoothing: 0.0

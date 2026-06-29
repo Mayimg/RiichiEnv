@@ -14,6 +14,8 @@ bc:
   lr_min: 8e-7
   num_epochs: 1
   num_workers: 8
+  # Buffers this many log files per worker before shuffling. Keep modest for sequence features.
+  shuffle_buffer_files: 1
   limit: 200000
   weight_decay: 0.01
   label_smoothing: 0.0

@@ -165,6 +165,119 @@ def test_behavior_cloning_dataset_yields_legal_action_labels(tmp_path):
         assert mask[action_id] == 1
 
 
+def test_behavior_cloning_dataset_rejects_invalid_shuffle_buffer_files(tmp_path):
+    file_path = tmp_path / "bc_policy_sample.jsonl"
+    _write_simple_4p_log(file_path)
+
+    with pytest.raises(ValueError, match="shuffle_buffer_files"):
+        BehaviorCloningDataset(
+            [str(file_path)],
+            is_train=True,
+            n_players=4,
+            replay_rule="tenhou",
+            encoder=DummyEncoder(),
+            shuffle_buffer_files=0,
+        )
+
+
+def test_behavior_cloning_dataset_buffers_configured_number_of_files_before_yield(monkeypatch):
+    monkeypatch.setattr("riichienv_ml.datasets.mjai_logs.random.shuffle", lambda values: None)
+
+    class DummyBehaviorCloningDataset(BehaviorCloningDataset):
+        def __init__(self):
+            super().__init__(
+                ["a", "b", "c"],
+                is_train=True,
+                n_players=4,
+                replay_rule="tenhou",
+                encoder=None,
+                shuffle_buffer_files=2,
+            )
+            self.loaded_files = []
+
+        def _load_file_samples(self, file_path: str):
+            self.loaded_files.append(file_path)
+            return [(file_path, 0, torch.ones(1, dtype=torch.uint8))]
+
+    dataset = DummyBehaviorCloningDataset()
+    next(iter(dataset))
+
+    assert dataset.loaded_files == ["a", "b"]
+
+
+def test_behavior_cloning_dataset_flushes_remaining_files(monkeypatch):
+    monkeypatch.setattr("riichienv_ml.datasets.mjai_logs.random.shuffle", lambda values: None)
+
+    class DummyBehaviorCloningDataset(BehaviorCloningDataset):
+        def __init__(self):
+            super().__init__(
+                ["a", "b"],
+                is_train=True,
+                n_players=4,
+                replay_rule="tenhou",
+                encoder=None,
+                shuffle_buffer_files=3,
+            )
+
+        def _load_file_samples(self, file_path: str):
+            return [(file_path, 0, torch.ones(1, dtype=torch.uint8))]
+
+    samples = list(DummyBehaviorCloningDataset())
+
+    assert [sample_id for sample_id, _action, _mask in samples] == ["a", "b"]
+
+
+def test_behavior_cloning_dataset_validation_keeps_file_order(monkeypatch):
+    def fail_shuffle(_values):
+        raise AssertionError("validation should not shuffle files or samples")
+
+    monkeypatch.setattr("riichienv_ml.datasets.mjai_logs.random.shuffle", fail_shuffle)
+
+    class DummyBehaviorCloningDataset(BehaviorCloningDataset):
+        def __init__(self):
+            super().__init__(
+                ["a", "b", "c"],
+                is_train=False,
+                n_players=4,
+                replay_rule="tenhou",
+                encoder=None,
+                shuffle_buffer_files=2,
+            )
+
+        def _load_file_samples(self, file_path: str):
+            return [(file_path, 0, torch.ones(1, dtype=torch.uint8))]
+
+    samples = list(DummyBehaviorCloningDataset())
+
+    assert [sample_id for sample_id, _action, _mask in samples] == ["a", "b", "c"]
+
+
+def test_bc_policy_trainer_passes_shuffle_buffer_files_to_compatible_dataset():
+    class CompatibleDataset:
+        def __init__(self, files, *, is_train, n_players, replay_rule, encoder, shuffle_buffer_files=1):
+            self.files = files
+            self.is_train = is_train
+            self.n_players = n_players
+            self.replay_rule = replay_rule
+            self.encoder = encoder
+            self.shuffle_buffer_files = shuffle_buffer_files
+
+    trainer = object.__new__(bc_policy_module.BCPolicyTrainer)
+    trainer.n_players = 4
+    trainer.replay_rule = "tenhou"
+    trainer.shuffle_buffer_files = 4
+    trainer.dataset_class = "tests.CompatibleDataset"
+
+    dataset = trainer._create_dataset(CompatibleDataset, ["a"], is_train=True, encoder="encoder")
+
+    assert dataset.files == ["a"]
+    assert dataset.is_train is True
+    assert dataset.n_players == 4
+    assert dataset.replay_rule == "tenhou"
+    assert dataset.encoder == "encoder"
+    assert dataset.shuffle_buffer_files == 4
+
+
 def test_replay_sequence_progression_starts_with_initial_dora(tmp_path):
     file_path = tmp_path / "bc_policy_sample.jsonl"
     _write_simple_4p_log(file_path)
