@@ -98,7 +98,8 @@ class BeliefFeatureEncoder(SequenceFeatureEncoder):
     """Sequence encoder plus belief-sampler public state tokens.
 
     The base sequence features are kept compatible with the existing transformer
-    encoder, while the model ignores candidate-action tokens.
+    encoder, while the model ignores candidate-action tokens and masks observer
+    hand tokens.  The observer hand still contributes to visible tile counts.
     """
 
     PHASE_DIMS = 3
@@ -107,6 +108,9 @@ class BeliefFeatureEncoder(SequenceFeatureEncoder):
     PHASE_UNKNOWN = 2
     CURRENT_ACTOR_DIMS = 5
     HAND_SIZE_DIMS = MAX_HIDDEN_HAND_SIZE + 1
+
+    def __init__(self, n_players: int = 4, game_style: int = 1):
+        super().__init__(n_players=n_players, game_style=game_style, include_hand_tokens=False)
 
     def encode(self, obs) -> dict[str, torch.Tensor]:
         features = super().encode(obs)

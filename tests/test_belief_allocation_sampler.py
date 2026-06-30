@@ -15,8 +15,10 @@ from riichienv_ml.features.belief_features import (
     BeliefFeatureEncoder,
     collate_belief_features,
 )
+from riichienv_ml.features.sequence_features import SequenceFeatureEncoder
 from riichienv_ml.models.belief_allocation import (
     AllocationDecodeState,
+    BeliefObservationEncoder,
     CrossAttentionKVCache,
     DenoiseTransformer,
     JointHiddenAllocationSampler,
@@ -69,6 +71,53 @@ def test_belief_dataset_target_matches_unseen_counts():
     assert features["belief_shanten_labels"].shape == (3,)
     assert features["belief_shanten_labels"].min().item() >= 0
     assert features["belief_shanten_labels"].max().item() < SHANTEN_CLASS_COUNT
+
+
+def test_belief_feature_encoder_masks_observer_hand_tokens():
+    replay = MjaiReplay.from_jsonl(str(DATA_PATH), rule="tenhou")
+    kyoku = next(iter(replay.take_kyokus()))
+    _pid, obs, _action = next(iter(kyoku.steps(skip_single_action=True)))
+
+    sequence_features = SequenceFeatureEncoder().encode(obs)
+    belief_features = BeliefFeatureEncoder().encode(obs)
+
+    expected_hand = torch.tensor(SequenceFeatureEncoder.HAND_PAD, dtype=torch.long).repeat(
+        SequenceFeatureEncoder.MAX_HAND_LEN,
+        1,
+    )
+    assert sequence_features["hand_mask"].any()
+    assert torch.equal(belief_features["hand"], expected_hand)
+    assert not belief_features["hand_mask"].any()
+    assert torch.equal(sequence_features["visible_tile_counts"], belief_features["visible_tile_counts"])
+
+
+def test_belief_observation_encoder_ignores_masked_hand_values():
+    replay = MjaiReplay.from_jsonl(str(DATA_PATH), rule="tenhou")
+    kyoku = next(iter(replay.take_kyokus()))
+    _pid, obs, _action = next(iter(kyoku.steps(skip_single_action=True)))
+    features = collate_belief_features([BeliefFeatureEncoder().encode(obs)])
+    altered = {key: value.clone() for key, value in features.items()}
+    altered["hand"][:, :, 0] = torch.arange(SequenceFeatureEncoder.MAX_HAND_LEN).view(1, -1) % 38
+    altered["hand"][:, :, 1] = torch.arange(SequenceFeatureEncoder.MAX_HAND_LEN).view(1, -1) % 3
+
+    encoder = BeliefObservationEncoder(
+        d_model=32,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=64,
+        d_type=16,
+        d_other=8,
+        dropout=0.0,
+    )
+    encoder.eval()
+
+    with torch.inference_mode():
+        context, memory, memory_padding_mask = encoder.forward_context_and_memory(features)
+        altered_context, altered_memory, altered_memory_padding_mask = encoder.forward_context_and_memory(altered)
+
+    torch.testing.assert_close(altered_context, context)
+    torch.testing.assert_close(altered_memory, memory)
+    assert torch.equal(altered_memory_padding_mask, memory_padding_mask)
 
 
 def test_belief_dataset_public_capacities_match_targets():

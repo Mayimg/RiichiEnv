@@ -76,9 +76,10 @@ class SequenceFeatureEncoder:
     AGARI_OVERTAKE_TOKEN_DIM = AGARI_OVERTAKE_DIMS[1] * AGARI_OVERTAKE_DIMS[2]
     AGARI_OVERTAKE_DIM = AGARI_OVERTAKE_TOKENS * AGARI_OVERTAKE_TOKEN_DIM
 
-    def __init__(self, n_players: int = 4, game_style: int = 1):
+    def __init__(self, n_players: int = 4, game_style: int = 1, include_hand_tokens: bool = True):
         self.n_players = n_players
         self.game_style = game_style  # 0=tonpuusen, 1=hanchan
+        self.include_hand_tokens = bool(include_hand_tokens)
 
     def encode(self, obs) -> dict[str, torch.Tensor]:  # noqa: PLR0915
         """Encode observation into sequence features for transformer models.
@@ -135,10 +136,14 @@ class SequenceFeatureEncoder:
         sparse_meld_mask[:n_sparse_melds] = True
 
         # Hand
-        hand_bytes = obs.encode_seq_hand()
-        if len(hand_bytes) > 0:
-            raw_hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)
-            n_hand = min(len(raw_hand), self.MAX_HAND_LEN)
+        if self.include_hand_tokens:
+            hand_bytes = obs.encode_seq_hand()
+            if len(hand_bytes) > 0:
+                raw_hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)
+                n_hand = min(len(raw_hand), self.MAX_HAND_LEN)
+            else:
+                raw_hand = np.empty((0, 2), dtype=np.uint16)
+                n_hand = 0
         else:
             raw_hand = np.empty((0, 2), dtype=np.uint16)
             n_hand = 0
