@@ -1168,6 +1168,49 @@ def test_transformer_relative_position_forward_handles_padding_and_empty_progres
     assert torch.isfinite(empty_logits).all()
 
 
+def test_transformer_progression_bias_disables_mha_fastpath_temporarily(monkeypatch):
+    mha_backend = getattr(torch.backends, "mha", None)
+    if (
+        mha_backend is None
+        or not hasattr(mha_backend, "get_fastpath_enabled")
+        or not hasattr(mha_backend, "set_fastpath_enabled")
+    ):
+        pytest.skip("torch.backends.mha fastpath controls are unavailable")
+
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        dropout=0.0,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    features = _dummy_sequence_batch(batch_size=2, prog_len=5, cand_len=3)
+    seen_fastpath_states = []
+    original_forward = model.transformer.forward
+
+    def wrapped_forward(*args, **kwargs):
+        seen_fastpath_states.append(mha_backend.get_fastpath_enabled())
+        return original_forward(*args, **kwargs)
+
+    monkeypatch.setattr(model.transformer, "forward", wrapped_forward)
+
+    previous = bool(mha_backend.get_fastpath_enabled())
+    mha_backend.set_fastpath_enabled(True)
+    try:
+        model.eval()
+        with torch.inference_mode():
+            logits = model(features)
+    finally:
+        restored = bool(mha_backend.get_fastpath_enabled())
+        mha_backend.set_fastpath_enabled(previous)
+
+    assert logits.shape == (2, 3)
+    assert seen_fastpath_states == [False]
+    assert restored is True
+
+
 def test_transformer_embedding_padding_rows_remain_zero_after_custom_init():
     model = TransformerPolicyNetwork(
         d_model=64,
