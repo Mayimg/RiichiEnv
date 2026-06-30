@@ -48,7 +48,11 @@ all other tile37 ids.
   directly visible.
 
 The belief model reuses the existing transformer feature groups but does not
-consume candidate-action tokens in its context encoder.
+consume candidate-action tokens in its context encoder.  It also masks the
+observer's hand token group to all padding before collation, because opponent
+hidden-allocation prediction should not condition on private observer hand
+composition.  The observer hand remains included in `visible_tile_counts`, so
+the unseen tile pool and allocation constraints are unchanged.
 
 The belief observation encoder also appends three opponent shanten-query tokens
 after the public belief tokens.  Each query token is the sum of the shared
