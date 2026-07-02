@@ -116,7 +116,8 @@ _MELD_ROLE_ADDED = 2
 _MELD_ROLE_PAD = 3
 _MELD_WIDTH = 9
 
-_SPARSE_DORA_OFFSET = 75
+_SPARSE_WIND_OFFSET = 2
+_SPARSE_DORA_OFFSET = 80
 _SPARSE_DORA_SLOTS = 5
 _DORA_SLOT_PAD = _SPARSE_DORA_SLOTS
 
@@ -128,7 +129,8 @@ _SEAT_ROLE_MELD_OWNER = 4
 _SEAT_ROLE_TILE_WIND_OWNER = 5
 _SEAT_ROLE_AGARI_WINNER = 6
 _SEAT_ROLE_PLAYER_INFO = 7
-_SEAT_NUM_ROLES = 8
+_SEAT_ROLE_PLAYER_RANK_STATS = 8
+_SEAT_NUM_ROLES = 9
 _SEAT_PAD_OR_NA = 4
 _PLAYER_COUNT = 4
 
@@ -693,6 +695,8 @@ class TransformerActorCritic(nn.Module):
         # Policy head type: "pointer" (candidate logits), "cls", or "cross_attn"
         policy_head_type: str = "pointer",
         emit_value: bool = True,
+        emit_rank: bool = False,
+        rank_classes: int = 4,
         # Embedding sub-dimensions (asymmetric)
         d_sub: int | None = None,  # V1 compat: if set, d_type=d_other=d_sub
         d_type: int = 96,  # type field embedding dim
@@ -703,9 +707,10 @@ class TransformerActorCritic(nn.Module):
         max_prog_len: int | None = None,
         max_cand_len: int | None = None,
         # Vocab sizes (from SequenceFeatureEncoder)
-        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,  # 261
-        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 260
+        sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,  # 266
+        sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 265
         player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,21,21)
+        player_rank_stats_dims: tuple = SequenceFeatureEncoder.PLAYER_RANK_STATS_DIMS,  # (4,4,4)
         hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,6)
         visible_tile_count_dims: tuple = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS,  # (37,5)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,80,3,3,5)
@@ -718,6 +723,10 @@ class TransformerActorCritic(nn.Module):
         self.num_actions = num_actions
         self.policy_head_type = policy_head_type
         self.emit_value = emit_value
+        self.emit_rank = bool(emit_rank)
+        self.rank_classes = int(rank_classes)
+        if self.rank_classes <= 0:
+            raise ValueError("rank_classes must be positive")
         self.progression_relative_position_cap = int(progression_relative_position_cap)
         if self.progression_relative_position_cap < 0:
             raise ValueError("progression_relative_position_cap must be non-negative")
@@ -737,6 +746,8 @@ class TransformerActorCritic(nn.Module):
         self._D = 1
         self._PI = SequenceFeatureEncoder.PLAYER_INFO_TOKENS
         self._PIW = SequenceFeatureEncoder.PLAYER_INFO_WIDTH
+        self._PRS = SequenceFeatureEncoder.PLAYER_RANK_STATS_TOKENS
+        self._PRSW = SequenceFeatureEncoder.PLAYER_RANK_STATS_WIDTH
         self._SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
         self._MW = SequenceFeatureEncoder.MELD_WIDTH
         self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 38
@@ -751,6 +762,9 @@ class TransformerActorCritic(nn.Module):
         if len(player_info_dims) != self._PIW:
             raise ValueError(f"player_info_dims must have {self._PIW} entries")
         self.player_info_dims = tuple(int(v) for v in player_info_dims)
+        if len(player_rank_stats_dims) != self._PRSW:
+            raise ValueError(f"player_rank_stats_dims must have {self._PRSW} entries")
+        self.player_rank_stats_dims = tuple(int(v) for v in player_rank_stats_dims)
         if len(hand_dims) != 2:
             raise ValueError("hand_dims must have 2 entries")
         self.hand_dims = tuple(int(v) for v in hand_dims)
@@ -774,6 +788,8 @@ class TransformerActorCritic(nn.Module):
         self.player_discard_count_embed = nn.Embedding(self.player_info_dims[3], d_other)
         self.player_tedashi_count_embed = nn.Embedding(self.player_info_dims[4], d_other)
         self.player_info_proj = SplitLinearLayerNorm([d_other] * self._PIW, d_model)
+        self.player_rank_embed = nn.Embedding(self.player_rank_stats_dims[1], d_other)
+        self.player_rank_stats_proj = SplitLinearLayerNorm([d_other, d_other, d_model], d_model)
         self.tile_embed = SharedTileEmbedding(out_dim=d_type, attr_dim=d_other)
         self.tile_action_kind_embed = nn.Embedding(_ACTION_KIND_PAD + 1, d_other, padding_idx=_ACTION_KIND_PAD)
         self.tile_action_proj = SplitLinearLayerNorm([d_type, d_other], d_type)
@@ -823,8 +839,8 @@ class TransformerActorCritic(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.normal_(self.cls_token, std=0.02)
 
-        # --- Segment embeddings (8 groups: sparse / player / hand / visible-count / numeric / agari / prog / cand) ---
-        self.segment_embed = nn.Embedding(8, d_model)
+        # --- Segment embeddings ---
+        self.segment_embed = nn.Embedding(9, d_model)
 
         # Progression relative attention bias, indexed by signed discard-clock distance.
         self.progression_relative_bias = nn.Parameter(torch.zeros(self.nhead, self._RPB))
@@ -880,6 +896,13 @@ class TransformerActorCritic(nn.Module):
                 nn.Linear(d_model, d_model),
                 nn.GELU(),
                 nn.Linear(d_model, 1),
+            )
+        self.rank_head = None
+        if self.emit_rank:
+            self.rank_head = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                nn.GELU(),
+                nn.Linear(d_model, self.rank_classes),
             )
 
         for name, value in _build_sparse_dora_lookups().items():
@@ -1037,6 +1060,7 @@ class TransformerActorCritic(nn.Module):
             [
                 torch.zeros(1 + self._S + self._D, dtype=torch.long, device=device),
                 torch.full((self._PI,), 1, dtype=torch.long, device=device),
+                torch.full((self._PRS,), 8, dtype=torch.long, device=device),
                 torch.zeros(self._SM, dtype=torch.long, device=device),
                 torch.full((self._H,), 2, dtype=torch.long, device=device),
                 torch.full((self._VC,), 3, dtype=torch.long, device=device),
@@ -1088,6 +1112,7 @@ class TransformerActorCritic(nn.Module):
         sparse = take((self._S,), "long")
         dealer = take((self._D,), "long").squeeze(1)
         player_stats = take((self._PI, self._PIW), "long")
+        player_rank_stats = take((self._PRS, self._PRSW), "long")
         sparse_melds = take((self._SM, self._MW), "long")
         sparse_meld_owners = take((self._SM,), "long")
         hand = take((self._H, 2), "long")
@@ -1110,6 +1135,7 @@ class TransformerActorCritic(nn.Module):
             sparse,
             dealer,
             player_stats,
+            player_rank_stats,
             sparse_melds,
             sparse_meld_owners,
             hand,
@@ -1137,6 +1163,7 @@ class TransformerActorCritic(nn.Module):
             x["sparse"].long(),
             x["dealer"].long(),
             x["player_stats"].long(),
+            x["player_rank_stats"].long(),
             x["sparse_melds"].long(),
             x["sparse_meld_owners"].long(),
             x["hand"].long(),
@@ -1225,6 +1252,25 @@ class TransformerActorCritic(nn.Module):
             + self.player_info_proj.project_embedding(4, self.player_tedashi_count_embed, tedashi_count)
         )
         return self.player_info_proj.finish(raw)
+
+    def _embed_player_rank_stats(
+        self,
+        player_rank_stats: torch.Tensor,
+        seat_other_table: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        seats = player_rank_stats[:, :, 0].clamp(min=0, max=self.player_rank_stats_dims[0] - 1)
+        ranks = player_rank_stats[:, :, 1].clamp(min=0, max=self.player_rank_stats_dims[1] - 1)
+        winds = player_rank_stats[:, :, 2].clamp(min=0, max=self.player_rank_stats_dims[2] - 1)
+        wind_sparse_tokens = _SPARSE_WIND_OFFSET + winds
+        raw = (
+            self.player_rank_stats_proj.project_part(
+                0,
+                self._seat_other(seats, _SEAT_ROLE_PLAYER_RANK_STATS, seat_other_table),
+            )
+            + self.player_rank_stats_proj.project_embedding(1, self.player_rank_embed, ranks)
+            + self.player_rank_stats_proj.project_part(2, self.sparse_embed(wind_sparse_tokens))
+        )
+        return self.player_rank_stats_proj.finish(raw)
 
     def _embed_sparse_melds(
         self,
@@ -1509,6 +1555,7 @@ class TransformerActorCritic(nn.Module):
             sparse,
             dealer,
             player_stats,
+            player_rank_stats,
             sparse_melds,
             sparse_meld_owners,
             hand,
@@ -1561,6 +1608,9 @@ class TransformerActorCritic(nn.Module):
 
         # Embed per-player public summaries: (B, 4, d)
         player_info_emb = self._embed_player_info(player_stats, seat_other_table)
+
+        # Embed per-player current rank and seat-wind metadata: (B, 4, d)
+        player_rank_stats_emb = self._embed_player_rank_stats(player_rank_stats, seat_other_table)
 
         # Embed current visible melds: (B, SM, d)
         sparse_meld_emb = self._embed_sparse_melds(
@@ -1621,14 +1671,15 @@ class TransformerActorCritic(nn.Module):
         # CLS token: (B, 1, d)
         cls = self.cls_token.expand(batch_size, -1, -1)
 
-        # Concatenate: [CLS, sparse(S), dealer(1), player_info(4), sparse_meld(SM), hand(H),
-        # visible_count(37), numeric(1), agari_overtake(4), prog(P), cand(C)]
+        # Concatenate: [CLS, sparse(S), dealer(1), player_info(4), player_rank_stats(4),
+        # sparse_meld(SM), hand(H), visible_count(37), numeric(1), agari_overtake(4), prog(P), cand(C)]
         tokens = torch.cat(
             [
                 cls,
                 sparse_emb,
                 dealer_emb,
                 player_info_emb,
+                player_rank_stats_emb,
                 sparse_meld_emb,
                 hand_emb,
                 visible_tile_count_emb,
@@ -1648,6 +1699,7 @@ class TransformerActorCritic(nn.Module):
         cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         player_info_valid = torch.zeros(batch_size, self._PI, dtype=torch.bool, device=device)
+        player_rank_stats_valid = torch.zeros(batch_size, self._PRS, dtype=torch.bool, device=device)
         numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         visible_tile_count_valid = torch.zeros(batch_size, self._VC, dtype=torch.bool, device=device)
         agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=device)
@@ -1657,6 +1709,7 @@ class TransformerActorCritic(nn.Module):
                 ~sparse_mask,  # True where sparse is padding
                 dealer_valid,  # dealer is always valid
                 player_info_valid,  # player summaries are always valid
+                player_rank_stats_valid,  # player rank metadata is always valid
                 ~sparse_meld_mask,  # True where current visible meld is padding
                 ~hand_mask,  # True where hand is padding
                 visible_tile_count_valid,  # visible tile-count tokens are always valid
@@ -1669,7 +1722,7 @@ class TransformerActorCritic(nn.Module):
         )
 
         # Transformer
-        prog_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT
+        prog_offset = 1 + self._S + self._D + self._PI + self._PRS + self._SM + self._H + self._VC + 1 + self._AT
         output = self._transformer_with_progression_bias(
             tokens,
             pad_mask,
@@ -1682,7 +1735,9 @@ class TransformerActorCritic(nn.Module):
         # CLS output is shared by policy and value heads.
         cls_out = output[:, 0]
 
-        cand_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT + prog_len
+        cand_offset = (
+            1 + self._S + self._D + self._PI + self._PRS + self._SM + self._H + self._VC + 1 + self._AT + prog_len
+        )
         cand_out = output[:, cand_offset : cand_offset + cand_len]  # (B, C, d_model)
 
         # Policy head
@@ -1702,11 +1757,15 @@ class TransformerActorCritic(nn.Module):
             policy_input = cls_out
             logits = self.policy_head(policy_input)
 
-        if not self.emit_value:
+        outputs = [logits]
+        if self.emit_value:
+            value = self.value_head(cls_out)
+            outputs.append(value.squeeze(-1))
+        if self.emit_rank:
+            outputs.append(self.rank_head(cls_out))
+        if len(outputs) == 1:
             return logits
-
-        value = self.value_head(cls_out)
-        return logits, value.squeeze(-1)
+        return tuple(outputs)
 
 
 class TransformerPolicyNetwork(TransformerActorCritic):

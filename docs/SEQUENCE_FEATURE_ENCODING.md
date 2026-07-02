@@ -10,9 +10,10 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 
 | Feature Group | Shape | Type | Description |
 |---------------|-------|------|-------------|
-| **Sparse** | `(8,)` | int64 | Table metadata, tiles remaining, and dora indicators |
+| **Sparse** | `(9,)` | int64 | Table metadata, kyoku number, tiles remaining, and dora indicators |
 | **Dealer** | `()` | int64 | Dealer seat relative to the observing player |
 | **Player Stats** | `(4, 5)` | int64 | Per-player public summary tokens in observer-relative seat order |
+| **Player Rank Stats** | `(4, 3)` | int64 | Per-player current rank and current seat wind in observer-relative seat order |
 | **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
 | **Hand** | `(38, 2)` | int64 | 37 hand-count rows plus one optional drawn-tile token |
@@ -75,7 +76,7 @@ The shared tile embedding is applied to single-tile fields and to the tile slots
 | Hand count rows | `tile37` | Yes, with an extra hand-count embedding |
 | Hand drawn-tile token | `drawn_tile37` | Yes, with an extra drawn-tile marker embedding |
 | Visible Tile Counts | `tile37` | Yes, with an extra shared count embedding |
-| Sparse | dora-indicator tokens (`75-259`) | Yes, with an extra dora-slot embedding |
+| Sparse | dora-indicator tokens (`80-264`) | Yes, with an extra dora-slot embedding |
 | Progression | discard and dora-reveal type ranges | Yes |
 | Candidates | discard type range | Yes |
 | Sparse / progression / candidate meld sidecars | 4 tile slots per meld | Yes, via shared meld embedding |
@@ -132,23 +133,26 @@ External MJAI logs still use absolute seats. The conversion to observer-relative
 
 ## 1. Sparse Features
 
-**Vocabulary size: 261, max tokens: 8, padding index: 260**
+**Vocabulary size: 266, max tokens: 9, padding index: 265**
 
-Each observation produces 3-8 sparse tokens. Each token is an index into an embedding table. Dealer is encoded separately as a relative-seat scalar so it can share the relative-seat embedding with other seat fields.
+Each observation produces 4-9 sparse tokens. Each token is an index into an embedding table. Dealer is encoded separately as a relative-seat scalar so it can share the relative-seat embedding with other seat fields.
 
 | Offset | Count | Feature | Source |
 |--------|-------|---------|--------|
 | 0-1 | 2 | Game style (0=tonpuusen, 1=hanchan) | parameter |
-| 2-4 | 3 | Chang / round wind (E/S/W) | `obs.round_wind` |
-| 5-74 | 70 | Tiles remaining (0-69) | derived from visible tiles |
-| 75-259 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
-| 260 | 1 | Padding | - |
+| 2-5 | 4 | Wind token (E/S/W/N); round wind uses E/S/W | `obs.round_wind`, shared by player wind metadata |
+| 6-9 | 4 | Kyoku number within the current wind, 1-4 | `obs.kyoku_index` |
+| 10-79 | 70 | Tiles remaining (0-69) | derived from visible tiles |
+| 80-264 | 185 | Dora indicators (5 slots x 37 tiles) | `obs.dora_indicators` |
+| 265 | 1 | Padding | - |
 
 **Token composition per observation:**
-- 2 fixed tokens (game style + round wind)
+- 3 fixed metadata tokens (game style + round wind + kyoku number)
 - 1 tiles-remaining token
 - 1-5 dora indicator tokens
-- Total: typically 4-8 tokens
+- Total: typically 5-9 tokens for action states
+
+Pre-deal kyoku-start rank samples intentionally do not include dora indicators because the dora marker is not part of that state. They contain only game style, round wind, kyoku number, and tiles remaining.
 
 ### Dealer Feature
 
@@ -185,12 +189,32 @@ For training throughput, the Python wrapper reads the bundled `encode_seq_sparse
 which returns each 9-field meld row plus its owner sidecar as a 10-field row.
 Sparse meld rows include all players' current melds in observer-relative owner order.
 
+### Player Rank Stats Feature
+
+Player rank stats are encoded as four always-present rows in observer-relative seat order:
+`self`, `shimocha`, `toimen`, `kamicha`.
+
+Each row is:
+
+```text
+(relative_seat, current_rank, current_seat_wind)
+```
+
+| Field | Values | Source |
+|-------|--------|--------|
+| `relative_seat` | 0=self, 1=shimocha, 2=toimen, 3=kamicha | row owner |
+| `current_rank` | 0=1st, 1=2nd, 2=3rd, 3=4th | current scores, descending, with lower absolute seat id winning ties |
+| `current_seat_wind` | 0=E, 1=S, 2=W, 3=N | `(absolute_seat + 4 - oya) % 4`, embedded by reusing sparse wind tokens `2-5` |
+
+This feature is public information and is included in transformer self-attention. In the belief-allocation model it is not added to decoder memory, preserving the previous memory surface.
+
 ### Rust API
 
 ```rust
 obs.encode_seq_sparse(game_style: u8) -> Vec<u16>
 obs.encode_seq_dealer() -> u16
 obs.encode_seq_player_stats() -> Vec<[u16; 5]>
+obs.encode_seq_player_rank_stats() -> Vec<[u16; 3]>
 ```
 
 ### Python API (raw)
@@ -200,6 +224,7 @@ sparse_bytes = obs.encode_seq_sparse(game_style=1)
 sparse = np.frombuffer(sparse_bytes, dtype=np.uint16)  # variable length
 dealer = obs.encode_seq_dealer()
 player_stats = np.frombuffer(obs.encode_seq_player_stats(), dtype=np.uint16).reshape(4, 5)
+player_rank_stats = np.frombuffer(obs.encode_seq_player_rank_stats(), dtype=np.uint16).reshape(4, 3)
 sparse_meld_features = np.frombuffer(
     obs.encode_seq_sparse_meld_features(), dtype=np.uint16
 ).reshape(-1, 10)
@@ -615,9 +640,10 @@ enc = SequenceFeatureEncoder(n_players=4, game_style=1)
 
 for pid, obs in obs_dict.items():
     features = enc.encode(obs)
-    # features["sparse"]      -- (8,) int64, padded with 260
+    # features["sparse"]      -- (9,) int64, padded with 265
     # features["dealer"]      -- () int64, relative dealer seat
     # features["player_stats"]-- (4, 5) int64, per-player public summaries
+    # features["player_rank_stats"] -- (4, 3) int64, current rank and seat wind metadata
     # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
     # features["hand"]        -- (38, 2) int64, 37 count rows plus drawn-tile row
@@ -628,7 +654,7 @@ for pid, obs in obs_dict.items():
     # features["prog_melds"]  -- (P, 9) int64, aligned with progression
     # features["candidates"]  -- (C, 3) int64
     # features["cand_melds"]  -- (C, 9) int64, aligned with candidates
-    # features["sparse_mask"] -- (8,) bool, True for real tokens
+    # features["sparse_mask"] -- (9,) bool, True for real tokens
     # features["hand_mask"]   -- (38,) bool, True for real entries
     # features["prog_mask"]   -- (P,) bool, True for real entries
     # features["cand_mask"]   -- (C,) bool, True for real entries
@@ -637,12 +663,19 @@ for pid, obs in obs_dict.items():
 ### Constants
 
 ```python
-SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 261
-SequenceFeatureEncoder.MAX_SPARSE_LEN     # 8
+SequenceFeatureEncoder.SPARSE_VOCAB_SIZE  # 266
+SequenceFeatureEncoder.SPARSE_PAD         # 265
+SequenceFeatureEncoder.SPARSE_WIND_OFFSET # 2
+SequenceFeatureEncoder.SPARSE_KYOKU_OFFSET # 6
+SequenceFeatureEncoder.SPARSE_TILES_REMAINING_OFFSET # 10
+SequenceFeatureEncoder.MAX_SPARSE_LEN     # 9
 SequenceFeatureEncoder.DEALER_DIMS         # 4
 SequenceFeatureEncoder.PLAYER_INFO_DIMS    # (4, 2, 5, 21, 21)
 SequenceFeatureEncoder.PLAYER_INFO_TOKENS  # 4
 SequenceFeatureEncoder.PLAYER_INFO_WIDTH   # 5
+SequenceFeatureEncoder.PLAYER_RANK_STATS_DIMS   # (4, 4, 4)
+SequenceFeatureEncoder.PLAYER_RANK_STATS_TOKENS # 4
+SequenceFeatureEncoder.PLAYER_RANK_STATS_WIDTH  # 3
 SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 16
 SequenceFeatureEncoder.MELD_DIMS           # (6, 38, 4, 38, 4, 38, 4, 38, 4)
 SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10
@@ -660,6 +693,16 @@ SequenceFeatureEncoder.AGARI_OVERTAKE_DIM  # 1536
 SequenceFeatureEncoder.PROG_DIMS           # (5, 80, 3, 3, 5)
 SequenceFeatureEncoder.CAND_DIMS           # (47, 3, 5)
 ```
+
+### Rank-Value Training Samples
+
+`BehaviorCloningRankDataset` extends standard sequence BC training with final-rank labels:
+
+- Action-decision samples keep the existing legal candidate policy target and additionally use the observing player's final hanchan rank as a 4-class target.
+- Kyoku-start samples are added for every kyoku except the hanchan's first kyoku start. The final kyoku start is included. These samples have no hand, no dora marker, no legal candidates, and no progression rows; only rank loss is applied.
+- The model should be configured with `emit_rank: true` and `rank_classes: 4`. Offline BC uses `bc.value_coef` as the rank loss coefficient.
+
+The rank head is a separate CLS-based classification head. Policy logits remain the first model output. With `TransformerPolicyNetwork(emit_rank=True)`, the model returns `(policy_logits, rank_logits)`.
 
 ## Implementation
 

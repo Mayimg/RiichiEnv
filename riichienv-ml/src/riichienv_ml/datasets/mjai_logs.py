@@ -221,6 +221,85 @@ class BehaviorCloningDataset(BaseDataset):
             logger.warning("Skipped %d / %d replay files due to errors", skipped, total)
 
 
+class BehaviorCloningRankDataset(BehaviorCloningDataset):
+    """Yields BC action samples plus kyoku-start rank-only samples.
+
+    Samples are ``(features, candidate_index, candidate_mask, rank, has_policy)``.
+    Action-decision samples set ``has_policy=True`` and use the final hanchan
+    rank label. Kyoku-start samples set ``has_policy=False`` and contain no
+    legal candidates; only their rank label contributes to training.
+    """
+
+    def _final_ranks(self, raw_kyoku_features: list[dict]) -> list[int]:
+        if not raw_kyoku_features:
+            raise ValueError("raw_kyoku_features must not be empty")
+        last = raw_kyoku_features[-1]
+        if "final_ranks" in last:
+            return [int(rank) for rank in last["final_ranks"][: self.n_players]]
+        final_scores = list(last["round_end_scores"][: self.n_players])
+        return [_compute_rank(final_scores, player_id, self.n_players) for player_id in range(self.n_players)]
+
+    def _load_file_samples(self, file_path: str):  # noqa: PLR0915
+        try:
+            replay = MjaiReplay.from_jsonl(file_path, rule=self.replay_rule)
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Skipping unparseable replay: %s: %s", file_path, e)
+            return None
+
+        buffer = []
+        try:
+            kyokus = list(replay.take_kyokus())
+            raw_kyoku_features = [kyoku.take_grp_features() for kyoku in kyokus]
+            if not raw_kyoku_features:
+                return buffer
+
+            final_ranks = self._final_ranks(raw_kyoku_features)
+
+            for kyoku_idx, kyoku in enumerate(kyokus):
+                for player_id in range(self.n_players):
+                    for obs, action in kyoku.steps(player_id):
+                        features = self.encoder.encode(obs)
+                        action_id = obs.find_candidate_index(action)
+                        if action_id is None:
+                            raise ValueError(f"action {action} is not in candidate actions")
+
+                        mask = self._candidate_mask(obs)
+                        if not 0 <= action_id < mask.shape[0]:
+                            raise ValueError(f"candidate index {action_id} exceeds candidate_count={mask.shape[0]}")
+                        if mask[action_id] != 1:
+                            raise ValueError(f"candidate index {action_id} is not legal")
+                        buffer.append((features, action_id, mask, final_ranks[player_id], True))
+
+                if kyoku_idx == 0:
+                    continue
+
+                feat = raw_kyoku_features[kyoku_idx]
+                scores = list(feat["round_initial_scores"][: self.n_players])
+                for player_id in range(self.n_players):
+                    features = self.encoder.encode_kyoku_start(
+                        scores=scores,
+                        chang=feat["chang"],
+                        ju=feat["ju"],
+                        ben=feat["ben"],
+                        liqibang=feat["liqibang"],
+                        player_id=player_id,
+                    )
+                    buffer.append(
+                        (
+                            features,
+                            0,
+                            np.zeros(0, dtype=np.uint8),
+                            final_ranks[player_id],
+                            False,
+                        )
+                    )
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Skipping replay due to error: %s: %s", file_path, e)
+            return None
+
+        return buffer
+
+
 class DiscardHistoryDataset(MCDataset):
     """MCDataset with discard history decay features (78 channels)."""
     pass

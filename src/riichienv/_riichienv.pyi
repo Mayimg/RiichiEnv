@@ -449,8 +449,8 @@ class Observation:
     def encode_seq_sparse(self, game_style: int = 1) -> bytes:
         """Encode sequence features as sparse token ids.
 
-        Shape: variable-length 1-D array (up to 8 elements) / dtype: ``uint16``.
-        The token stream includes table metadata and dora indicators.
+        Shape: variable-length 1-D array (up to 9 elements) / dtype: ``uint16``.
+        The token stream includes table metadata, kyoku number, and dora indicators.
         """
         ...
     def encode_seq_dealer(self) -> int:
@@ -465,6 +465,14 @@ class Observation:
         Shape: ``(4, 5)`` / dtype: ``uint16``. Rows are ordered by observer-relative
         seat and contain ``(relative_seat, riichi_active, meld_count,
         discard_count, tedashi_count)``.
+        """
+        ...
+    def encode_seq_player_rank_stats(self) -> bytes:
+        """Encode per-player public rank metadata rows.
+
+        Shape: ``(4, 3)`` / dtype: ``uint16``. Rows are ordered by
+        observer-relative seat and contain ``(relative_seat, current_rank,
+        current_seat_wind)``.
         """
         ...
     def encode_seq_sparse_melds(self) -> bytes:
@@ -852,6 +860,10 @@ def encode_grp_tenhou_4p(
     start_scores: list[int], delta_scores: list[int], chang: int, ju: int, ben: int, liqibang: int
 ) -> bytes: ...
 
+def encode_seq_agari_overtakes_tenhou_4p(
+    scores: list[int], oya: int, honba: int, liqibang: int, observer: int
+) -> bytes: ...
+
 class MjSoulReplay:
     num_rounds: int
     @staticmethod
@@ -1014,6 +1026,8 @@ __all__ = [
     "calculate_shanten",
     "calculate_shanten_3p",
     "check_riichi_candidates",
+    "encode_grp_tenhou_4p",
+    "encode_seq_agari_overtakes_tenhou_4p",
     "parse_hand",
     "parse_tile",
     "Yaku",

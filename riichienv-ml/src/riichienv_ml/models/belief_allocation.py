@@ -471,6 +471,7 @@ class BeliefObservationEncoder(TransformerActorCritic):
             sparse,
             dealer,
             player_stats,
+            player_rank_stats,
             sparse_melds,
             sparse_meld_owners,
             hand,
@@ -521,6 +522,7 @@ class BeliefObservationEncoder(TransformerActorCritic):
         sparse_emb = self._embed_sparse(sparse, dora_tile34, tile37_table)
         dealer_emb = self._seat_model(dealer, _SEAT_ROLE_DEALER, seat_model_table).unsqueeze(1)
         player_info_emb = self._embed_player_info(player_stats, seat_other_table)
+        player_rank_stats_emb = self._embed_player_rank_stats(player_rank_stats, seat_other_table)
         sparse_meld_emb = self._embed_sparse_melds(
             sparse_melds,
             dora_tile34,
@@ -574,6 +576,7 @@ class BeliefObservationEncoder(TransformerActorCritic):
                 sparse_emb,
                 dealer_emb,
                 player_info_emb,
+                player_rank_stats_emb,
                 sparse_meld_emb,
                 hand_emb,
                 visible_tile_count_emb,
@@ -586,11 +589,12 @@ class BeliefObservationEncoder(TransformerActorCritic):
         )
 
         seg_ids = self._segment_ids(prog_len, 0, device)
+        public_prefix_len = 1 + self._S + self._D + self._PI + self._PRS + self._SM + self._H + self._VC + 1 + self._AT
         seg_ids = torch.cat(
             [
-                seg_ids[:, : 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT],
+                seg_ids[:, :public_prefix_len],
                 torch.full((1, belief_extra_len), 5, dtype=torch.long, device=device),
-                seg_ids[:, 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT :],
+                seg_ids[:, public_prefix_len:],
             ],
             dim=1,
         )
@@ -599,6 +603,7 @@ class BeliefObservationEncoder(TransformerActorCritic):
         cls_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         dealer_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         player_info_valid = torch.zeros(batch_size, self._PI, dtype=torch.bool, device=device)
+        player_rank_stats_valid = torch.zeros(batch_size, self._PRS, dtype=torch.bool, device=device)
         numeric_valid = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
         visible_tile_count_valid = torch.zeros(batch_size, self._VC, dtype=torch.bool, device=device)
         agari_overtake_valid = torch.zeros(batch_size, self._AT, dtype=torch.bool, device=device)
@@ -609,6 +614,7 @@ class BeliefObservationEncoder(TransformerActorCritic):
                 ~sparse_mask,
                 dealer_valid,
                 player_info_valid,
+                player_rank_stats_valid,
                 ~sparse_meld_mask,
                 ~hand_mask,
                 visible_tile_count_valid,
@@ -620,7 +626,10 @@ class BeliefObservationEncoder(TransformerActorCritic):
             dim=1,
         )
 
-        prog_offset = 1 + self._S + self._D + self._PI + self._SM + self._H + self._VC + 1 + self._AT + belief_extra_len
+        prog_offset = (
+            1 + self._S + self._D + self._PI + self._PRS + self._SM + self._H + self._VC + 1 + self._AT
+            + belief_extra_len
+        )
         output = self._transformer_with_progression_bias(
             tokens,
             pad_mask,
@@ -632,8 +641,9 @@ class BeliefObservationEncoder(TransformerActorCritic):
 
         cls_out = output[:, 0]
         player_offset = 1 + self._S + self._D
-        sparse_meld_offset = player_offset + self._PI
-        visible_offset = player_offset + self._PI + self._SM + self._H
+        rank_stats_offset = player_offset + self._PI
+        sparse_meld_offset = rank_stats_offset + self._PRS
+        visible_offset = sparse_meld_offset + self._SM + self._H
         belief_offset = visible_offset + self._VC + 1 + self._AT
         shanten_offset = belief_offset + 6
         prog_offset = belief_offset + belief_extra_len

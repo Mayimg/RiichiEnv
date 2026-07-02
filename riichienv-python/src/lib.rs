@@ -83,6 +83,31 @@ fn encode_grp_tenhou_4p_py<'py>(
     Ok(PyBytes::new(py, byte_slice))
 }
 
+#[pyfunction]
+#[pyo3(name = "encode_seq_agari_overtakes_tenhou_4p", signature = (scores, oya, honba, liqibang, observer))]
+fn encode_seq_agari_overtakes_tenhou_4p_py<'py>(
+    py: Python<'py>,
+    scores: Vec<i32>,
+    oya: usize,
+    honba: u32,
+    liqibang: u32,
+    observer: usize,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let scores: [i32; 4] = scores.try_into().map_err(|v: Vec<i32>| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "scores length {} does not match required 4 players",
+            v.len()
+        ))
+    })?;
+
+    let encoded = riichienv_core::grp::encode_tenhou_4p_pairwise_overtakes(
+        scores, oya, honba, liqibang, observer,
+    );
+    let byte_len = std::mem::size_of_val(encoded.as_slice());
+    let byte_slice = unsafe { std::slice::from_raw_parts(encoded.as_ptr() as *const u8, byte_len) };
+    Ok(PyBytes::new(py, byte_slice))
+}
+
 #[pymodule]
 fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<riichienv_core::types::Meld>()?;
@@ -113,6 +138,10 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(calculate_score_py, m)?)?;
     m.add_function(wrap_pyfunction!(encode_grp_tenhou_4p_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        encode_seq_agari_overtakes_tenhou_4p_py,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(parse_hand_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_tile_py, m)?)?;
     m.add_function(wrap_pyfunction!(check_riichi_candidates_py, m)?)?;

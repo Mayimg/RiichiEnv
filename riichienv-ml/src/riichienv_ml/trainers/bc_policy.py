@@ -43,6 +43,19 @@ def _with_suffix(path: str, suffix: str) -> str:
 
 
 def _bc_collate_fn(batch):
+    sample_width = len(batch[0])
+    if sample_width == 5:
+        features, actions, _masks, ranks, has_policy = zip(*batch, strict=True)
+        if isinstance(features[0], dict):
+            return (
+                pack_sequence_features(list(features)),
+                torch.as_tensor(actions, dtype=torch.long),
+                None,
+                torch.as_tensor(ranks, dtype=torch.long),
+                torch.as_tensor(has_policy, dtype=torch.bool),
+            )
+        return default_collate(batch)
+
     features, actions, _masks = zip(*batch, strict=True)
     if isinstance(features[0], dict):
         return (
@@ -51,6 +64,15 @@ def _bc_collate_fn(batch):
             None,
         )
     return default_collate(batch)
+
+
+def _unpack_bc_batch(batch):
+    if len(batch) == 5:
+        return batch
+    if len(batch) == 3:
+        batch_features, batch_actions, batch_masks = batch
+        return batch_features, batch_actions, batch_masks, None, None
+    raise ValueError(f"unexpected BC batch width: {len(batch)}")
 
 
 def _batch_candidate_masks(features, batch_masks, device: torch.device) -> torch.Tensor:
@@ -64,7 +86,9 @@ def _accepts_kwarg(callable_obj, name: str) -> bool:
         parameters = inspect.signature(callable_obj).parameters
     except (TypeError, ValueError):
         return False
-    return name in parameters or any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+    return name in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
 
 
 class BCPolicyTrainer:
@@ -82,6 +106,7 @@ class BCPolicyTrainer:
         num_workers: int = 8,
         weight_decay: float = 0.0,
         label_smoothing: float = 0.0,
+        value_coef: float = 0.0,
         max_grad_norm: float = 10.0,
         shuffle_buffer_files: int = 1,
         model_config: dict | None = None,
@@ -106,6 +131,7 @@ class BCPolicyTrainer:
         self.num_workers = num_workers
         self.weight_decay = weight_decay
         self.label_smoothing = label_smoothing
+        self.value_coef = float(value_coef)
         self.max_grad_norm = max_grad_norm
         self.shuffle_buffer_files = int(shuffle_buffer_files)
         if self.shuffle_buffer_files < 1:
@@ -172,11 +198,12 @@ class BCPolicyTrainer:
         legal = masks.bool() if masks.dtype != torch.bool else masks
         return logits.masked_fill(~legal, torch.finfo(logits.dtype).min)
 
-    def _forward_logits(self, model: torch.nn.Module, features):
+    def _forward_outputs(self, model: torch.nn.Module, features) -> tuple[torch.Tensor, torch.Tensor | None]:
         outputs = model(features)
         if isinstance(outputs, tuple):
-            return outputs[0]
-        return outputs
+            rank_logits = outputs[-1] if getattr(model, "emit_rank", False) else None
+            return outputs[0], rank_logits
+        return outputs, None
 
     def _run_eval(self, model: torch.nn.Module, step: int):
         if self.tp_evaluator is None:
@@ -223,6 +250,8 @@ class BCPolicyTrainer:
         model = model_cls(**self.model_config).to(self.device)
         if self.load_model:
             load_model_weights(model, self.load_model, map_location=self.device)
+        if getattr(model, "emit_rank", False) and self.value_coef == 0.0:
+            logger.warning("Model has emit_rank=true but value_coef=0.0; rank_head will not receive loss gradients")
         optimizer = optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scheduler = CosineAnnealingLR(optimizer, T_max=max(self.limit, 1), eta_min=self.lr_min)
         model.train()
@@ -273,7 +302,7 @@ class BCPolicyTrainer:
         finally:
             wandb.finish()
 
-    def _train_epoch(
+    def _train_epoch(  # noqa: PLR0915
         self,
         model: torch.nn.Module,
         dataloader: DataLoader,
@@ -284,38 +313,83 @@ class BCPolicyTrainer:
     ) -> tuple[dict[str, float], int]:
         log_interval = 100
         loss_meter = AverageMeter("loss", ":.4f")
+        policy_loss_meter = AverageMeter("policy_loss", ":.4f")
+        rank_loss_meter = AverageMeter("rank_loss", ":.4f")
         acc_meter = AverageMeter("acc", ":.4f")
+        rank_acc_meter = AverageMeter("rank_acc", ":.4f")
         window_loss_meter = AverageMeter("window_loss", ":.4f")
         window_acc_meter = AverageMeter("window_acc", ":.4f")
+        value_coef = float(getattr(self, "value_coef", 0.0))
 
-        for batch_idx, (batch_features, batch_actions, batch_masks) in enumerate(dataloader):
+        for batch_idx, batch in enumerate(dataloader):
+            batch_features, batch_actions, batch_masks, batch_ranks, batch_has_policy = _unpack_bc_batch(batch)
             features = _move_to_device(batch_features, self.device)
             actions = batch_actions.long().to(self.device, non_blocking=True)
             masks = _batch_candidate_masks(features, batch_masks, self.device)
+            ranks = None if batch_ranks is None else batch_ranks.long().to(self.device, non_blocking=True)
+            has_policy = None
+            if batch_has_policy is not None:
+                has_policy = batch_has_policy.bool().to(self.device, non_blocking=True)
 
             optimizer.zero_grad()
 
-            logits = self._forward_logits(model, features)
-            logits = self._mask_logits(logits, masks)
-            loss = F.cross_entropy(logits, actions, label_smoothing=self.label_smoothing)
+            logits, rank_logits = self._forward_outputs(model, features)
+            if ranks is not None and rank_logits is None:
+                raise ValueError(
+                    "rank labels are present, but the model did not return rank logits; set emit_rank=true"
+                )
+
+            if has_policy is None:
+                masked_logits = self._mask_logits(logits, masks)
+                policy_loss = F.cross_entropy(masked_logits, actions, label_smoothing=self.label_smoothing)
+                policy_count = actions.size(0)
+                policy_predictions = masked_logits.argmax(dim=1)
+                policy_acc = (policy_predictions == actions).float().mean().item()
+            else:
+                policy_count = int(has_policy.sum().item())
+                policy_loss = logits.sum() * 0.0
+                policy_acc = 0.0
+                if policy_count > 0:
+                    masked_logits = self._mask_logits(logits, masks)
+                    policy_logits = masked_logits[has_policy]
+                    policy_actions = actions[has_policy]
+                    policy_loss = F.cross_entropy(
+                        policy_logits,
+                        policy_actions,
+                        label_smoothing=self.label_smoothing,
+                    )
+                    policy_predictions = policy_logits.argmax(dim=1)
+                    policy_acc = (policy_predictions == policy_actions).float().mean().item()
+
+            rank_loss = logits.sum() * 0.0
+            rank_acc = 0.0
+            if ranks is not None:
+                rank_loss = F.cross_entropy(rank_logits, ranks)
+                rank_predictions = rank_logits.argmax(dim=1)
+                rank_acc = (rank_predictions == ranks).float().mean().item()
+
+            loss = policy_loss + value_coef * rank_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.max_grad_norm)
             optimizer.step()
             scheduler.step()
 
-            predictions = logits.argmax(dim=1)
-            acc = (predictions == actions).float().mean().item()
-
             batch_size = actions.size(0)
             loss_meter.update(loss.item(), batch_size)
-            acc_meter.update(acc, batch_size)
+            if policy_count > 0:
+                policy_loss_meter.update(policy_loss.item(), policy_count)
+                acc_meter.update(policy_acc, policy_count)
+                window_acc_meter.update(policy_acc, policy_count)
+            if ranks is not None:
+                rank_loss_meter.update(rank_loss.item(), ranks.size(0))
+                rank_acc_meter.update(rank_acc, ranks.size(0))
             window_loss_meter.update(loss.item(), batch_size)
-            window_acc_meter.update(acc, batch_size)
 
             if step % log_interval == 0:
                 logger.info(
                     "Epoch {} Step {} Batch {}: train/loss={:.4f} train/acc={:.4f} "
-                    "train/window100_loss={:.4f} train/window100_acc={:.4f}",
+                    "train/window100_loss={:.4f} train/window100_acc={:.4f} "
+                    "train/policy_loss={:.4f} train/rank_loss={:.4f} train/rank_acc={:.4f}",
                     epoch,
                     step,
                     batch_idx,
@@ -323,6 +397,9 @@ class BCPolicyTrainer:
                     acc_meter.avg,
                     window_loss_meter.avg,
                     window_acc_meter.avg,
+                    policy_loss_meter.avg,
+                    rank_loss_meter.avg,
+                    rank_acc_meter.avg,
                 )
                 window_loss_meter.reset()
                 window_acc_meter.reset()
@@ -333,18 +410,24 @@ class BCPolicyTrainer:
 
         metrics = {
             "train/loss": loss_meter.avg,
+            "train/policy_loss": policy_loss_meter.avg,
+            "train/rank_loss": rank_loss_meter.avg,
             "train/acc": acc_meter.avg,
+            "train/rank_acc": rank_acc_meter.avg,
         }
         logger.info(
-            "Epoch {} train complete: loss={:.4f} acc={:.4f}",
+            "Epoch {} train complete: loss={:.4f} policy_loss={:.4f} rank_loss={:.4f} acc={:.4f} rank_acc={:.4f}",
             epoch,
             metrics["train/loss"],
+            metrics["train/policy_loss"],
+            metrics["train/rank_loss"],
             metrics["train/acc"],
+            metrics["train/rank_acc"],
         )
         return metrics, step
 
     @torch.inference_mode()
-    def _eval_epoch(
+    def _eval_epoch(  # noqa: PLR0915
         self,
         model: torch.nn.Module,
         dataloader: DataLoader,
@@ -354,33 +437,83 @@ class BCPolicyTrainer:
         model.eval()
 
         loss_meter = AverageMeter("loss", ":.4f")
+        policy_loss_meter = AverageMeter("policy_loss", ":.4f")
+        rank_loss_meter = AverageMeter("rank_loss", ":.4f")
         acc_meter = AverageMeter("acc", ":.4f")
+        rank_acc_meter = AverageMeter("rank_acc", ":.4f")
+        value_coef = float(getattr(self, "value_coef", 0.0))
 
-        for batch_features, batch_actions, batch_masks in dataloader:
+        for batch in dataloader:
+            batch_features, batch_actions, batch_masks, batch_ranks, batch_has_policy = _unpack_bc_batch(batch)
             features = _move_to_device(batch_features, self.device)
             actions = batch_actions.long().to(self.device, non_blocking=True)
             masks = _batch_candidate_masks(features, batch_masks, self.device)
+            ranks = None if batch_ranks is None else batch_ranks.long().to(self.device, non_blocking=True)
+            has_policy = None
+            if batch_has_policy is not None:
+                has_policy = batch_has_policy.bool().to(self.device, non_blocking=True)
 
-            logits = self._forward_logits(model, features)
-            logits = self._mask_logits(logits, masks)
+            logits, rank_logits = self._forward_outputs(model, features)
+            if ranks is not None and rank_logits is None:
+                raise ValueError(
+                    "rank labels are present, but the model did not return rank logits; set emit_rank=true"
+                )
 
-            loss = F.cross_entropy(logits, actions, label_smoothing=self.label_smoothing)
-            predictions = logits.argmax(dim=1)
-            acc = (predictions == actions).float().mean().item()
+            if has_policy is None:
+                masked_logits = self._mask_logits(logits, masks)
+                policy_loss = F.cross_entropy(masked_logits, actions, label_smoothing=self.label_smoothing)
+                policy_count = actions.size(0)
+                policy_predictions = masked_logits.argmax(dim=1)
+                policy_acc = (policy_predictions == actions).float().mean().item()
+            else:
+                policy_count = int(has_policy.sum().item())
+                policy_loss = logits.sum() * 0.0
+                policy_acc = 0.0
+                if policy_count > 0:
+                    masked_logits = self._mask_logits(logits, masks)
+                    policy_logits = masked_logits[has_policy]
+                    policy_actions = actions[has_policy]
+                    policy_loss = F.cross_entropy(
+                        policy_logits,
+                        policy_actions,
+                        label_smoothing=self.label_smoothing,
+                    )
+                    policy_predictions = policy_logits.argmax(dim=1)
+                    policy_acc = (policy_predictions == policy_actions).float().mean().item()
+
+            rank_loss = logits.sum() * 0.0
+            rank_acc = 0.0
+            if ranks is not None:
+                rank_loss = F.cross_entropy(rank_logits, ranks)
+                rank_predictions = rank_logits.argmax(dim=1)
+                rank_acc = (rank_predictions == ranks).float().mean().item()
+
+            loss = policy_loss + value_coef * rank_loss
 
             batch_size = actions.size(0)
             loss_meter.update(loss.item(), batch_size)
-            acc_meter.update(acc, batch_size)
+            if policy_count > 0:
+                policy_loss_meter.update(policy_loss.item(), policy_count)
+                acc_meter.update(policy_acc, policy_count)
+            if ranks is not None:
+                rank_loss_meter.update(rank_loss.item(), ranks.size(0))
+                rank_acc_meter.update(rank_acc, ranks.size(0))
 
         metrics = {
             "val/loss": loss_meter.avg,
+            "val/policy_loss": policy_loss_meter.avg,
+            "val/rank_loss": rank_loss_meter.avg,
             "val/acc": acc_meter.avg,
+            "val/rank_acc": rank_acc_meter.avg,
         }
         logger.info(
-            "Epoch {} validation complete: loss={:.4f} acc={:.4f}",
+            "Epoch {} validation complete: loss={:.4f} policy_loss={:.4f} rank_loss={:.4f} acc={:.4f} rank_acc={:.4f}",
             epoch,
             metrics["val/loss"],
+            metrics["val/policy_loss"],
+            metrics["val/rank_loss"],
             metrics["val/acc"],
+            metrics["val/rank_acc"],
         )
 
         if was_training:

@@ -5,7 +5,7 @@ import pytest
 import riichienv_ml.trainers.bc_policy as bc_policy_module
 import torch
 import torch.nn.functional as F
-from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset
+from riichienv_ml.datasets.mjai_logs import BehaviorCloningDataset, BehaviorCloningRankDataset
 from riichienv_ml.features.sequence_features import (
     SequenceFeatureEncoder,
     SequenceFeaturePackedEncoder,
@@ -42,6 +42,9 @@ from riichienv import Action, ActionType, Meld, MeldType, MjaiReplay, Observatio
 class DummyEncoder:
     def encode(self, obs):
         return torch.tensor([len(obs.legal_actions())], dtype=torch.float32)
+
+    def encode_kyoku_start(self, **kwargs):
+        return torch.tensor([kwargs["player_id"]], dtype=torch.float32)
 
 
 def test_split_linear_layer_norm_matches_concat_linear():
@@ -95,9 +98,60 @@ def _write_simple_4p_log(path):
             f.write(json.dumps(event) + "\n")
 
 
+def _write_two_kyoku_4p_log(path):
+    tehais = [
+        ["1s", "1s", "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "9s", "9s"],
+        ["1p", "1p", "1p", "2p", "3p", "4p", "5p", "6p", "7p", "8p", "9p", "9p", "9p"],
+        ["1m", "1m", "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "9m", "9m"],
+        ["E", "E", "S", "S", "W", "W", "N", "N", "P", "P", "F", "F", "C"],
+    ]
+    data = [
+        {"type": "start_game", "names": ["A", "B", "C", "D"], "id": "bc_rank_seq_test"},
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 1,
+            "honba": 0,
+            "kyoutaku": 0,
+            "oya": 0,
+            "scores": [25000, 25000, 25000, 25000],
+            "dora_marker": "1m",
+            "tehais": tehais,
+        },
+        {"type": "tsumo", "actor": 0, "pai": "2m"},
+        {"type": "dahai", "actor": 0, "pai": "2m", "tsumogiri": True},
+        {"type": "ryukyoku", "reason": "test"},
+        {"type": "end_kyoku"},
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 2,
+            "honba": 1,
+            "kyoutaku": 0,
+            "oya": 1,
+            "scores": [25000, 25000, 25000, 25000],
+            "dora_marker": "2m",
+            "tehais": tehais,
+        },
+        {"type": "tsumo", "actor": 1, "pai": "3m"},
+        {"type": "dahai", "actor": 1, "pai": "3m", "tsumogiri": True},
+        {"type": "ryukyoku", "reason": "test"},
+        {"type": "end_kyoku"},
+        {"type": "end_game"},
+    ]
+
+    with open(path, "w") as f:
+        for event in data:
+            f.write(json.dumps(event) + "\n")
+
+
 def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int = 3) -> dict[str, torch.Tensor]:
     player_stats = torch.tensor(
         [[0, 0, 0, 0, 0], [1, 0, 0, 0, 0], [2, 0, 0, 0, 0], [3, 0, 0, 0, 0]],
+        dtype=torch.long,
+    )
+    player_rank_stats = torch.tensor(
+        [[0, 0, 0], [1, 1, 1], [2, 2, 2], [3, 3, 3]],
         dtype=torch.long,
     )
     visible_tile_counts = torch.stack(
@@ -111,6 +165,7 @@ def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int 
         "sparse": torch.full((batch_size, SequenceFeatureEncoder.MAX_SPARSE_LEN), SequenceFeatureEncoder.SPARSE_PAD),
         "dealer": torch.zeros(batch_size, dtype=torch.long),
         "player_stats": player_stats.unsqueeze(0).expand(batch_size, -1, -1).clone(),
+        "player_rank_stats": player_rank_stats.unsqueeze(0).expand(batch_size, -1, -1).clone(),
         "sparse_melds": torch.tensor(SequenceFeatureEncoder.MELD_PAD).repeat(
             batch_size,
             SequenceFeatureEncoder.MAX_SPARSE_MELDS,
@@ -139,8 +194,15 @@ def _dummy_sequence_batch(batch_size: int = 2, prog_len: int = 2, cand_len: int 
         "prog_mask": torch.ones(batch_size, prog_len, dtype=torch.bool),
         "cand_mask": torch.ones(batch_size, cand_len, dtype=torch.bool),
     }
-    batch["sparse"][:, :3] = torch.tensor([1, 2, 74])
-    batch["sparse_mask"][:, :3] = True
+    batch["sparse"][:, :4] = torch.tensor(
+        [
+            1,
+            2,
+            SequenceFeatureEncoder.SPARSE_KYOKU_OFFSET,
+            SequenceFeatureEncoder.SPARSE_TILES_REMAINING_OFFSET + 69,
+        ]
+    )
+    batch["sparse_mask"][:, :4] = True
     return batch
 
 
@@ -163,6 +225,32 @@ def test_behavior_cloning_dataset_yields_legal_action_labels(tmp_path):
         assert isinstance(features, torch.Tensor)
         assert 0 <= action_id < len(mask)
         assert mask[action_id] == 1
+
+
+def test_behavior_cloning_rank_dataset_adds_non_initial_kyoku_start_samples(tmp_path):
+    file_path = tmp_path / "bc_rank_policy_sample.jsonl"
+    _write_two_kyoku_4p_log(file_path)
+
+    dataset = BehaviorCloningRankDataset(
+        [str(file_path)],
+        is_train=False,
+        n_players=4,
+        replay_rule="tenhou",
+        encoder=DummyEncoder(),
+    )
+
+    samples = list(dataset)
+    rank_only = [sample for sample in samples if not sample[4]]
+    policy_samples = [sample for sample in samples if sample[4]]
+
+    assert policy_samples
+    assert len(rank_only) == 4
+    for features, action_id, mask, rank, has_policy in rank_only:
+        assert isinstance(features, torch.Tensor)
+        assert action_id == 0
+        assert len(mask) == 0
+        assert 0 <= rank < 4
+        assert has_policy is False
 
 
 def test_behavior_cloning_dataset_rejects_invalid_shuffle_buffer_files(tmp_path):
@@ -311,6 +399,25 @@ def test_transformer_policy_network_returns_logits_only():
 
     assert isinstance(logits, torch.Tensor)
     assert logits.shape == (2, 82)
+
+
+def test_transformer_policy_network_can_emit_rank_logits():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        policy_head_type="cls",
+        emit_rank=True,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    x = _dummy_sequence_batch(batch_size=2, prog_len=8, cand_len=4)
+
+    logits, rank_logits = model(x)
+
+    assert logits.shape == (2, 82)
+    assert rank_logits.shape == (2, 4)
 
 
 def test_transformer_actor_critic_keeps_value_head_output():
@@ -566,7 +673,47 @@ def test_sequence_feature_encoder_separates_dealer_from_sparse_vocab():
 
     assert features["dealer"].item() == 3
     assert features["sparse"].shape == (SequenceFeatureEncoder.MAX_SPARSE_LEN,)
-    assert valid_sparse.tolist() == [1, 3, 74]
+    assert valid_sparse.tolist() == [
+        1,
+        3,
+        SequenceFeatureEncoder.SPARSE_KYOKU_OFFSET,
+        SequenceFeatureEncoder.SPARSE_TILES_REMAINING_OFFSET + 69,
+    ]
+
+
+def test_sequence_feature_encoder_encodes_kyoku_start_without_hand_dora_or_candidates():
+    features = SequenceFeatureEncoder().encode_kyoku_start(
+        scores=[30000, 25000, 25000, 20000],
+        chang=1,
+        ju=2,
+        ben=3,
+        liqibang=1,
+        player_id=3,
+    )
+    valid_sparse = features["sparse"][features["sparse_mask"]]
+
+    assert valid_sparse.tolist() == [
+        1,
+        3,
+        SequenceFeatureEncoder.SPARSE_KYOKU_OFFSET + 2,
+        SequenceFeatureEncoder.SPARSE_TILES_REMAINING_OFFSET + 69,
+    ]
+    assert features["dealer"].item() == 3
+    assert features["player_rank_stats"].tolist() == [
+        [0, 3, 1],
+        [1, 0, 2],
+        [2, 1, 3],
+        [3, 2, 0],
+    ]
+    assert not features["hand_mask"].any()
+    assert not features["sparse_meld_mask"].any()
+    assert features["progression"].shape == (0, len(SequenceFeatureEncoder.PROG_DIMS))
+    assert features["candidates"].shape == (0, SequenceFeatureEncoder.CAND_WIDTH)
+    assert features["visible_tile_counts"][:, 1].sum().item() == 0
+    torch.testing.assert_close(
+        features["numeric"],
+        torch.tensor([3.0, 1.0, -0.5, 0.5, 0.0, 0.0], dtype=torch.float32),
+    )
 
 
 def test_sequence_feature_encoder_includes_player_stats():
@@ -619,6 +766,16 @@ def test_sequence_feature_encoder_includes_player_stats():
         [1, 0, 2, 20, 20],
         [2, 0, 1, 3, 2],
         [3, 1, 0, 2, 2],
+    ]
+    assert features["player_rank_stats"].shape == (
+        SequenceFeatureEncoder.PLAYER_RANK_STATS_TOKENS,
+        SequenceFeatureEncoder.PLAYER_RANK_STATS_WIDTH,
+    )
+    assert features["player_rank_stats"].tolist() == [
+        [0, 2, 2],
+        [1, 3, 3],
+        [2, 0, 0],
+        [3, 1, 1],
     ]
 
 
@@ -1717,3 +1874,95 @@ def test_bc_policy_trainer_train_epoch_accepts_pointer_candidate_logits():
     assert step == 1
     assert metrics["train/loss"] > 0
     assert 0.0 <= metrics["train/acc"] <= 1.0
+
+
+def test_bc_policy_trainer_train_epoch_accepts_mixed_rank_batches():
+    trainer = object.__new__(bc_policy_module.BCPolicyTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.label_smoothing = 0.0
+    trainer.max_grad_norm = 10.0
+    trainer.limit = 1
+    trainer.value_coef = 1.0
+
+    features = _dummy_sequence_batch(batch_size=3, prog_len=2, cand_len=2)
+    masks = torch.tensor(
+        [
+            [1, 1],
+            [0, 0],
+            [1, 1],
+        ],
+        dtype=torch.bool,
+    )
+    features["cand_mask"] = masks
+    actions = torch.tensor([0, 0, 1])
+    ranks = torch.tensor([0, 2, 3])
+    has_policy = torch.tensor([True, False, True])
+
+    model = TransformerPolicyNetwork(
+        d_model=32,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=64,
+        dropout=0.0,
+        d_sub=8,
+        policy_head_type="pointer",
+        emit_rank=True,
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+
+    metrics, step = trainer._train_epoch(
+        model=model,
+        dataloader=[(features, actions, masks, ranks, has_policy)],
+        optimizer=optimizer,
+        scheduler=scheduler,
+        step=0,
+        epoch=0,
+    )
+
+    assert step == 1
+    assert metrics["train/policy_loss"] > 0
+    assert metrics["train/rank_loss"] > 0
+    assert metrics["train/loss"] == pytest.approx(metrics["train/policy_loss"] + metrics["train/rank_loss"])
+
+
+def test_bc_policy_trainer_train_epoch_accepts_all_rank_only_batches():
+    trainer = object.__new__(bc_policy_module.BCPolicyTrainer)
+    trainer.device = torch.device("cpu")
+    trainer.label_smoothing = 0.0
+    trainer.max_grad_norm = 10.0
+    trainer.limit = 1
+    trainer.value_coef = 1.0
+
+    features = _dummy_sequence_batch(batch_size=2, prog_len=0, cand_len=0)
+    masks = torch.zeros(2, 0, dtype=torch.bool)
+    actions = torch.zeros(2, dtype=torch.long)
+    ranks = torch.tensor([1, 3])
+    has_policy = torch.zeros(2, dtype=torch.bool)
+
+    model = TransformerPolicyNetwork(
+        d_model=32,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=64,
+        dropout=0.0,
+        d_sub=8,
+        policy_head_type="pointer",
+        emit_rank=True,
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+
+    metrics, step = trainer._train_epoch(
+        model=model,
+        dataloader=[(features, actions, masks, ranks, has_policy)],
+        optimizer=optimizer,
+        scheduler=scheduler,
+        step=0,
+        epoch=0,
+    )
+
+    assert step == 1
+    assert metrics["train/policy_loss"] == 0
+    assert metrics["train/rank_loss"] > 0
+    assert metrics["train/loss"] == pytest.approx(metrics["train/rank_loss"])

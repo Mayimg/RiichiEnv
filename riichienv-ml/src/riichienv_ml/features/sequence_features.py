@@ -19,6 +19,7 @@ class SequenceFeatureEncoder:
         sparse:      (MAX_SPARSE_LEN,)   int64   padded sparse embedding indices
         dealer:      ()                  int64   dealer relative seat
         player_stats:(PLAYER_INFO_TOKENS, PLAYER_INFO_WIDTH) int64 per-player public summaries
+        player_rank_stats:(PLAYER_RANK_STATS_TOKENS, PLAYER_RANK_STATS_WIDTH) int64 per-player rank metadata
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
         hand:        (MAX_HAND_LEN, 2)   int64   hand-count rows plus optional drawn-tile token
@@ -37,15 +38,22 @@ class SequenceFeatureEncoder:
         cand_mask:   (C,)                bool    True for real entries
     """
 
-    SPARSE_VOCAB_SIZE = 261
-    SPARSE_PAD = 260
-    MAX_SPARSE_LEN = 8
+    SPARSE_VOCAB_SIZE = 266
+    SPARSE_PAD = 265
+    SPARSE_WIND_OFFSET = 2
+    SPARSE_KYOKU_OFFSET = 6
+    SPARSE_TILES_REMAINING_OFFSET = 10
+    MAX_SPARSE_LEN = 9
 
     DEALER_DIMS = 4
 
     PLAYER_INFO_DIMS = (4, 2, 5, 21, 21)
     PLAYER_INFO_TOKENS = 4
     PLAYER_INFO_WIDTH = len(PLAYER_INFO_DIMS)
+
+    PLAYER_RANK_STATS_DIMS = (4, 4, 4)
+    PLAYER_RANK_STATS_TOKENS = 4
+    PLAYER_RANK_STATS_WIDTH = len(PLAYER_RANK_STATS_DIMS)
 
     MELD_DIMS = (6, 38, 4, 38, 4, 38, 4, 38, 4)
     MELD_PAD = (5, 37, 3, 37, 3, 37, 3, 37, 3)
@@ -79,6 +87,9 @@ class SequenceFeatureEncoder:
     AGARI_OVERTAKE_TOKENS = AGARI_OVERTAKE_DIMS[0]
     AGARI_OVERTAKE_TOKEN_DIM = AGARI_OVERTAKE_DIMS[1] * AGARI_OVERTAKE_DIMS[2]
     AGARI_OVERTAKE_DIM = AGARI_OVERTAKE_TOKENS * AGARI_OVERTAKE_TOKEN_DIM
+
+    _SCORE_NORM_BASE = 25000.0
+    _SCORE_NORM_SCALE = 10000.0
 
     def __init__(self, n_players: int = 4, game_style: int = 1, include_hand_tokens: bool = True):
         self.n_players = n_players
@@ -116,6 +127,19 @@ class SequenceFeatureEncoder:
                 f"encode_seq_player_stats returned {raw_player_stats.shape[0]} rows; expected {self.PLAYER_INFO_TOKENS}"
             )
         player_stats = raw_player_stats.astype(np.int64, copy=True)
+
+        # Per-player current-rank and current-seat-wind metadata
+        player_rank_stats_bytes = obs.encode_seq_player_rank_stats()
+        raw_player_rank_stats = np.frombuffer(player_rank_stats_bytes, dtype=np.uint16).reshape(
+            -1,
+            self.PLAYER_RANK_STATS_WIDTH,
+        )
+        if raw_player_rank_stats.shape[0] != self.PLAYER_RANK_STATS_TOKENS:
+            raise ValueError(
+                f"encode_seq_player_rank_stats returned {raw_player_rank_stats.shape[0]} rows; "
+                f"expected {self.PLAYER_RANK_STATS_TOKENS}"
+            )
+        player_rank_stats = raw_player_rank_stats.astype(np.int64, copy=True)
 
         # Current visible melds
         sparse_meld_feature_bytes = obs.encode_seq_sparse_meld_features()
@@ -251,6 +275,7 @@ class SequenceFeatureEncoder:
             "sparse": torch.from_numpy(sparse),
             "dealer": torch.tensor(dealer, dtype=torch.long),
             "player_stats": torch.from_numpy(player_stats),
+            "player_rank_stats": torch.from_numpy(player_rank_stats),
             "sparse_melds": torch.from_numpy(sparse_melds),
             "sparse_meld_owners": torch.from_numpy(sparse_meld_owners),
             "hand": torch.from_numpy(hand),
@@ -268,11 +293,147 @@ class SequenceFeatureEncoder:
             "cand_mask": torch.from_numpy(cand_mask),
         }
 
+    @staticmethod
+    def _stable_ranks(scores: list[int] | tuple[int, ...] | np.ndarray, n_players: int = 4) -> np.ndarray:
+        indexed = sorted(enumerate(list(scores)[:n_players]), key=lambda item: (-int(item[1]), int(item[0])))
+        ranks = np.zeros(n_players, dtype=np.int64)
+        for rank, (seat, _score) in enumerate(indexed):
+            ranks[seat] = rank
+        return ranks
+
+    @classmethod
+    def _normalize_score(cls, score: int | float) -> float:
+        return (float(score) - cls._SCORE_NORM_BASE) / cls._SCORE_NORM_SCALE
+
+    def encode_kyoku_start(
+        self,
+        *,
+        scores: list[int] | tuple[int, ...],
+        chang: int,
+        ju: int,
+        ben: int,
+        liqibang: int,
+        player_id: int,
+    ) -> dict[str, torch.Tensor]:
+        """Encode a pre-deal kyoku-start state with no hand, dora, progression, or candidates."""
+        if self.n_players != 4:
+            raise ValueError("encode_kyoku_start currently supports 4-player sequence features only")
+        if len(scores) < self.n_players:
+            raise ValueError(f"scores must contain at least {self.n_players} entries")
+
+        from riichienv import encode_seq_agari_overtakes_tenhou_4p  # noqa: PLC0415
+
+        player_id = int(player_id)
+        chang = int(chang)
+        ju = int(ju)
+        ben = int(ben)
+        liqibang = int(liqibang)
+        score_values = [int(score) for score in scores[: self.n_players]]
+        ranks = self._stable_ranks(score_values, self.n_players)
+
+        sparse_values = np.array(
+            [
+                min(int(self.game_style), 1),
+                self.SPARSE_WIND_OFFSET + min(max(chang, 0), 3),
+                self.SPARSE_KYOKU_OFFSET + min(max(ju, 0), 3),
+                self.SPARSE_TILES_REMAINING_OFFSET + 69,
+            ],
+            dtype=np.int64,
+        )
+        sparse = np.full(self.MAX_SPARSE_LEN, self.SPARSE_PAD, dtype=np.int64)
+        sparse[: len(sparse_values)] = sparse_values
+        sparse_mask = np.zeros(self.MAX_SPARSE_LEN, dtype=np.bool_)
+        sparse_mask[: len(sparse_values)] = True
+
+        # `ju` follows LogKyoku/GRP convention: zero-based kyoku index, which
+        # is also the current dealer seat in the current 4P replay encoding.
+        dealer = np.int64((ju - player_id + self.n_players) % self.n_players)
+
+        player_stats = np.zeros((self.PLAYER_INFO_TOKENS, self.PLAYER_INFO_WIDTH), dtype=np.int64)
+        player_rank_stats = np.zeros(
+            (self.PLAYER_RANK_STATS_TOKENS, self.PLAYER_RANK_STATS_WIDTH),
+            dtype=np.int64,
+        )
+        for rel in range(self.n_players):
+            abs_idx = (player_id + rel) % self.n_players
+            player_stats[rel, 0] = rel
+            player_rank_stats[rel] = np.array(
+                [
+                    rel,
+                    ranks[abs_idx],
+                    (abs_idx + self.n_players - ju) % self.n_players,
+                ],
+                dtype=np.int64,
+            )
+
+        sparse_melds = np.tile(np.array(self.MELD_PAD, dtype=np.int64), (self.MAX_SPARSE_MELDS, 1))
+        sparse_meld_owners = np.full(self.MAX_SPARSE_MELDS, self.SPARSE_MELD_OWNER_PAD, dtype=np.int64)
+        sparse_meld_mask = np.zeros(self.MAX_SPARSE_MELDS, dtype=np.bool_)
+
+        hand = np.tile(np.array(self.HAND_PAD, dtype=np.int64), (self.MAX_HAND_LEN, 1))
+        hand_mask = np.zeros(self.MAX_HAND_LEN, dtype=np.bool_)
+
+        visible_tile_counts = np.stack(
+            [
+                np.arange(self.VISIBLE_TILE_COUNT_TOKENS, dtype=np.int64),
+                np.zeros(self.VISIBLE_TILE_COUNT_TOKENS, dtype=np.int64),
+            ],
+            axis=1,
+        )
+
+        numeric = np.array(
+            [
+                float(ben),
+                float(liqibang),
+                *[self._normalize_score(score_values[(player_id + i) % 4]) for i in range(4)],
+            ],
+            dtype=np.float32,
+        )
+        agari_overtakes = np.frombuffer(
+            encode_seq_agari_overtakes_tenhou_4p(score_values, ju, ben, liqibang, player_id),
+            dtype=np.float32,
+        ).copy()
+        if agari_overtakes.shape[0] != self.AGARI_OVERTAKE_DIM:
+            raise ValueError(
+                f"encode_seq_agari_overtakes_tenhou_4p returned {agari_overtakes.shape[0]} floats; "
+                f"expected {self.AGARI_OVERTAKE_DIM}"
+            )
+
+        progression = np.empty((0, len(self.PROG_DIMS)), dtype=np.int64)
+        prog_melds = np.empty((0, self.MELD_WIDTH), dtype=np.int64)
+        candidates = np.empty((0, self.CAND_WIDTH), dtype=np.int64)
+        cand_melds = np.empty((0, self.MELD_WIDTH), dtype=np.int64)
+        prog_mask = np.zeros(0, dtype=np.bool_)
+        cand_mask = np.zeros(0, dtype=np.bool_)
+
+        return {
+            "sparse": torch.from_numpy(sparse),
+            "dealer": torch.tensor(dealer, dtype=torch.long),
+            "player_stats": torch.from_numpy(player_stats),
+            "player_rank_stats": torch.from_numpy(player_rank_stats),
+            "sparse_melds": torch.from_numpy(sparse_melds),
+            "sparse_meld_owners": torch.from_numpy(sparse_meld_owners),
+            "hand": torch.from_numpy(hand),
+            "visible_tile_counts": torch.from_numpy(visible_tile_counts),
+            "numeric": torch.from_numpy(numeric),
+            "agari_overtakes": torch.from_numpy(agari_overtakes),
+            "progression": torch.from_numpy(progression),
+            "prog_melds": torch.from_numpy(prog_melds),
+            "candidates": torch.from_numpy(candidates),
+            "cand_melds": torch.from_numpy(cand_melds),
+            "sparse_mask": torch.from_numpy(sparse_mask),
+            "sparse_meld_mask": torch.from_numpy(sparse_meld_mask),
+            "hand_mask": torch.from_numpy(hand_mask),
+            "prog_mask": torch.from_numpy(prog_mask),
+            "cand_mask": torch.from_numpy(cand_mask),
+        }
+
 
 PACKED_FIXED_SIZE = (
     SequenceFeatureEncoder.MAX_SPARSE_LEN
     + 1
     + SequenceFeatureEncoder.PLAYER_INFO_TOKENS * SequenceFeatureEncoder.PLAYER_INFO_WIDTH
+    + SequenceFeatureEncoder.PLAYER_RANK_STATS_TOKENS * SequenceFeatureEncoder.PLAYER_RANK_STATS_WIDTH
     + SequenceFeatureEncoder.MAX_SPARSE_MELDS * SequenceFeatureEncoder.MELD_WIDTH
     + SequenceFeatureEncoder.MAX_SPARSE_MELDS
     + SequenceFeatureEncoder.MAX_HAND_LEN * len(SequenceFeatureEncoder.HAND_DIMS)
@@ -349,6 +510,7 @@ def collate_sequence_features(features: list[dict[str, torch.Tensor]]) -> dict[s
         "sparse",
         "dealer",
         "player_stats",
+        "player_rank_stats",
         "sparse_melds",
         "sparse_meld_owners",
         "hand",
@@ -419,6 +581,7 @@ def pack_sequence_features(features: list[dict[str, torch.Tensor]]) -> tuple[tor
         "sparse",
         "dealer",
         "player_stats",
+        "player_rank_stats",
         "sparse_melds",
         "sparse_meld_owners",
         "hand",

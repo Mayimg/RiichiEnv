@@ -1316,7 +1316,7 @@ impl Observation {
 
     /// Encode sparse features as variable-length u16 indices.
     ///
-    /// Returns raw bytes of a `&[u16]` slice (variable length, max 10 elements).
+    /// Returns raw bytes of a `&[u16]` slice (variable length, max 9 elements).
     /// Python side: `np.frombuffer(bytes, dtype=np.uint16)`.
     #[pyo3(name = "encode_seq_sparse", signature = (game_style=1))]
     pub fn encode_seq_sparse_py<'py>(
@@ -1349,6 +1349,24 @@ impl Observation {
         let byte_len = stats.len()
             * std::mem::size_of::<[u16; crate::observation::sequence_features::PLAYER_INFO_WIDTH]>(
             );
+        let byte_slice =
+            unsafe { std::slice::from_raw_parts(stats.as_ptr() as *const u8, byte_len) };
+        Ok(pyo3::types::PyBytes::new(py, byte_slice))
+    }
+
+    /// Encode per-player public rank metadata rows as 4 × 3 u16 tuples.
+    ///
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(4, 3)`.
+    #[pyo3(name = "encode_seq_player_rank_stats")]
+    pub fn encode_seq_player_rank_stats_py<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let stats = self.encode_seq_player_rank_stats();
+        let byte_len = stats.len()
+            * std::mem::size_of::<
+                [u16; crate::observation::sequence_features::PLAYER_RANK_STATS_WIDTH],
+            >();
         let byte_slice =
             unsafe { std::slice::from_raw_parts(stats.as_ptr() as *const u8, byte_len) };
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
