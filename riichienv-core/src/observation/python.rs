@@ -1402,10 +1402,10 @@ impl Observation {
         Ok(pyo3::types::PyBytes::new(py, byte_slice))
     }
 
-    /// Encode hand features as N × 2 u16 tuples.
+    /// Encode hand features as 38 × 2 u16 tuples.
     ///
-    /// Returns raw bytes of flattened row-major `&[[u16; 3]]`.
-    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(-1, 2)`.
+    /// Python side: `np.frombuffer(bytes, dtype=np.uint16).reshape(38, 2)`.
+    /// Rows 0-36 are tile37 hand counts; row 37 is the optional drawn-tile token.
     #[pyo3(name = "encode_seq_hand")]
     pub fn encode_seq_hand_py<'py>(
         &self,

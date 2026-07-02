@@ -34,12 +34,24 @@ pub const PLAYER_INFO_TOKENS: usize = 4;
 #[allow(dead_code)]
 pub const PLAYER_INFO_WIDTH: usize = 5;
 
-/// Hand tuple dimensions: (tile37, draw_state)
+/// Hand tuple dimensions: (tile37, hand_count_or_drawn_marker).
+///
+/// Rows 0-36 are fixed tile37 hand-count rows. The final row is an optional
+/// drawn-tile token with `HAND_DRAWN_TOKEN_AUX` in the second field.
 #[allow(dead_code)]
-pub const HAND_DIMS: [u16; 2] = [38, 3];
-pub const MAX_HAND_LEN: usize = 14;
+pub const HAND_COUNT_DIMS: u16 = 5;
 #[allow(dead_code)]
-pub const HAND_PAD: [u16; 2] = [37, 2];
+pub const HAND_DIMS: [u16; 2] = [38, HAND_COUNT_DIMS + 1];
+#[allow(dead_code)]
+pub const HAND_COUNT_TOKENS: usize = 37;
+#[allow(dead_code)]
+pub const HAND_DRAWN_TILE_TOKENS: usize = 1;
+#[allow(dead_code)]
+pub const MAX_HAND_LEN: usize = HAND_COUNT_TOKENS + HAND_DRAWN_TILE_TOKENS;
+#[allow(dead_code)]
+pub const HAND_PAD: [u16; 2] = [37, 5];
+#[allow(dead_code)]
+pub const HAND_DRAWN_TOKEN_AUX: u16 = HAND_COUNT_DIMS;
 
 /// Visible tile count tuple dimensions: (tile37, visible_count)
 #[allow(dead_code)]
@@ -636,35 +648,37 @@ impl Observation {
             .collect()
     }
 
-    /// Encode the hand as variable-length (tile37, draw_state) tuples.
+    /// Encode the hand as fixed tile-count rows plus one drawn-tile token.
     ///
-    /// The hand is ordered as concealed tiles followed by the drawn tile, if
-    /// present. `draw_state`: 0=concealed, 1=drawn.
+    /// Rows 0-36 are `(tile37, hand_count)` in tile37 order. The final row is
+    /// `(drawn_tile37, HAND_DRAWN_TOKEN_AUX)` when a drawn tile is known, or
+    /// `HAND_PAD` otherwise.
     pub fn encode_seq_hand(&self) -> Vec<[u16; 2]> {
-        let mut hand: Vec<[u16; 2]> = Vec::with_capacity(MAX_HAND_LEN);
-        let my_hand = &self.hands[self.player_id as usize];
-        let drawn_k37 = self
-            .get_drawn_tile()
-            .map(|drawn| tile_id_to_kan37(drawn as u32));
-        let mut drawn_consumed = false;
-
-        for &tid in my_hand {
+        let mut counts = [0u16; HAND_COUNT_TOKENS];
+        for &tid in &self.hands[self.player_id as usize] {
             if tid < 136 {
                 let k37 = tile_id_to_kan37(tid);
-                if !drawn_consumed && drawn_k37 == Some(k37) {
-                    drawn_consumed = true;
-                    continue;
-                }
-                hand.push([k37 as u16, 0]);
+                counts[k37 as usize] = counts[k37 as usize].saturating_add(1);
             }
         }
 
-        if let Some(k37) = drawn_k37 {
-            hand.push([k37 as u16, 1]);
-        }
+        let mut hand: Vec<[u16; 2]> = counts
+            .into_iter()
+            .enumerate()
+            .map(|(tile37, count)| [tile37 as u16, count.min(4)])
+            .collect();
 
-        if hand.len() > MAX_HAND_LEN {
-            hand.truncate(MAX_HAND_LEN);
+        let drawn_k37 = self
+            .drawn_tile
+            .map(|drawn| tile_id_to_kan37(drawn as u32))
+            .or_else(|| {
+                self.get_drawn_tile()
+                    .map(|drawn| tile_id_to_kan37(drawn as u32))
+            });
+        if let Some(k37) = drawn_k37 {
+            hand.push([k37 as u16, HAND_DRAWN_TOKEN_AUX]);
+        } else {
+            hand.push(HAND_PAD);
         }
 
         hand
@@ -1276,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_seq_hand_moves_drawn_tile_to_tail() {
+    fn test_encode_seq_hand_counts_tiles_and_adds_drawn_tile_token() {
         let obs = Observation::new(
             0,
             [vec![0, 1, 4], vec![], vec![], vec![]],
@@ -1298,15 +1312,21 @@ mod tests {
             [None; 4],
             None,
             None,
-            None,
+            Some(0),
         );
 
         let hand = obs.encode_seq_hand();
-        assert_eq!(hand, vec![[1, 0], [2, 0], [1, 1]]);
+        assert_eq!(hand.len(), MAX_HAND_LEN);
+        for (tile37, row) in hand[..HAND_COUNT_TOKENS].iter().enumerate() {
+            assert_eq!(row[0], tile37 as u16);
+        }
+        assert_eq!(hand[1], [1, 2]); // two 1m copies
+        assert_eq!(hand[2], [2, 1]); // one 2m copy
+        assert_eq!(hand[HAND_COUNT_TOKENS], [1, HAND_DRAWN_TOKEN_AUX]);
     }
 
     #[test]
-    fn test_encode_seq_hand_without_drawn_is_all_concealed() {
+    fn test_encode_seq_hand_without_drawn_uses_padded_drawn_tile_token() {
         let obs = Observation::new(
             0,
             [vec![0, 4, 8], vec![], vec![], vec![]],
@@ -1332,7 +1352,11 @@ mod tests {
         );
 
         let hand = obs.encode_seq_hand();
-        assert_eq!(hand, vec![[1, 0], [2, 0], [3, 0]]);
+        assert_eq!(hand.len(), MAX_HAND_LEN);
+        assert_eq!(hand[1], [1, 1]);
+        assert_eq!(hand[2], [2, 1]);
+        assert_eq!(hand[3], [3, 1]);
+        assert_eq!(hand[HAND_COUNT_TOKENS], HAND_PAD);
     }
 
     #[test]

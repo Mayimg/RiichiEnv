@@ -400,7 +400,7 @@ def test_transformer_policy_training_step_with_sequence_features(tmp_path):
     assert any(p.grad is not None for p in model.parameters())
 
 
-def test_sequence_feature_encoder_factorizes_hand_draw_state():
+def test_sequence_feature_encoder_counts_hand_tiles_and_adds_drawn_tile_token():
     obs = Observation(
         0,
         [[0, 1, 4], [], [], []],
@@ -426,11 +426,51 @@ def test_sequence_feature_encoder_factorizes_hand_draw_state():
     features = SequenceFeatureEncoder().encode(obs)
     hand = features["hand"]
     hand_mask = features["hand_mask"]
-    valid_hand = hand[hand_mask]
 
-    assert valid_hand.shape[1] == 2
-    assert torch.count_nonzero(valid_hand[:, 1] == 1) == 1
-    assert torch.count_nonzero(valid_hand[:, 1] == 0) == len(valid_hand) - 1
+    assert hand.shape == (SequenceFeatureEncoder.MAX_HAND_LEN, len(SequenceFeatureEncoder.HAND_DIMS))
+    assert hand[: SequenceFeatureEncoder.HAND_COUNT_TOKENS, 0].tolist() == list(
+        range(SequenceFeatureEncoder.HAND_COUNT_TOKENS)
+    )
+    assert hand[1].tolist() == [1, 2]  # two 1m copies
+    assert hand[2].tolist() == [2, 1]  # one 2m copy
+    assert hand[SequenceFeatureEncoder.HAND_COUNT_TOKENS].tolist() == [
+        1,
+        SequenceFeatureEncoder.HAND_DRAWN_TOKEN_AUX,
+    ]
+    assert hand_mask[: SequenceFeatureEncoder.HAND_COUNT_TOKENS].all().item()
+    assert hand_mask[SequenceFeatureEncoder.HAND_COUNT_TOKENS].item()
+
+
+def test_sequence_feature_encoder_masks_absent_drawn_tile_token():
+    obs = Observation(
+        0,
+        [[0, 4, 8], [], [], []],
+        [[], [], [], []],
+        [[], [], [], []],
+        [],
+        [25000, 25000, 25000, 25000],
+        [False, False, False, False],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        0,
+        [],
+        False,
+        [None, None, None, None],
+        [None, None, None, None],
+        None,
+    )
+
+    features = SequenceFeatureEncoder().encode(obs)
+    hand = features["hand"]
+    hand_mask = features["hand_mask"]
+
+    assert hand[SequenceFeatureEncoder.HAND_COUNT_TOKENS].tolist() == list(SequenceFeatureEncoder.HAND_PAD)
+    assert hand_mask[: SequenceFeatureEncoder.HAND_COUNT_TOKENS].all().item()
+    assert not hand_mask[SequenceFeatureEncoder.HAND_COUNT_TOKENS].item()
 
 
 def test_sequence_numeric_features_use_current_normalized_scores_only():
@@ -1434,6 +1474,39 @@ def test_transformer_visible_tile_count_embedding_uses_shared_tile_table():
 
     assert table_emb.shape == (1, 3, 64)
     torch.testing.assert_close(table_emb, direct_emb)
+
+
+def test_transformer_hand_embedding_uses_shared_tile_table_and_drawn_marker():
+    model = TransformerPolicyNetwork(
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dim_feedforward=128,
+        d_sub=8,
+        max_prog_len=8,
+        max_cand_len=4,
+    )
+    sparse = torch.tensor([[_SPARSE_DORA_OFFSET + 4, SequenceFeatureEncoder.SPARSE_PAD]], dtype=torch.long)
+    dora_tile34 = model._decode_current_dora_tiles(sparse)
+    dealer = torch.tensor([3], dtype=torch.long)
+    round_wind = torch.tensor([1], dtype=torch.long)
+    tile37_table, _ = model.tile_embed.build_tables(
+        dora_tile34,
+        dealer,
+        round_wind,
+        model.relative_seat_embed,
+    )
+    hand = torch.tensor(
+        [[[1, 2], [5, 0], [1, SequenceFeatureEncoder.HAND_DRAWN_TOKEN_AUX], SequenceFeatureEncoder.HAND_PAD]],
+        dtype=torch.long,
+    )
+
+    table_emb = model._embed_hand(hand, dora_tile34, tile37_table, dealer, round_wind)
+    direct_emb = model._embed_hand(hand, dora_tile34, None, dealer, round_wind)
+
+    assert table_emb.shape == (1, 4, 64)
+    torch.testing.assert_close(table_emb, direct_emb)
+    assert not torch.allclose(table_emb[:, 0], table_emb[:, 2])
 
 
 def test_transformer_shared_tile_embedding_marks_wind_owner_and_round_wind():

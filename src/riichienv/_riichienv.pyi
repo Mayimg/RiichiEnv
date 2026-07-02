@@ -491,10 +491,10 @@ class Observation:
     def encode_seq_hand(self) -> bytes:
         """Encode hand tuples for sequence features.
 
-        Shape: ``(K, 2)`` / dtype: ``uint16``.
+        Shape: ``(38, 2)`` / dtype: ``uint16``.
 
-        Each row is ``(tile37, draw_state)`` with concealed tiles first and the
-        optional drawn tile last.
+        Rows ``0..36`` are fixed ``(tile37, hand_count)`` rows. Row ``37`` is
+        the optional drawn-tile token ``(drawn_tile37, drawn_marker)``.
         """
         ...
     def encode_seq_visible_tile_counts(self) -> bytes:

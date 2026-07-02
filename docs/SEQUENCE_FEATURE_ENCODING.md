@@ -15,7 +15,7 @@ Unlike the CNN encoder (`obs.encode()`) which produces spatial `(C, 34)` tensors
 | **Player Stats** | `(4, 5)` | int64 | Per-player public summary tokens in observer-relative seat order |
 | **Sparse Melds** | `(16, 9)` | int64 | Current visible melds for all players in factorized meld layout |
 | **Sparse Meld Owners** | `(16,)` | int64 | Owner seats aligned with sparse meld rows |
-| **Hand** | `(14, 2)` | int64 | Hand tiles as `(tile37, draw_state)` tuples |
+| **Hand** | `(38, 2)` | int64 | 37 hand-count rows plus one optional drawn-tile token |
 | **Visible Tile Counts** | `(37, 2)` | int64 | Per-tile37 visible counts as `(tile37, visible_count)` tuples |
 | **Numeric** | `(6,)` | float32 | Continuous scalar features |
 | **Agari Overtakes** | `(4, 96, 4)` | float32 | Pairwise rank-overtake flags for standard 4P win patterns |
@@ -28,7 +28,7 @@ Progression and candidate groups stay variable-length for a single observation a
 
 ## Current Transformer Embedding Strategy
 
-The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes visible tile-count tokens with the shared tile embedding plus a count embedding shared by all tile types, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens. Progression order is represented with a learned relative attention bias based on discard-count distance, not with absolute event-index positional embeddings.
+The current default transformer implementation (`riichienv-ml/src/riichienv_ml/models/transformer.py`) factorizes tile-only tokens with a **shared tile embedding module**, factorizes hand-count tokens with the shared tile embedding plus a hand-count embedding shared by all tile types, adds a dedicated drawn-tile marker embedding to the optional drawn-tile token, factorizes visible tile-count tokens with the shared tile embedding plus a count embedding shared by all tile types, factorizes all melds with a **shared meld embedding module**, routes all real relative-seat fields through a **shared relative-seat embedding module**, embeds four per-player public summary tokens, and reshapes agari-overtake features into four winner-relative-seat tokens. Progression order is represented with a learned relative attention bias based on discard-count distance, not with absolute event-index positional embeddings.
 
 The feature vocabulary and external MJAI log format are independent of the projection implementation described here. The optimized transformer follows the encoded feature groups and vocabularies listed in this document, but evaluates several projections with fixed-shape table/gather operations to reduce small CUDA kernels and GPU-to-CPU synchronization points.
 
@@ -72,7 +72,8 @@ The shared tile embedding is applied to single-tile fields and to the tile slots
 
 | Feature group | Field / token range | Uses shared tile embedding |
 |---------------|---------------------|----------------------------|
-| Hand | `tile37` | Yes |
+| Hand count rows | `tile37` | Yes, with an extra hand-count embedding |
+| Hand drawn-tile token | `drawn_tile37` | Yes, with an extra drawn-tile marker embedding |
 | Visible Tile Counts | `tile37` | Yes, with an extra shared count embedding |
 | Sparse | dora-indicator tokens (`75-259`) | Yes, with an extra dora-slot embedding |
 | Progression | discard and dora-reveal type ranges | Yes |
@@ -250,32 +251,48 @@ For kakan, `Meld.added_tile` preserves the added tile so current sparse melds ca
 
 ## 2. Hand Features
 
-**Tuple sequence, max 14 entries**
+**Fixed 38 tuple tokens**
 
-Each hand tile is encoded as a 2-tuple `(tile37, draw_state)`.
+Rows `0..36` are fixed hand-count rows ordered by `tile37`. The final row is an optional drawn-tile token.
+
+| Row range | Tuple | Meaning |
+|-----------|-------|---------|
+| `0..36` | `(tile37, hand_count)` | `tile37` is the row id; `hand_count` is the number of copies in the observing player's current hand |
+| `37` | `(drawn_tile37, drawn_marker)` | optional drawn-tile token; padding when no drawn tile is known |
 
 | Field | Vocab | Values |
 |-------|-------|--------|
-| tile37 | 38 | 0-36 = kan37 tile, 37 = padding |
-| draw_state | 3 | 0=concealed, 1=drawn, 2=padding |
+| tile37 / drawn_tile37 | 38 | 0-36 = kan37 tile, 37 = padding for the drawn-tile row |
+| hand_count / drawn_marker | 6 | 0-4 hand copies for rows `0..36`, 5 = drawn-tile marker or padding aux |
 
-**Padding tuple:** `(37, 2)`
+**Padding tuple for the drawn-tile row:** `(37, 5)`
 
-The sequence is ordered as:
-- concealed tiles in hand order
-- the optional drawn tile last
+The count rows are always present for normal sequence features. The drawn-tile row is valid only when the observation has a current drawn tile. Belief-allocation features keep the same 38 physical rows but mask all hand rows.
+The padding row uses the same aux id as the drawn-tile marker; it is ignored by `hand_mask`.
+
+The transformer embeds count rows as:
+
+```text
+shared tile embedding + hand-count embedding -> field-wise projected component sum -> LayerNorm
+```
+
+The transformer embeds the drawn-tile row as:
+
+```text
+shared tile embedding + drawn-tile marker embedding -> field-wise projected component sum -> LayerNorm
+```
 
 ### Rust API
 
 ```rust
-obs.encode_seq_hand() -> Vec<[u16; 2]>
+obs.encode_seq_hand() -> Vec<[u16; 2]>  // length 38
 ```
 
 ### Python API (raw)
 
 ```python
 hand_bytes = obs.encode_seq_hand()
-hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)  # variable length
+hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(38, 2)
 ```
 
 ## 2a. Visible Tile Count Features
@@ -603,7 +620,7 @@ for pid, obs in obs_dict.items():
     # features["player_stats"]-- (4, 5) int64, per-player public summaries
     # features["sparse_melds"]-- (16, 9) int64, padded with (5, 37, 3, ...)
     # features["sparse_meld_owners"]-- (16,) int64, padded with 4
-    # features["hand"]        -- (14, 2) int64, padded with (37, 2)
+    # features["hand"]        -- (38, 2) int64, 37 count rows plus drawn-tile row
     # features["visible_tile_counts"] -- (37, 2) int64, rows (tile37, visible_count)
     # features["numeric"]     -- (6,) float32
     # features["agari_overtakes"] -- (1536,) float32, reshapeable to (4, 96, 4)
@@ -612,7 +629,7 @@ for pid, obs in obs_dict.items():
     # features["candidates"]  -- (C, 3) int64
     # features["cand_melds"]  -- (C, 9) int64, aligned with candidates
     # features["sparse_mask"] -- (8,) bool, True for real tokens
-    # features["hand_mask"]   -- (14,) bool, True for real entries
+    # features["hand_mask"]   -- (38,) bool, True for real entries
     # features["prog_mask"]   -- (P,) bool, True for real entries
     # features["cand_mask"]   -- (C,) bool, True for real entries
 ```
@@ -630,8 +647,10 @@ SequenceFeatureEncoder.MAX_SPARSE_MELDS   # 16
 SequenceFeatureEncoder.MELD_DIMS           # (6, 38, 4, 38, 4, 38, 4, 38, 4)
 SequenceFeatureEncoder.SPARSE_MELD_FEATURE_WIDTH  # 10
 SequenceFeatureEncoder.SPARSE_MELD_OWNER_DIMS  # 5
-SequenceFeatureEncoder.HAND_DIMS          # (38, 3)
-SequenceFeatureEncoder.MAX_HAND_LEN       # 14
+SequenceFeatureEncoder.HAND_DIMS          # (38, 6)
+SequenceFeatureEncoder.HAND_COUNT_DIMS    # 5
+SequenceFeatureEncoder.HAND_COUNT_TOKENS  # 37
+SequenceFeatureEncoder.MAX_HAND_LEN       # 38
 SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS    # (37, 5)
 SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS  # 37
 SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH   # 2
