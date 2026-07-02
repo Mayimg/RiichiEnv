@@ -32,6 +32,31 @@ from torch.nn import functional as F
 
 from riichienv_ml.features.sequence_features import SequenceFeatureEncoder, packed_sequence_size
 
+
+def _transformer_without_mha_fastpath(
+    transformer: nn.TransformerEncoder,
+    tokens: torch.Tensor,
+    *,
+    mask: torch.Tensor | None,
+    src_key_padding_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    mha_backend = getattr(torch.backends, "mha", None)
+    if (
+        mask is None
+        or mha_backend is None
+        or not hasattr(mha_backend, "get_fastpath_enabled")
+        or not hasattr(mha_backend, "set_fastpath_enabled")
+    ):
+        return transformer(tokens, mask=mask, src_key_padding_mask=src_key_padding_mask)
+
+    previous = bool(mha_backend.get_fastpath_enabled())
+    mha_backend.set_fastpath_enabled(False)
+    try:
+        return transformer(tokens, mask=mask, src_key_padding_mask=src_key_padding_mask)
+    finally:
+        mha_backend.set_fastpath_enabled(previous)
+
+
 _TILE37_PAD = 37
 _TILE34_PAD = 34
 
@@ -983,7 +1008,12 @@ class TransformerActorCritic(nn.Module):
             dtype=tokens.dtype,
         )
         padding_mask = self._additive_padding_mask(pad_mask, tokens.dtype)
-        return self.transformer(tokens, mask=attn_bias, src_key_padding_mask=padding_mask)
+        return _transformer_without_mha_fastpath(
+            self.transformer,
+            tokens,
+            mask=attn_bias,
+            src_key_padding_mask=padding_mask,
+        )
 
     def _segment_ids(self, prog_len: int, cand_len: int, device: torch.device) -> torch.Tensor:
         return torch.cat(
