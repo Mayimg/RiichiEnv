@@ -98,7 +98,9 @@ def test_belief_observation_encoder_ignores_masked_hand_values():
     features = collate_belief_features([BeliefFeatureEncoder().encode(obs)])
     altered = {key: value.clone() for key, value in features.items()}
     altered["hand"][:, :, 0] = torch.arange(SequenceFeatureEncoder.MAX_HAND_LEN).view(1, -1) % 38
-    altered["hand"][:, :, 1] = torch.arange(SequenceFeatureEncoder.MAX_HAND_LEN).view(1, -1) % 3
+    altered["hand"][:, :, 1] = (
+        torch.arange(SequenceFeatureEncoder.MAX_HAND_LEN).view(1, -1) % SequenceFeatureEncoder.HAND_DIMS[1]
+    )
 
     encoder = BeliefObservationEncoder(
         d_model=32,

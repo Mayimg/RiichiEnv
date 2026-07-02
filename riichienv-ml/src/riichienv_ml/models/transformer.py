@@ -5,10 +5,13 @@ each group, and processes them through a TransformerEncoder.  Progression and
 candidate groups are padded only to the maximum length in the current batch.
 
 Tile-only fields across hand / sparse dora / progression / candidates share
-an attribute-based tile embedding module. Chi/pon/kan melds use a shared
-factorized embedding over meld kind, slot tiles, and slot roles. Dealer,
-player summary, progression actor/from, candidate from, and sparse meld owner
-fields share an observer-relative seat base embedding with role-specific context.
+an attribute-based tile embedding module. Hand count tokens combine that shared
+tile embedding with a hand-count embedding, and the optional drawn-tile token
+uses the shared tile embedding with a dedicated drawn-token embedding.
+Chi/pon/kan melds use a shared factorized embedding over meld kind, slot
+tiles, and slot roles. Dealer, player summary, progression actor/from,
+candidate from, and sparse meld owner fields share an observer-relative seat
+base embedding with role-specific context.
 Agari-overtake features are reshaped into four winner-relative-seat tokens
 with a shared projection and the shared relative-seat embedding.
 
@@ -251,12 +254,13 @@ def _next_tile34(tile34: int) -> int:
 
 
 def _build_tile37_lookups() -> dict[str, torch.Tensor]:
-    tile34 = [_TILE34_PAD] * SequenceFeatureEncoder.HAND_DIMS[0]
-    suit = [_SUIT_PAD] * SequenceFeatureEncoder.HAND_DIMS[0]
-    rank = [_RANK_PAD] * SequenceFeatureEncoder.HAND_DIMS[0]
-    honor_kind = [_HONOR_PAD] * SequenceFeatureEncoder.HAND_DIMS[0]
-    red_flag = [_RED_FLAG_PAD] * SequenceFeatureEncoder.HAND_DIMS[0]
-    tile_class = [_TILE_CLASS_PAD] * SequenceFeatureEncoder.HAND_DIMS[0]
+    tile37_vocab_size = _TILE37_PAD + 1
+    tile34 = [_TILE34_PAD] * tile37_vocab_size
+    suit = [_SUIT_PAD] * tile37_vocab_size
+    rank = [_RANK_PAD] * tile37_vocab_size
+    honor_kind = [_HONOR_PAD] * tile37_vocab_size
+    red_flag = [_RED_FLAG_PAD] * tile37_vocab_size
+    tile_class = [_TILE_CLASS_PAD] * tile37_vocab_size
 
     for tile37 in range(_TILE37_PAD):
         t34 = _tile37_to_tile34(tile37)
@@ -702,7 +706,7 @@ class TransformerActorCritic(nn.Module):
         sparse_vocab: int = SequenceFeatureEncoder.SPARSE_VOCAB_SIZE,  # 261
         sparse_pad: int = SequenceFeatureEncoder.SPARSE_PAD,  # 260
         player_info_dims: tuple = SequenceFeatureEncoder.PLAYER_INFO_DIMS,  # (4,2,5,21,21)
-        hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,3)
+        hand_dims: tuple = SequenceFeatureEncoder.HAND_DIMS,  # (38,6)
         visible_tile_count_dims: tuple = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_DIMS,  # (37,5)
         prog_dims: tuple = SequenceFeatureEncoder.PROG_DIMS,  # (5,80,3,3,5)
         cand_dims: tuple = SequenceFeatureEncoder.CAND_DIMS,  # (47,3,5)
@@ -735,7 +739,7 @@ class TransformerActorCritic(nn.Module):
         self._PIW = SequenceFeatureEncoder.PLAYER_INFO_WIDTH
         self._SM = SequenceFeatureEncoder.MAX_SPARSE_MELDS
         self._MW = SequenceFeatureEncoder.MELD_WIDTH
-        self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 14
+        self._H = SequenceFeatureEncoder.MAX_HAND_LEN  # 38
         self._VC = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_TOKENS
         self._VCW = SequenceFeatureEncoder.VISIBLE_TILE_COUNT_WIDTH
         self._N = SequenceFeatureEncoder.NUM_NUMERIC  # 6
@@ -747,6 +751,17 @@ class TransformerActorCritic(nn.Module):
         if len(player_info_dims) != self._PIW:
             raise ValueError(f"player_info_dims must have {self._PIW} entries")
         self.player_info_dims = tuple(int(v) for v in player_info_dims)
+        if len(hand_dims) != 2:
+            raise ValueError("hand_dims must have 2 entries")
+        self.hand_dims = tuple(int(v) for v in hand_dims)
+        if self.hand_dims[0] != _TILE37_PAD + 1:
+            raise ValueError("hand_dims[0] must include tile37 ids plus the drawn-token padding id")
+        self.hand_count_dim = int(SequenceFeatureEncoder.HAND_COUNT_DIMS)
+        self.hand_drawn_token_aux = int(SequenceFeatureEncoder.HAND_DRAWN_TOKEN_AUX)
+        if self.hand_drawn_token_aux != self.hand_count_dim:
+            raise ValueError("hand drawn-token marker must follow hand count ids")
+        if self.hand_dims[1] != self.hand_drawn_token_aux + 1:
+            raise ValueError("hand_dims[1] must include hand counts 0-4 plus the drawn-token marker")
         if len(visible_tile_count_dims) != self._VCW:
             raise ValueError(f"visible_tile_count_dims must have {self._VCW} entries")
         self.visible_tile_count_dims = tuple(int(v) for v in visible_tile_count_dims)
@@ -768,9 +783,11 @@ class TransformerActorCritic(nn.Module):
             nn.LayerNorm(d_model),
         )
 
-        # Hand: embed (tile37, draw_state) with split Linear(concat(...)) equivalent.
+        # Hand: count rows embed (tile37, hand_count); the final drawn row uses
+        # a dedicated marker embedding.
         hand_sub_dims = [d_type, d_other]
-        self.hand_draw_state_embed = nn.Embedding(hand_dims[1], d_other)
+        self.hand_count_embed = nn.Embedding(self.hand_count_dim, d_other)
+        self.hand_drawn_token_embed = nn.Embedding(1, d_other)
         self.hand_proj = SplitLinearLayerNorm(hand_sub_dims, d_model)
 
         self.visible_tile_count_embed = nn.Embedding(self.visible_tile_count_dims[1], d_other)
@@ -1325,11 +1342,22 @@ class TransformerActorCritic(nn.Module):
             )
         else:
             tile_emb = self.tile_embed.embed_tile37_from_table(hand[:, :, 0], tile37_table)
-        raw = self.hand_proj.project_part(0, tile_emb) + self.hand_proj.project_embedding(
+        aux = hand[:, :, 1]
+        drawn_token = aux == self.hand_drawn_token_aux
+        count_ids = aux.clamp(min=0, max=self.hand_count_dim - 1)
+        count_raw = self.hand_proj.project_embedding(
             1,
-            self.hand_draw_state_embed,
-            hand[:, :, 1],
+            self.hand_count_embed,
+            count_ids,
         )
+        drawn_raw = self.hand_proj.project_embedding(
+            1,
+            self.hand_drawn_token_embed,
+            torch.zeros_like(aux),
+        )
+        # Padding uses the drawn-token aux id but is excluded by hand_mask.
+        aux_raw = torch.where(drawn_token.unsqueeze(-1), drawn_raw, count_raw)
+        raw = self.hand_proj.project_part(0, tile_emb) + aux_raw
         return self.hand_proj.finish(raw)
 
     def _embed_visible_tile_counts(

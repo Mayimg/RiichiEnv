@@ -21,7 +21,7 @@ class SequenceFeatureEncoder:
         player_stats:(PLAYER_INFO_TOKENS, PLAYER_INFO_WIDTH) int64 per-player public summaries
         sparse_melds:(MAX_SPARSE_MELDS, 9) int64 padded current visible meld rows
         sparse_meld_owners: (MAX_SPARSE_MELDS,) int64 padded current visible meld owner seats
-        hand:        (MAX_HAND_LEN, 2)   int64   padded hand tuples
+        hand:        (MAX_HAND_LEN, 2)   int64   hand-count rows plus optional drawn-tile token
         visible_tile_counts: (37, 2)     int64   fixed tile37 visible-count tuples
         numeric:     (NUM_NUMERIC,)      float32
         agari_overtakes: (AGARI_OVERTAKE_DIM,) float32 pairwise agari-rank-overtake flags,
@@ -55,9 +55,13 @@ class SequenceFeatureEncoder:
     SPARSE_MELD_OWNER_DIMS = 5
     SPARSE_MELD_OWNER_PAD = 4
 
-    HAND_DIMS = (38, 3)
-    HAND_PAD = (37, 2)
-    MAX_HAND_LEN = 14
+    HAND_COUNT_DIMS = 5
+    HAND_DIMS = (38, HAND_COUNT_DIMS + 1)
+    HAND_PAD = (37, HAND_COUNT_DIMS)
+    HAND_COUNT_TOKENS = 37
+    HAND_DRAWN_TILE_TOKENS = 1
+    HAND_DRAWN_TOKEN_AUX = HAND_COUNT_DIMS
+    MAX_HAND_LEN = HAND_COUNT_TOKENS + HAND_DRAWN_TILE_TOKENS
 
     VISIBLE_TILE_COUNT_DIMS = (37, 5)
     VISIBLE_TILE_COUNT_TOKENS = 37
@@ -135,23 +139,28 @@ class SequenceFeatureEncoder:
         sparse_meld_mask = np.zeros(self.MAX_SPARSE_MELDS, dtype=np.bool_)
         sparse_meld_mask[:n_sparse_melds] = True
 
-        # Hand
+        # Hand: 37 fixed tile-count rows plus one optional drawn-tile token.
         if self.include_hand_tokens:
             hand_bytes = obs.encode_seq_hand()
             if len(hand_bytes) > 0:
-                raw_hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, 2)
-                n_hand = min(len(raw_hand), self.MAX_HAND_LEN)
+                raw_hand = np.frombuffer(hand_bytes, dtype=np.uint16).reshape(-1, len(self.HAND_DIMS))
+                if raw_hand.shape[0] != self.MAX_HAND_LEN:
+                    raise ValueError(f"encode_seq_hand returned {raw_hand.shape[0]} rows; expected {self.MAX_HAND_LEN}")
             else:
-                raw_hand = np.empty((0, 2), dtype=np.uint16)
-                n_hand = 0
+                raw_hand = np.empty((0, len(self.HAND_DIMS)), dtype=np.uint16)
         else:
-            raw_hand = np.empty((0, 2), dtype=np.uint16)
-            n_hand = 0
+            raw_hand = np.empty((0, len(self.HAND_DIMS)), dtype=np.uint16)
         hand = np.tile(np.array(self.HAND_PAD, dtype=np.int64), (self.MAX_HAND_LEN, 1))
-        if n_hand > 0:
-            hand[:n_hand] = raw_hand[:n_hand]
+        if self.include_hand_tokens and len(raw_hand) > 0:
+            hand[:] = raw_hand.astype(np.int64, copy=False)
         hand_mask = np.zeros(self.MAX_HAND_LEN, dtype=np.bool_)
-        hand_mask[:n_hand] = True
+        if self.include_hand_tokens and len(raw_hand) > 0:
+            hand_mask[: self.HAND_COUNT_TOKENS] = True
+            drawn_row = raw_hand[self.HAND_COUNT_TOKENS]
+            hand_mask[self.HAND_COUNT_TOKENS] = not np.array_equal(
+                drawn_row,
+                np.array(self.HAND_PAD, dtype=np.uint16),
+            )
 
         # Visible tile counts
         visible_count_bytes = obs.encode_seq_visible_tile_counts()
