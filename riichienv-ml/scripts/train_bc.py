@@ -141,6 +141,7 @@ def main():
             num_workers=cfg.num_workers,
             weight_decay=cfg.weight_decay,
             label_smoothing=cfg.label_smoothing,
+            value_coef=cfg.value_coef,
             max_grad_norm=cfg.max_grad_norm,
             shuffle_buffer_files=cfg.shuffle_buffer_files,
             model_config=cfg.model.model_dump(),

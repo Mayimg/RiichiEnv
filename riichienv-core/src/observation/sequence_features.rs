@@ -16,10 +16,10 @@ use super::Observation;
 // ── Constants ────────────────────────────────────────────────────────────────
 // These constants are `pub` for Python-side consumption (see riichienv-ml).
 #[allow(dead_code)]
-pub const SPARSE_VOCAB_SIZE: usize = 261;
+pub const SPARSE_VOCAB_SIZE: usize = 266;
 #[allow(dead_code)]
-pub const SPARSE_PAD: u16 = 260;
-pub const MAX_SPARSE_LEN: usize = 8;
+pub const SPARSE_PAD: u16 = 265;
+pub const MAX_SPARSE_LEN: usize = 9;
 
 /// Dealer relative seat dimension: 0=self, 1=shimocha, 2=toimen, 3=kamicha.
 #[allow(dead_code)]
@@ -33,6 +33,15 @@ pub const PLAYER_INFO_DIMS: [u16; 5] = [4, 2, 5, 21, 21];
 pub const PLAYER_INFO_TOKENS: usize = 4;
 #[allow(dead_code)]
 pub const PLAYER_INFO_WIDTH: usize = 5;
+
+/// Per-player rank metadata tuple dimensions:
+/// (relative_seat, current_rank, current_seat_wind).
+#[allow(dead_code)]
+pub const PLAYER_RANK_STATS_DIMS: [u16; 3] = [4, 4, 4];
+#[allow(dead_code)]
+pub const PLAYER_RANK_STATS_TOKENS: usize = 4;
+#[allow(dead_code)]
+pub const PLAYER_RANK_STATS_WIDTH: usize = 3;
 
 /// Hand tuple dimensions: (tile37, hand_count_or_drawn_marker).
 ///
@@ -100,7 +109,10 @@ pub const AGARI_OVERTAKE_FEATURE_DIM: usize = crate::grp::TENHOU_4P_PAIRWISE_OVE
 const SCORE_NORM_BASE: f32 = 25000.0;
 const SCORE_NORM_SCALE: f32 = 10000.0;
 
-const SPARSE_DORA_OFFSET: u16 = 75;
+const SPARSE_WIND_OFFSET: u16 = 2;
+const SPARSE_KYOKU_OFFSET: u16 = 6;
+const SPARSE_TILES_REMAINING_OFFSET: u16 = 10;
+const SPARSE_DORA_OFFSET: u16 = 80;
 const MELD_KIND_CHI: u16 = 0;
 const MELD_KIND_PON: u16 = 1;
 const MELD_KIND_DAIMINKAN: u16 = 2;
@@ -139,6 +151,17 @@ const PLAYER_DISCARD_COUNT_CAP: u16 = 20;
 
 fn normalize_score(score: i32) -> f32 {
     (score as f32 - SCORE_NORM_BASE) / SCORE_NORM_SCALE
+}
+
+fn stable_score_ranks(scores: &[i32; 4]) -> [u16; 4] {
+    let mut indexed: Vec<(usize, i32)> = scores.iter().copied().enumerate().collect();
+    indexed.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let mut ranks = [0u16; 4];
+    for (rank, (seat, _score)) in indexed.into_iter().enumerate() {
+        ranks[seat] = rank as u16;
+    }
+    ranks
 }
 
 // ── Tile conversions ─────────────────────────────────────────────────────────
@@ -503,28 +526,32 @@ pub fn process_event_progression_entries_with_melds(
 // ── Sparse features ──────────────────────────────────────────────────────────
 
 impl Observation {
-    /// Encode sparse features: variable-length u16 indices (max 8).
+    /// Encode sparse features: variable-length u16 indices (max 9).
     ///
     /// Offsets:
     /// - 0-1: game style (0=tonpuusen, 1=hanchan)
-    /// - 2-4: chang / round wind (E/S/W)
-    /// - 5-74: tiles remaining (0-69)
-    /// - 75-259: dora indicators (5 slots × 37 tiles)
-    /// - 260: padding
+    /// - 2-5: wind (E/S/W/N; round wind uses E/S/W)
+    /// - 6-9: kyoku number within wind (1-4)
+    /// - 10-79: tiles remaining (0-69)
+    /// - 80-264: dora indicators (5 slots × 37 tiles)
+    /// - 265: padding
     pub fn encode_seq_sparse(&self, game_style: u8) -> Vec<u16> {
         let mut tokens: Vec<u16> = Vec::with_capacity(MAX_SPARSE_LEN);
 
         // 1. Game style (offset 0-1)
         tokens.push(game_style.min(1) as u16);
 
-        // 2. Chang / round wind (offset 2-4)
-        tokens.push(2 + self.round_wind.min(2) as u16);
+        // 2. Chang / round wind (offset 2-5; round wind normally uses E/S/W)
+        tokens.push(SPARSE_WIND_OFFSET + self.round_wind.min(3) as u16);
 
-        // 3. Tiles remaining (offset 5-74)
+        // 3. Kyoku number within the current wind (offset 6-9)
+        tokens.push(SPARSE_KYOKU_OFFSET + self.kyoku_index.min(3) as u16);
+
+        // 4. Tiles remaining (offset 10-79)
         let tiles_remaining = self.count_tiles_remaining();
-        tokens.push(5 + tiles_remaining.min(69));
+        tokens.push(SPARSE_TILES_REMAINING_OFFSET + tiles_remaining.min(69));
 
-        // 4. Dora indicators (offset 75-259, 5 slots × 37)
+        // 5. Dora indicators (offset 80-264, 5 slots × 37)
         for (i, &dora_tid) in self.dora_indicators.iter().enumerate() {
             if i >= 5 {
                 break;
@@ -571,6 +598,24 @@ impl Observation {
                 discard_count,
                 tedashi_count,
             ]);
+        }
+
+        out
+    }
+
+    /// Encode per-player public rank metadata rows in observer-relative seat order.
+    ///
+    /// Each row is `(relative_seat, current_rank, current_seat_wind)`.
+    /// `current_rank` is 0=1st..3=4th with seat-index tie-breaks. Seat wind is
+    /// 0=E, 1=S, 2=W, 3=N at the current kyoku.
+    pub fn encode_seq_player_rank_stats(&self) -> Vec<[u16; PLAYER_RANK_STATS_WIDTH]> {
+        let mut out = Vec::with_capacity(PLAYER_RANK_STATS_TOKENS);
+        let ranks = stable_score_ranks(&self.scores);
+        let oya = self.oya.min(3) as usize;
+
+        for (owner_rel, &abs_idx) in self.rel_order().iter().enumerate() {
+            let seat_wind = ((abs_idx + 4 - oya) % 4) as u16;
+            out.push([owner_rel as u16, ranks[abs_idx], seat_wind]);
         }
 
         out
@@ -1184,8 +1229,10 @@ mod tests {
         // Verify all sparse offsets are within vocab
         assert!(SPARSE_PAD < SPARSE_VOCAB_SIZE as u16);
 
-        // Dora max: 75 + 4*37 + 36 = 75 + 148 + 36 = 259
-        assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_VOCAB_SIZE as u16);
+        assert!(SPARSE_WIND_OFFSET + 3 < SPARSE_KYOKU_OFFSET);
+        assert!(SPARSE_KYOKU_OFFSET + 3 < SPARSE_TILES_REMAINING_OFFSET);
+        assert!(SPARSE_TILES_REMAINING_OFFSET + 69 < SPARSE_DORA_OFFSET);
+        assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_PAD);
 
         assert_eq!(SPARSE_PAD as usize + 1, SPARSE_VOCAB_SIZE);
     }
@@ -1468,6 +1515,38 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_seq_player_rank_stats_uses_current_rank_and_seat_wind() {
+        let obs = Observation::new(
+            2,
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [30000, 25000, 25000, 20000],
+            [false; 4],
+            vec![],
+            vec![],
+            0,
+            0,
+            0,
+            1,
+            1,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(
+            obs.encode_seq_player_rank_stats(),
+            vec![[0, 2, 1], [1, 3, 2], [2, 0, 3], [3, 1, 0],]
+        );
+    }
+
+    #[test]
     fn test_encode_seq_numeric_uses_current_normalized_scores_only() {
         let obs = Observation::new(
             2,
@@ -1586,7 +1665,8 @@ mod tests {
 
         assert_eq!(sparse[0], 1); // game style
         assert_eq!(sparse[1], 3); // round wind S: 2 + 1
-        assert_eq!(sparse[2], 74); // max-clamped tiles remaining: 5 + 69
+        assert_eq!(sparse[2], SPARSE_KYOKU_OFFSET); // kyoku number 1
+        assert_eq!(sparse[3], SPARSE_TILES_REMAINING_OFFSET + 69); // max-clamped tiles remaining
         assert_eq!(dealer, 3); // dealer seat 1 from observer seat 2: kamicha
         assert!(dealer < DEALER_DIMS);
         assert!(sparse.iter().all(|&t| t < SPARSE_PAD));

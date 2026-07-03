@@ -19,13 +19,14 @@ bc:
   limit: 500000
   weight_decay: 0.01
   label_smoothing: 0.0
+  value_coef: 1.0
   max_grad_norm: 10.0
   wandb_entity: smly
   wandb_project: riichienv-4p
-  wandb_tags: [offline, behavior_cloning, transformer, sequence_features, tenhou]
+  wandb_tags: [offline, behavior_cloning, transformer, sequence_features, tenhou, rank_value]
   wandb_mode: offline
   model_class: riichienv_ml.models.transformer.TransformerPolicyNetwork
-  dataset_class: riichienv_ml.datasets.mjai_logs.BehaviorCloningDataset
+  dataset_class: riichienv_ml.datasets.mjai_logs.BehaviorCloningRankDataset
   encoder_class: riichienv_ml.features.sequence_features.SequenceFeatureEncoder
   model:
     d_model: 384
@@ -37,3 +38,5 @@ bc:
     progression_player_relative_position_cap: 15
     num_actions: 82
     policy_head_type: pointer
+    emit_rank: true
+    rank_classes: 4
