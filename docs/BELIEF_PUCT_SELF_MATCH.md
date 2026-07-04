@@ -35,6 +35,11 @@ samples are discarded. If fewer than the requested samples survive after the con
 sampling batches, the agent runs with the surviving samples. If no samples survive, it falls back to the BC
 policy action.
 
+If the root policy action set has only one candidate, belief sampling and root PUCT are skipped because the
+decision is forced. When policy metadata is requested, the root BC policy/rank evaluation is still logged;
+only the search work is skipped. During rollouts, forced single-candidate decisions are also removed from the
+BC inference batch and stepped directly.
+
 Each root simulation samples one valid world, fixes one root action selected by batched PUCT, randomizes the
 remaining unknown wall tiles while preserving known dora indicator positions, and rolls the hand forward.
 After the root action, all rollout choices are sampled from the BC policy distribution. No search tree is

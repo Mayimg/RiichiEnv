@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -109,3 +110,83 @@ def test_belief_mcts_search_stats_are_separate_from_bc_policy_entries():
     assert search_meta["candidates"][0]["simulation_count"] == 3
     assert search_meta["legal_actions"][0]["simulation_count"] == 3
     json.dumps(meta)
+
+
+def test_belief_mcts_root_skips_search_when_only_one_root_action(monkeypatch):
+    agent = _bare_belief_agent()
+    env = RiichiEnv(seed=1, rule=GameRule.default_tenhou())
+    obs = env.reset()[0]
+    candidate_count = len(obs.candidate_actions())
+    root_action = obs.find_candidate_action(0)
+    logits = torch.linspace(-1.0, 1.0, candidate_count)
+
+    monkeypatch.setattr(
+        agent,
+        "_evaluate_policy_rank",
+        lambda obs_list: {"logits": [logits], "rank_probs": [[0.25, 0.25, 0.25, 0.25]]},
+    )
+    monkeypatch.setattr(
+        agent,
+        "_root_actions_and_priors",
+        lambda obs_arg, logits_arg: ([root_action], np.ones(1, dtype=np.float64), [0]),
+    )
+
+    def fail_sample_worlds(*_args, **_kwargs):
+        raise AssertionError("belief sampling should be skipped for single-action roots")
+
+    monkeypatch.setattr(agent, "_sample_worlds", fail_sample_worlds)
+
+    decision = agent.act_with_policy_from_env(env, 0, obs)
+
+    assert decision.action.to_mjai() == root_action.to_mjai()
+    search_meta = decision.meta["belief_puct"]
+    assert search_meta["enabled"] is False
+    assert search_meta["fallback_reason"] == "single_root_action"
+    assert search_meta["num_simulations_completed"] == 0
+
+
+def test_belief_mcts_act_from_env_skips_model_when_policy_has_single_action(monkeypatch):
+    agent = _bare_belief_agent()
+    forced_action = object()
+    monkeypatch.setattr(agent, "_single_policy_action", lambda obs: forced_action)
+
+    def fail_act_with_policy(*_args, **_kwargs):
+        raise AssertionError("model-backed root policy should be skipped")
+
+    monkeypatch.setattr(agent, "act_with_policy_from_env", fail_act_with_policy)
+
+    assert agent.act_from_env(object(), 0, object()) is forced_action
+
+
+def test_belief_mcts_rollout_action_sampling_skips_model_for_single_action_obs(monkeypatch):
+    agent = _bare_belief_agent()
+    forced_obs = SimpleNamespace(name="forced")
+    model_obs = SimpleNamespace(name="model")
+    forced_action = object()
+    sampled_action = object()
+    encoded_obs = []
+
+    class CountingEncoder:
+        def encode(self, obs):
+            encoded_obs.append(obs.name)
+            return torch.tensor([1.0])
+
+    class CountingModel:
+        def __call__(self, batch):
+            assert tuple(batch.shape) == (1, 1)
+            return torch.tensor([[0.0, 1.0]])
+
+    agent.bc = SimpleNamespace(encoder=CountingEncoder(), model=CountingModel())
+    monkeypatch.setattr(agent, "_single_policy_action", lambda obs: forced_action if obs is forced_obs else None)
+
+    def sample_action_from_logits(obs, logits):
+        assert obs is model_obs
+        assert logits.tolist() == [0.0, 1.0]
+        return sampled_action
+
+    monkeypatch.setattr(agent, "_sample_action_from_logits", sample_action_from_logits)
+
+    actions = agent._sample_actions([forced_obs, model_obs, forced_obs])
+
+    assert actions == [forced_action, sampled_action, forced_action]
+    assert encoded_obs == ["model"]

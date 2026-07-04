@@ -101,9 +101,15 @@ class BeliefMCTSAgent:
         self.bc.reset()
 
     def act(self, obs):
+        forced_action = self._single_policy_action(obs)
+        if forced_action is not None:
+            return forced_action
         return self.bc.act(obs)
 
     def act_from_env(self, env: RiichiEnv, pid: int, obs):
+        forced_action = self._single_policy_action(obs)
+        if forced_action is not None:
+            return forced_action
         return self.act_with_policy_from_env(env, pid, obs).action
 
     @torch.inference_mode()
@@ -130,6 +136,17 @@ class BeliefMCTSAgent:
         if not root_actions:
             self._attach_search_fallback(fallback.meta, "no_root_actions", 0, 0)
             return fallback
+        if len(root_actions) == 1:
+            meta = self._meta_for_selected_action(
+                obs=obs,
+                logits=logits,
+                selected_action=root_actions[0],
+                selected_index=0,
+                action_keys=action_keys,
+            )
+            self._attach_bc_rank_meta(meta, root_rank, root_expected)
+            self._attach_search_fallback(meta, "single_root_action", 0, 0)
+            return PolicyDecision(action=root_actions[0], meta=meta)
 
         samples, sample_meta = self._sample_worlds(env, obs, pid)
         if not samples:
@@ -223,14 +240,26 @@ class BeliefMCTSAgent:
     def _sample_actions(self, obs_list: list[Any]) -> list[Any]:
         if not obs_list:
             return []
-        features = [self.bc.encoder.encode(obs) for obs in obs_list]
+
+        actions: list[Any | None] = [None] * len(obs_list)
+        model_requests: list[tuple[int, Any]] = []
+        for idx, obs in enumerate(obs_list):
+            forced_action = self._single_policy_action(obs)
+            if forced_action is None:
+                model_requests.append((idx, obs))
+            else:
+                actions[idx] = forced_action
+
+        if not model_requests:
+            return self._resolved_actions(actions)
+
+        features = [self.bc.encoder.encode(obs) for _idx, obs in model_requests]
         batch = self._collate_features(features, self.device)
         output = self.bc.model(batch)
         logits = output[0] if isinstance(output, tuple) else output
-        actions = []
-        for i, obs in enumerate(obs_list):
-            actions.append(self._sample_action_from_logits(obs, logits[i].detach().cpu()))
-        return actions
+        for row, (idx, obs) in enumerate(model_requests):
+            actions[idx] = self._sample_action_from_logits(obs, logits[row].detach().cpu())
+        return self._resolved_actions(actions)
 
     def _sample_action_from_logits(self, obs, logits_1d: torch.Tensor):
         if self.policy_head_is_pointer:
@@ -259,6 +288,40 @@ class BeliefMCTSAgent:
         if not legals:
             raise ValueError("No legal actions available")
         return legals[0]
+
+    @staticmethod
+    def _resolved_actions(actions: list[Any | None]) -> list[Any]:
+        resolved = []
+        for action in actions:
+            if action is None:
+                raise ValueError("No action resolved for rollout request")
+            resolved.append(action)
+        return resolved
+
+    def _single_policy_action(self, obs):
+        """Return the only action when the policy head has no real choice."""
+        if self.policy_head_is_pointer:
+            candidates = obs.candidate_actions()
+            if len(candidates) == 1:
+                action = obs.find_candidate_action(0)
+                if action is not None:
+                    return action
+            if not candidates:
+                legals = obs.legal_actions()
+                if len(legals) == 1:
+                    return legals[0]
+            return None
+
+        fixed_mask = np.frombuffer(obs.mask(), dtype=np.uint8).copy()
+        valid_indices = [idx for idx, value in enumerate(fixed_mask.tolist()) if value]
+        if len(valid_indices) == 1:
+            action = obs.find_action(valid_indices[0])
+            if action is not None:
+                return action
+        legals = obs.legal_actions()
+        if len(legals) == 1:
+            return legals[0]
+        return None
 
     @staticmethod
     def _collate_features(features: list[Any], device: torch.device):
