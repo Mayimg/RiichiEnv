@@ -26,8 +26,8 @@ The default config uses:
 ## Algorithm
 
 At each decision point, the agent first evaluates the root observation with the BC model. The policy head
-becomes the root prior, and the rank head is logged as `value_head.rank_prediction` plus
-`value_head.expected_points`.
+becomes the root prior, and the rank head is logged as `bc_rank_head.rank_probs` plus
+`bc_rank_head.expected_points`.
 
 The belief sampler then generates hidden allocations for the three non-acting seats plus the residual
 unknown wall. Riichi players' sampled concealed hands are filtered with `calculate_shanten`; non-tenpai
@@ -69,14 +69,23 @@ adds metadata under `meta.policy` or, for pass/response windows, under `meta.res
 
 Additional fields include:
 
-- `value_head.rank_prediction`
-- `value_head.expected_points`
+- `bc_rank_head.rank_probs`
+- `bc_rank_head.rank_point_weights`
+- `bc_rank_head.expected_points`
 - `belief_puct.num_simulations_requested`
 - `belief_puct.num_simulations_completed`
 - `belief_puct.belief_samples_requested`
 - `belief_puct.belief_samples_used`
-- per-candidate and per-legal-action `visit_count`
-- per-candidate and per-legal-action `mean_rank_prediction`
+- `belief_puct.simulation_distribution`
+- `belief_puct.candidates`
+- `belief_puct.legal_actions`
+- per-candidate and per-legal-action `simulation_count`
+- per-candidate and per-legal-action `simulation_fraction`
+- per-candidate and per-legal-action `mean_rank_probs`
 - per-candidate and per-legal-action `mean_expected_points`
 
-For actions that receive no simulation visits, `mean_rank_prediction` and `mean_expected_points` are `null`.
+The existing BC policy metadata fields, including `candidates[].logit`, `candidates[].prob`,
+`legal_actions[].logit`, and `legal_actions[].prob`, keep the same format as BC self-match logs. Search
+statistics are stored separately under `belief_puct` so they do not overwrite BC policy probabilities.
+
+For actions that receive no simulation visits, `mean_rank_probs` and `mean_expected_points` are `null`.

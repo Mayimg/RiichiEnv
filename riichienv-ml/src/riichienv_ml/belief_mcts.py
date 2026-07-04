@@ -119,7 +119,7 @@ class BeliefMCTSAgent:
             self.device,
             candidate_logits=self.policy_head_is_pointer,
         )
-        self._attach_value_meta(fallback.meta, root_rank, root_expected)
+        self._attach_bc_rank_meta(fallback.meta, root_rank, root_expected)
 
         fallback_reason = self._search_fallback_reason(env, obs)
         if fallback_reason is not None:
@@ -168,7 +168,7 @@ class BeliefMCTSAgent:
             selected_index=selected_idx,
             action_keys=action_keys,
         )
-        self._attach_value_meta(meta, root_rank, root_expected)
+        self._attach_bc_rank_meta(meta, root_rank, root_expected)
         self._attach_search_stats(meta, action_keys, visits, value_sums, rank_sums, search_meta)
         return PolicyDecision(action=selected_action, meta=meta)
 
@@ -788,16 +788,15 @@ class BeliefMCTSAgent:
         selected_index: int,
         action_keys: list[int],
     ) -> dict[str, Any]:
+        decision = _policy_decision_from_logits(
+            obs,
+            logits.unsqueeze(0).to(self.device),
+            self.device,
+            candidate_logits=self.policy_head_is_pointer,
+        )
+
         if self.policy_head_is_pointer:
             selected_key = action_keys[selected_index]
-            adjusted_logits = logits.clone()
-            adjusted_logits[selected_key] = torch.max(adjusted_logits) + 1_000_000.0
-            decision = _policy_decision_from_logits(
-                obs,
-                adjusted_logits.unsqueeze(0).to(self.device),
-                self.device,
-                candidate_logits=True,
-            )
             decision.meta["chosen_index"] = int(selected_key)
             decision.meta["chosen_action"] = _action_to_policy_payload(
                 selected_action,
@@ -813,22 +812,16 @@ class BeliefMCTSAgent:
             selected_key = int(selected_action.encode())
         except Exception:
             selected_key = action_keys[selected_index]
-        decision = _policy_decision_from_logits(
-            obs,
-            logits.unsqueeze(0).to(self.device),
-            self.device,
-            candidate_logits=False,
-        )
         decision.meta["chosen_index"] = int(selected_key)
         decision.meta["chosen_action"] = _action_to_policy_payload(selected_action, getattr(obs, "drawn_tile", None))
         for entry in decision.meta.get("legal_actions", []):
             entry["selected"] = entry.get("action_id") == int(selected_key)
         return decision.meta
 
-    @staticmethod
-    def _attach_value_meta(meta: dict[str, Any], rank_prediction: list[float], expected_points: float) -> None:
-        meta["value_head"] = {
-            "rank_prediction": [float(x) for x in rank_prediction],
+    def _attach_bc_rank_meta(self, meta: dict[str, Any], rank_prediction: list[float], expected_points: float) -> None:
+        meta["bc_rank_head"] = {
+            "rank_probs": [float(x) for x in rank_prediction],
+            "rank_point_weights": [float(x) for x in self.rank_weights.tolist()],
             "expected_points": float(expected_points),
         }
 
@@ -857,6 +850,7 @@ class BeliefMCTSAgent:
         rank_sums: np.ndarray,
         search_meta: dict[str, Any],
     ) -> None:
+        total_visits = int(visits.sum())
         stats_by_key: dict[int, dict[str, Any]] = {}
         for idx, key in enumerate(action_keys):
             count = int(visits[idx])
@@ -867,21 +861,37 @@ class BeliefMCTSAgent:
                 mean_rank = None
                 mean_expected = None
             stats_by_key[int(key)] = {
-                "visit_count": count,
-                "mean_rank_prediction": mean_rank,
+                "simulation_count": count,
+                "simulation_fraction": float(count / total_visits) if total_visits > 0 else 0.0,
+                "mean_rank_probs": mean_rank,
                 "mean_expected_points": mean_expected,
             }
 
+        search_candidates: list[dict[str, Any]] = []
+        search_legal_actions: list[dict[str, Any]] = []
         if self.policy_head_is_pointer:
             for entry in meta.get("candidates", []):
                 stats = stats_by_key.get(int(entry.get("index", -1)))
                 if stats is not None:
-                    entry.update(stats)
+                    search_candidates.append(
+                        {
+                            "index": int(entry["index"]),
+                            "action": entry.get("action"),
+                            **stats,
+                        }
+                    )
             for entry in meta.get("legal_actions", []):
                 candidate_index = entry.get("candidate_index")
                 stats = stats_by_key.get(int(candidate_index)) if candidate_index is not None else None
                 if stats is not None:
-                    entry.update(stats)
+                    search_legal_actions.append(
+                        {
+                            "legal_index": int(entry["legal_index"]),
+                            "candidate_index": int(candidate_index),
+                            "action": entry.get("action"),
+                            **stats,
+                        }
+                    )
             selected_key = int(meta.get("chosen_index", -1))
             selected_stats = stats_by_key.get(selected_key, {})
         else:
@@ -889,14 +899,31 @@ class BeliefMCTSAgent:
                 action_id = entry.get("action_id")
                 stats = stats_by_key.get(int(action_id)) if action_id is not None else None
                 if stats is not None:
-                    entry.update(stats)
+                    search_legal_actions.append(
+                        {
+                            "legal_index": int(entry["legal_index"]),
+                            "action_id": int(action_id),
+                            "action": entry.get("action"),
+                            **stats,
+                        }
+                    )
             selected_stats = stats_by_key.get(int(meta.get("chosen_index", -1)), {})
 
+        simulation_distribution = [
+            {
+                "action_key": int(key),
+                **stats_by_key[int(key)],
+            }
+            for key in action_keys
+        ]
         meta[self.cfg.metadata_key] = {
             **search_meta,
             "belief_samples_requested": int(search_meta.get("requested", 0)),
             "belief_samples_used": int(search_meta.get("accepted", 0)),
             "belief_sample_attempts": int(search_meta.get("attempted", 0)),
-            "selected_visit_count": int(selected_stats.get("visit_count", 0)),
+            "simulation_distribution": simulation_distribution,
+            "candidates": search_candidates,
+            "legal_actions": search_legal_actions,
+            "selected_simulation_count": int(selected_stats.get("simulation_count", 0)),
             "selected_mean_expected_points": selected_stats.get("mean_expected_points"),
         }
