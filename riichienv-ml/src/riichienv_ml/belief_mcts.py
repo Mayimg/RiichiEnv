@@ -73,6 +73,8 @@ class RolloutState:
 class BeliefMCTSAgent:
     """Self-match agent that uses belief allocation samples and root-only PUCT."""
 
+    requires_sequence_cache = True
+
     def __init__(
         self,
         *,
@@ -586,7 +588,7 @@ class BeliefMCTSAgent:
 
         for action_idx in selected_indices:
             sample = samples[self.rng.randrange(len(samples))]
-            clone = env.clone()
+            clone = env.clone_for_simulation()
             state = RolloutState(
                 env=clone,
                 root_pid=root_pid,

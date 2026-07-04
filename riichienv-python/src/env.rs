@@ -403,6 +403,25 @@ impl RiichiEnv {
         }
     }
 
+    pub fn clone_for_simulation(&self) -> Self {
+        match &self.variant {
+            GameStateVariant::FourPlayer(s) => Self {
+                variant: GameStateVariant::FourPlayer(Box::new(s.clone_for_simulation())),
+            },
+            GameStateVariant::ThreePlayer(s) => {
+                let mut cloned = *s.clone();
+                cloned.skip_mjai_logging = true;
+                cloned.mjai_log.clear();
+                cloned.mjai_log_per_player = Default::default();
+                cloned.player_event_counts = [0; 3];
+                cloned.last_error = None;
+                Self {
+                    variant: GameStateVariant::ThreePlayer(Box::new(cloned)),
+                }
+            }
+        }
+    }
+
     pub fn __copy__(&self) -> Self {
         self.py_clone()
     }

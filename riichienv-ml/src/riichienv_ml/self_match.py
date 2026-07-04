@@ -193,6 +193,10 @@ class SelfMatchRunner:
             return value
         return len(env.mjai_log)
 
+    def _configure_env_for_agents(self, env: RiichiEnv) -> None:
+        if any(getattr(agent, "requires_sequence_cache", False) for agent in self._shared_agents):
+            env.enable_seq_caching = True
+
     @staticmethod
     def _act(agent: SelfMatchAgent, env: RiichiEnv, pid: int, obs):
         if hasattr(agent, "act_from_env"):
@@ -213,6 +217,7 @@ class SelfMatchRunner:
             seed=seed,
             rule=self.rule,
         )
+        self._configure_env_for_agents(env)
         for agent in self._shared_agents:
             agent.reset()
         obs_dict = env.reset(scores=list(self.starting_scores))

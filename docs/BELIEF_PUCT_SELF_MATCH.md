@@ -40,6 +40,12 @@ remaining unknown wall tiles while preserving known dora indicator positions, an
 After the root action, all rollout choices are sampled from the BC policy distribution. No search tree is
 expanded below the root.
 
+Rollout environments are created with `clone_for_simulation()`. These clones do not copy or store MJAI log
+strings, so their simulated events are not written to the saved self-match log. They still keep the sequence
+feature progression cache enabled, which lets the BC Transformer consume rollout action history without
+paying the full MJAI JSON logging cost. The parent self-match environment remains a normal MJAI-logging
+environment, so the external saved log format is unchanged apart from metadata additions.
+
 Rollouts stop at the first of:
 
 - the acting player's 6th later discard-capable decision, excluding the current root decision
