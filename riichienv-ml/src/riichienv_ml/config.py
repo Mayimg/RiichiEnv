@@ -410,11 +410,65 @@ class BeliefAllocationEvaluationConfig(BaseModel):
     encoder_class: str = "riichienv_ml.features.belief_features.BeliefFeatureEncoder"
 
 
+class BeliefMctsConfig(BaseModel):
+    """Root-only PUCT rollout settings for belief-sampled self-match."""
+
+    belief_config_path: str = "riichienv-ml/src/riichienv_ml/configs/4p/belief_allocation.yml"
+    belief_model_path: str = "models/belief_sampler/test35/model.pth"
+    belief_device: str | None = None
+    belief_samples: int = 128
+    belief_sample_batch_size: int = 128
+    max_belief_sample_batches: int = 8
+    belief_temperature: float = 1.0
+    belief_decode_steps: int | None = None
+    num_simulations: int = 512
+    rollout_batch_size: int = 64
+    puct_c: float = 1.5
+    policy_temperature: float = 1.0
+    discard_horizon: int = 6
+    rank_point_weights: list[float] = [1.0, 1.0 / 3.0, -1.0 / 3.0, -1.0]
+    search_response: bool = True
+    metadata_key: str = "belief_puct"
+    seed: int | None = None
+
+    @model_validator(mode="after")
+    def validate_belief_mcts(self) -> BeliefMctsConfig:
+        if self.belief_samples <= 0:
+            raise ValueError("belief_mcts.belief_samples must be > 0")
+        if self.belief_sample_batch_size <= 0:
+            raise ValueError("belief_mcts.belief_sample_batch_size must be > 0")
+        if self.max_belief_sample_batches <= 0:
+            raise ValueError("belief_mcts.max_belief_sample_batches must be > 0")
+        if self.num_simulations <= 0:
+            raise ValueError("belief_mcts.num_simulations must be > 0")
+        if self.rollout_batch_size <= 0:
+            raise ValueError("belief_mcts.rollout_batch_size must be > 0")
+        if self.puct_c < 0.0:
+            raise ValueError("belief_mcts.puct_c must be >= 0")
+        if self.policy_temperature <= 0.0:
+            raise ValueError("belief_mcts.policy_temperature must be > 0")
+        if self.belief_temperature <= 0.0:
+            raise ValueError("belief_mcts.belief_temperature must be > 0")
+        if self.discard_horizon <= 0:
+            raise ValueError("belief_mcts.discard_horizon must be > 0")
+        if len(self.rank_point_weights) != 4:
+            raise ValueError("belief_mcts.rank_point_weights must contain 4 values")
+        return self
+
+
 class SelfMatchAgentConfig(BaseModel):
+    agent_type: Literal["bc", "belief_mcts"] = "bc"
     config_path: str
     model_path: str
     device: str = "cuda"
     name: str | None = None
+    belief_mcts: BeliefMctsConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_agent(self) -> SelfMatchAgentConfig:
+        if self.agent_type == "belief_mcts" and self.belief_mcts is None:
+            self.belief_mcts = BeliefMctsConfig()
+        return self
 
 
 class SelfMatchConfig(BaseModel):

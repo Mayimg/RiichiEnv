@@ -33,6 +33,10 @@ uv run --package riichienv-ml python riichienv-ml/scripts/run_self_match.py \
 uv run --package riichienv-ml python riichienv-ml/scripts/run_self_match.py \
   -c riichienv-ml/src/riichienv_ml/configs/4p/self_match_bc_test01.yml \
   --log_policy_meta
+
+# Self-match with belief-sampled root PUCT and BC stochastic rollouts
+uv run --package riichienv-ml python riichienv-ml/scripts/run_self_match.py \
+  -c riichienv-ml/src/riichienv_ml/configs/4p/self_match_belief_mcts_test01.yml
 ```
 
 The Tenhou behavior cloning config writes the model, log file, and offline W&B run data under
@@ -50,3 +54,10 @@ logits and softmax probabilities for every pointer candidate and legal action. D
 recorded on the source discard/kan event under `meta.response_policies`, because pass decisions are not
 standalone events in the saved MJAI timeline. The base MJAI event type and required fields are unchanged;
 tools that ignore unknown fields can still replay the annotated logs.
+
+The belief-PUCT self-match config uses `models/behavior_cloning/test45/model.pth` and
+`models/belief_sampler/test35/model.pth`. It samples hidden allocations, filters non-tenpai riichi-player
+hands, runs root-only PUCT for the current legal action set, and uses stochastic BC policy rollouts. Its
+metadata extends `meta.policy` with `value_head`, per-action visit counts, and per-action mean rollout rank
+predictions / expected points. See [BELIEF_PUCT_SELF_MATCH.md](../docs/BELIEF_PUCT_SELF_MATCH.md) for details
+and current limitations.

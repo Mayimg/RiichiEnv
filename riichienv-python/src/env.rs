@@ -142,6 +142,15 @@ impl RiichiEnv {
     }
 
     #[getter]
+    pub fn get_drawable_count(&self) -> u8 {
+        with_variant!(self, |s| s.wall.drawable_count)
+    }
+    #[setter]
+    pub fn set_drawable_count(&mut self, v: u8) {
+        with_variant_mut!(self, |s| s.wall.drawable_count = v);
+    }
+
+    #[getter]
     pub fn get_hands(&self) -> Vec<Vec<u32>> {
         with_variant!(self, |s| s
             .players
@@ -275,6 +284,37 @@ impl RiichiEnv {
     }
 
     #[getter]
+    pub fn get_skip_mjai_logging(&self) -> bool {
+        with_variant!(self, |s| s.skip_mjai_logging)
+    }
+    #[setter]
+    pub fn set_skip_mjai_logging(&mut self, v: bool) {
+        with_variant_mut!(self, |s| s.skip_mjai_logging = v);
+    }
+
+    #[getter]
+    pub fn get_enable_seq_caching(&self) -> PyResult<bool> {
+        match &self.variant {
+            GameStateVariant::FourPlayer(s) => Ok(s.enable_seq_caching),
+            GameStateVariant::ThreePlayer(_) => Err(pyo3::exceptions::PyAttributeError::new_err(
+                "enable_seq_caching is not available for 3P games",
+            )),
+        }
+    }
+    #[setter]
+    pub fn set_enable_seq_caching(&mut self, v: bool) -> PyResult<()> {
+        match &mut self.variant {
+            GameStateVariant::FourPlayer(s) => {
+                s.enable_seq_caching = v;
+                Ok(())
+            }
+            GameStateVariant::ThreePlayer(_) => Err(pyo3::exceptions::PyAttributeError::new_err(
+                "enable_seq_caching is not available for 3P games",
+            )),
+        }
+    }
+
+    #[getter]
     pub fn get_is_rinshan_flag(&self) -> bool {
         with_variant!(self, |s| s.is_rinshan_flag)
     }
@@ -360,6 +400,25 @@ impl RiichiEnv {
     pub fn py_clone(&self) -> Self {
         Self {
             variant: self.variant.clone(),
+        }
+    }
+
+    pub fn clone_for_simulation(&self) -> Self {
+        match &self.variant {
+            GameStateVariant::FourPlayer(s) => Self {
+                variant: GameStateVariant::FourPlayer(Box::new(s.clone_for_simulation())),
+            },
+            GameStateVariant::ThreePlayer(s) => {
+                let mut cloned = *s.clone();
+                cloned.skip_mjai_logging = true;
+                cloned.mjai_log.clear();
+                cloned.mjai_log_per_player = Default::default();
+                cloned.player_event_counts = [0; 3];
+                cloned.last_error = None;
+                Self {
+                    variant: GameStateVariant::ThreePlayer(Box::new(cloned)),
+                }
+            }
         }
     }
 
@@ -557,6 +616,11 @@ impl RiichiEnv {
     }
 
     #[getter]
+    pub fn get_has_pending_kan(&self) -> bool {
+        with_variant!(self, |s| s.pending_kan.is_some())
+    }
+
+    #[getter]
     pub fn get_last_discard(&self) -> Option<(u32, u32)> {
         with_variant!(self, |s| s.last_discard.map(|(a, b)| (a as u32, b as u32)))
     }
@@ -613,6 +677,15 @@ impl RiichiEnv {
     }
 
     #[getter]
+    pub fn get_last_error(&self) -> Option<String> {
+        with_variant!(self, |s| s.last_error.clone())
+    }
+
+    pub fn clear_last_error(&mut self) {
+        with_variant_mut!(self, |s| s.last_error = None);
+    }
+
+    #[getter]
     pub fn get_round_wind(&self) -> u8 {
         with_variant!(self, |s| s.round_wind)
     }
@@ -623,6 +696,81 @@ impl RiichiEnv {
 
     pub fn _reveal_kan_dora(&mut self) {
         with_variant_mut!(self, |s| s._reveal_kan_dora());
+    }
+
+    #[pyo3(signature = (hands, wall, dora_indicators, drawable_count))]
+    pub fn inject_simulation_state(
+        &mut self,
+        hands: Vec<Vec<u32>>,
+        wall: Vec<u32>,
+        dora_indicators: Vec<u32>,
+        drawable_count: u8,
+    ) -> PyResult<()> {
+        if self.variant.num_players() != 4 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "inject_simulation_state currently supports 4-player games only",
+            ));
+        }
+        if hands.len() != 4 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "hands length {} does not match required 4 players",
+                hands.len()
+            )));
+        }
+        with_variant_mut!(self, |s| {
+            for (i, h) in hands.into_iter().enumerate() {
+                let mut hand: Vec<u8> = h.iter().map(|&x| x as u8).collect();
+                hand.sort();
+                s.players[i].hand = hand;
+            }
+            s.wall.tiles = wall.iter().map(|&x| x as u8).collect();
+            s.wall.dora_indicators = dora_indicators.iter().map(|&x| x as u8).collect();
+            s.wall.drawable_count = drawable_count;
+        });
+        Ok(())
+    }
+
+    pub fn recompute_current_claims(&mut self) -> PyResult<()> {
+        if self.variant.num_players() != 4 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "recompute_current_claims currently supports 4-player games only",
+            ));
+        }
+        match &mut self.variant {
+            GameStateVariant::FourPlayer(s) => {
+                if s.phase != Phase::WaitResponse {
+                    return Ok(());
+                }
+                if s.pending_kan.is_some() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "recomputing chankan response claims is not supported",
+                    ));
+                }
+                let Some((discarder, tile)) = s.last_discard else {
+                    s.current_claims.clear();
+                    s.active_players.clear();
+                    return Ok(());
+                };
+
+                s.current_claims.clear();
+                s.active_players.clear();
+                for pid in 0..4u8 {
+                    if pid == discarder {
+                        continue;
+                    }
+                    let (legals, _missed_agari) =
+                        s._get_claim_actions_for_player(pid, discarder, tile);
+                    if !legals.is_empty() {
+                        s.active_players.push(pid);
+                        s.current_claims.insert(pid, legals);
+                    }
+                }
+                Ok(())
+            }
+            GameStateVariant::ThreePlayer(_) => Err(pyo3::exceptions::PyValueError::new_err(
+                "recompute_current_claims currently supports 4-player games only",
+            )),
+        }
     }
 
     pub fn _get_ura_markers(&self) -> Vec<String> {

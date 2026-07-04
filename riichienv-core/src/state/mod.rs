@@ -98,6 +98,77 @@ impl GameState {
         NP
     }
 
+    pub fn clone_for_simulation(&self) -> Self {
+        let mut players = self.players.clone();
+        for player in &mut players {
+            player.mjai_log.clear();
+        }
+
+        Self {
+            wall: self.wall.clone(),
+            players,
+            current_player: self.current_player,
+            turn_count: self.turn_count,
+            is_done: self.is_done,
+            needs_tsumo: self.needs_tsumo,
+            needs_initialize_next_round: self.needs_initialize_next_round,
+            pending_oya_won: self.pending_oya_won,
+            pending_is_draw: self.pending_is_draw,
+            riichi_sticks: self.riichi_sticks,
+            phase: self.phase,
+            active_players: self.active_players.clone(),
+            last_discard: self.last_discard,
+            current_claims: self.current_claims.clone(),
+            pending_kan: self.pending_kan.clone(),
+            oya: self.oya,
+            honba: self.honba,
+            kyoku_idx: self.kyoku_idx,
+            round_wind: self.round_wind,
+            is_rinshan_flag: self.is_rinshan_flag,
+            is_first_turn: self.is_first_turn,
+            riichi_pending_acceptance: self.riichi_pending_acceptance,
+            drawn_tile: self.drawn_tile,
+            win_results: self.win_results.clone(),
+            last_win_results: self.last_win_results.clone(),
+            round_end_scores: self.round_end_scores.clone(),
+            mjai_log: Vec::new(),
+            player_event_counts: [0; NP],
+            kyoku_start_event_counts: [0; NP],
+            mjai_log_per_player: Default::default(),
+            #[cfg(feature = "python")]
+            round_seq_progression: self.round_seq_progression.clone(),
+            #[cfg(feature = "python")]
+            round_seq_progression_melds: self.round_seq_progression_melds.clone(),
+            #[cfg(feature = "python")]
+            round_seq_prog_pending_reach: self.round_seq_prog_pending_reach,
+            #[cfg(feature = "python")]
+            enable_seq_caching: true,
+            mode: self.mode.clone(),
+            game_mode: self.game_mode,
+            skip_mjai_logging: true,
+            seed: self.seed,
+            rule: self.rule,
+            last_error: None,
+            is_after_kan: self.is_after_kan,
+            riichi_sutehais: self.riichi_sutehais,
+            last_tedashis: self.last_tedashis,
+        }
+    }
+
+    fn should_emit_mjai_event(&self) -> bool {
+        if !self.skip_mjai_logging {
+            return true;
+        }
+        #[cfg(feature = "python")]
+        {
+            self.enable_seq_caching
+        }
+        #[cfg(not(feature = "python"))]
+        {
+            false
+        }
+    }
+
     pub fn new(
         game_mode: u8,
         skip_mjai_logging: bool,
@@ -160,7 +231,7 @@ impl GameState {
             last_tedashis: [None; NP],
         };
 
-        if !state.skip_mjai_logging {
+        if state.should_emit_mjai_event() {
             let mut ev = serde_json::Map::new();
             ev.insert("type".to_string(), Value::String("start_game".to_string()));
             state._push_mjai_event(Value::Object(ev));
@@ -185,7 +256,7 @@ impl GameState {
             self.round_seq_prog_pending_reach = None;
         }
 
-        if !self.skip_mjai_logging {
+        if self.should_emit_mjai_event() {
             let mut ev = serde_json::Map::new();
             ev.insert("type".to_string(), Value::String("start_game".to_string()));
             self._push_mjai_event(Value::Object(ev));
@@ -466,7 +537,7 @@ impl GameState {
                             && !self.players[pid as usize].riichi_stage
                         {
                             self.players[pid as usize].riichi_stage = true;
-                            if !self.skip_mjai_logging {
+                            if self.should_emit_mjai_event() {
                                 let mut ev = serde_json::Map::new();
                                 ev.insert("type".to_string(), Value::String("reach".to_string()));
                                 ev.insert("actor".to_string(), Value::Number(pid.into()));
@@ -586,7 +657,7 @@ impl GameState {
                         }
 
                         // Log Kakan immediately (before Chankan check)
-                        if !self.skip_mjai_logging {
+                        if self.should_emit_mjai_event() {
                             let mut ev = serde_json::Map::new();
                             ev.insert("type".to_string(), Value::String("kakan".to_string()));
                             ev.insert("actor".to_string(), Value::Number(pid.into()));
@@ -891,7 +962,7 @@ impl GameState {
                             }
                             self.win_results.insert(pid, val);
 
-                            if !self.skip_mjai_logging {
+                            if self.should_emit_mjai_event() {
                                 let mut ev = serde_json::Map::new();
                                 ev.insert("type".to_string(), Value::String("hora".to_string()));
                                 ev.insert("actor".to_string(), Value::Number(pid.into()));
@@ -1139,7 +1210,7 @@ impl GameState {
                             oya_won = true;
                         }
 
-                        if !self.skip_mjai_logging {
+                        if self.should_emit_mjai_event() {
                             let mut ev = serde_json::Map::new();
                             ev.insert("type".to_string(), Value::String("hora".to_string()));
                             ev.insert("actor".to_string(), Value::Number(w_pid.into()));
@@ -1220,7 +1291,7 @@ impl GameState {
                     added_tile: None,
                 });
 
-                if !self.skip_mjai_logging {
+                if self.should_emit_mjai_event() {
                     let type_str = match action.action_type {
                         ActionType::Pon => Some("pon"),
                         ActionType::Chi => Some("chi"),
@@ -1390,7 +1461,7 @@ impl GameState {
             self._reveal_kan_dora();
         }
 
-        if !self.skip_mjai_logging {
+        if self.should_emit_mjai_event() {
             let mut ev = serde_json::Map::new();
             ev.insert("type".to_string(), Value::String("dahai".to_string()));
             ev.insert("actor".to_string(), Value::Number(pid.into()));
@@ -1517,7 +1588,7 @@ impl GameState {
             self.wall.rinshan_draw_count += 1;
             self.is_rinshan_flag = true;
 
-            if !self.skip_mjai_logging {
+            if self.should_emit_mjai_event() {
                 let m_type = match action.action_type {
                     ActionType::Ankan => Some("ankan"),
                     ActionType::Daiminkan => Some("daiminkan"),
@@ -1564,7 +1635,7 @@ impl GameState {
                 self.wall.pending_kan_dora_count += 1;
             }
 
-            if !self.skip_mjai_logging {
+            if self.should_emit_mjai_event() {
                 // Rinshan tsumo logging should apply to Kakan as well
                 let mut t_ev = serde_json::Map::new();
                 t_ev.insert("type".to_string(), Value::String("tsumo".to_string()));
@@ -1584,7 +1655,7 @@ impl GameState {
             self.riichi_sticks += 1;
             self.players[p as usize].riichi_declared = true;
             self.players[p as usize].ippatsu_cycle = true;
-            if !self.skip_mjai_logging {
+            if self.should_emit_mjai_event() {
                 let mut ev = serde_json::Map::new();
                 ev.insert(
                     "type".to_string(),
@@ -1612,7 +1683,7 @@ impl GameState {
             self.phase = Phase::WaitAct;
             self.active_players = vec![pid];
 
-            if !self.skip_mjai_logging {
+            if self.should_emit_mjai_event() {
                 let mut ev = serde_json::Map::new();
                 ev.insert("type".to_string(), Value::String("tsumo".to_string()));
                 ev.insert("actor".to_string(), Value::Number(pid.into()));
@@ -1700,7 +1771,7 @@ impl GameState {
             }
         }
 
-        if !self.skip_mjai_logging {
+        if self.should_emit_mjai_event() {
             let mut ev = serde_json::Map::new();
             ev.insert("type".to_string(), Value::String("end_kyoku".to_string()));
             self._push_mjai_event(Value::Object(ev));
@@ -1814,7 +1885,7 @@ impl GameState {
             self.round_seq_prog_pending_reach = None;
         }
 
-        if !self.skip_mjai_logging {
+        if self.should_emit_mjai_event() {
             let wind_str = match round_wind % 4 {
                 0 => "E",
                 1 => "S",
@@ -1862,7 +1933,7 @@ impl GameState {
             self.drawn_tile = Some(t);
             self.needs_tsumo = false;
 
-            if !self.skip_mjai_logging {
+            if self.should_emit_mjai_event() {
                 let mut ev = serde_json::Map::new();
                 ev.insert("type".to_string(), Value::String("tsumo".to_string()));
                 ev.insert("actor".to_string(), Value::Number(self.oya.into()));
@@ -1984,7 +2055,7 @@ impl GameState {
             true
         };
 
-        if !self.skip_mjai_logging {
+        if self.should_emit_mjai_event() {
             let mut ev = serde_json::Map::new();
             ev.insert("type".to_string(), Value::String("ryukyoku".to_string()));
             ev.insert("reason".to_string(), Value::String(final_reason.clone()));
@@ -2058,7 +2129,7 @@ impl GameState {
             let base_idx = (4 + 2 * count).saturating_sub(self.wall.rinshan_draw_count as usize);
             if base_idx < self.wall.tiles.len() {
                 self.wall.dora_indicators.push(self.wall.tiles[base_idx]);
-                if !self.skip_mjai_logging {
+                if self.should_emit_mjai_event() {
                     let mut ev = serde_json::Map::new();
                     ev.insert("type".to_string(), Value::String("dora".to_string()));
                     ev.insert(
@@ -2102,7 +2173,7 @@ impl GameState {
 
     pub(crate) fn _process_end_game(&mut self) {
         self.is_done = true;
-        if !self.skip_mjai_logging {
+        if self.should_emit_mjai_event() {
             let mut ek = serde_json::Map::new();
             ek.insert("type".to_string(), Value::String("end_kyoku".to_string()));
             self._push_mjai_event(Value::Object(ek));
@@ -2128,58 +2199,58 @@ impl GameState {
     }
 
     fn _push_mjai_event_with_seq_event(&mut self, event: Value, _seq_event: Option<Value>) {
-        if self.skip_mjai_logging {
-            return;
-        }
-        let json_str = serde_json::to_string(&event).expect("valid JSON");
-        self.mjai_log.push(json_str.clone());
+        if !self.skip_mjai_logging {
+            let json_str = serde_json::to_string(&event).expect("valid JSON");
+            self.mjai_log.push(json_str.clone());
 
-        let type_str = event["type"].as_str().unwrap_or("");
-        let actor = event["actor"].as_u64().map(|a| a as usize);
+            let type_str = event["type"].as_str().unwrap_or("");
+            let actor = event["actor"].as_u64().map(|a| a as usize);
 
-        let np = NP;
-        for pid in 0..np {
-            let should_push = true;
-            let mut final_json = json_str.clone();
+            let np = NP;
+            for pid in 0..np {
+                let should_push = true;
+                let mut final_json = json_str.clone();
 
-            if type_str == "start_kyoku" {
-                if let Some(tehais_val) = event.get("tehais").and_then(|v| v.as_array()) {
-                    let mut masked_tehais = Vec::new();
-                    for (i, hand_val) in tehais_val.iter().enumerate() {
-                        if i == pid {
-                            masked_tehais.push(hand_val.clone());
-                        } else {
-                            let len = hand_val
-                                .as_array()
-                                .map(|a| a.len())
-                                .unwrap_or(INITIAL_HAND_SIZE);
-                            let masked = vec!["?".to_string(); len];
-                            masked_tehais.push(serde_json::to_value(masked).expect("valid JSON"));
+                if type_str == "start_kyoku" {
+                    if let Some(tehais_val) = event.get("tehais").and_then(|v| v.as_array()) {
+                        let mut masked_tehais = Vec::new();
+                        for (i, hand_val) in tehais_val.iter().enumerate() {
+                            if i == pid {
+                                masked_tehais.push(hand_val.clone());
+                            } else {
+                                let len = hand_val
+                                    .as_array()
+                                    .map(|a| a.len())
+                                    .unwrap_or(INITIAL_HAND_SIZE);
+                                let masked = vec!["?".to_string(); len];
+                                masked_tehais
+                                    .push(serde_json::to_value(masked).expect("valid JSON"));
+                            }
                         }
+                        let mut masked_event = event
+                            .as_object()
+                            .expect("event must be a JSON object")
+                            .clone();
+                        masked_event.insert("tehais".to_string(), Value::Array(masked_tehais));
+                        final_json = serde_json::to_string(&Value::Object(masked_event))
+                            .expect("valid JSON");
                     }
+                } else if type_str == "tsumo"
+                    && let Some(act_id) = actor
+                    && act_id != pid
+                {
                     let mut masked_event = event
                         .as_object()
                         .expect("event must be a JSON object")
                         .clone();
-                    masked_event.insert("tehais".to_string(), Value::Array(masked_tehais));
+                    masked_event.insert("pai".to_string(), Value::String("?".to_string()));
                     final_json =
                         serde_json::to_string(&Value::Object(masked_event)).expect("valid JSON");
                 }
-            } else if type_str == "tsumo"
-                && let Some(act_id) = actor
-                && act_id != pid
-            {
-                let mut masked_event = event
-                    .as_object()
-                    .expect("event must be a JSON object")
-                    .clone();
-                masked_event.insert("pai".to_string(), Value::String("?".to_string()));
-                final_json =
-                    serde_json::to_string(&Value::Object(masked_event)).expect("valid JSON");
-            }
 
-            if should_push {
-                self.mjai_log_per_player[pid].push(final_json);
+                if should_push {
+                    self.mjai_log_per_player[pid].push(final_json);
+                }
             }
         }
 
