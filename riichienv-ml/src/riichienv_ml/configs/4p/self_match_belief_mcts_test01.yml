@@ -1,0 +1,39 @@
+self_match:
+  game:
+    n_players: 4
+    replay_rule: tenhou
+  agents:
+    - name: belief-puct-bc-test45-belief-test35
+      agent_type: belief_mcts
+      config_path: riichienv-ml/src/riichienv_ml/configs/4p/bc_tenhou_seq_test01.yml
+      model_path: models/behavior_cloning/test45/model.pth
+      device: cuda
+      belief_mcts:
+        belief_config_path: riichienv-ml/src/riichienv_ml/configs/4p/belief_allocation.yml
+        belief_model_path: models/belief_sampler/test35/model.pth
+        belief_device: cuda
+        belief_samples: 128
+        belief_sample_batch_size: 128
+        max_belief_sample_batches: 8
+        belief_temperature: 1.0
+        belief_decode_steps: null
+        num_simulations: 512
+        rollout_batch_size: 64
+        puct_c: 1.5
+        policy_temperature: 1.0
+        discard_horizon: 6
+        rank_point_weights: [1.0, 0.3333333333333333, -0.3333333333333333, -1.0]
+        search_response: true
+        metadata_key: belief_puct
+        seed: null
+  output_dir: data/self_match/belief_puct/test01
+  summary_path: data/self_match/belief_puct/test01/summary.json
+  num_games: 1
+  base_seed: 0
+  seed_stride: 1
+  progress_interval: 1
+  overwrite: false
+  compress_logs: false
+  skip_mjai_logging: false
+  validate_saved_logs: false
+  log_policy_meta: true

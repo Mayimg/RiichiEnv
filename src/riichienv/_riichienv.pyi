@@ -905,6 +905,7 @@ class RiichiEnv:
     double_riichi_declared: list[bool]
     forbidden_discards: list[list[int]]
     game_type: Any
+    has_pending_kan: bool
     ippatsu_cycle: list[bool]
     is_done: bool
     is_first_turn: bool
@@ -912,10 +913,12 @@ class RiichiEnv:
     kyoku_idx: int
     last_agari_results: Any
     last_discard: tuple[int, int] | None
+    last_error: str | None
     melds: list[list[Meld]]
     missed_agari_doujun: list[bool]
     missed_agari_riichi: list[bool]
     skip_mjai_logging: bool
+    enable_seq_caching: bool
     nagashi_eligible: list[bool]
     needs_initialize_next_round: bool
     pending_is_draw: bool
@@ -927,6 +930,7 @@ class RiichiEnv:
     riichi_pending_acceptance: int | None
     riichi_stage: list[int]
     rinshan_draw_count: int
+    drawable_count: int
     round_end_scores: list[int]
     round_wind: int
     salt: str
@@ -964,6 +968,15 @@ class RiichiEnv:
     def _is_furiten(self, player_id: int) -> bool: ...
     def get_viewer(self) -> GameViewer: ...
     def _reveal_kan_dora(self) -> None: ...
+    def inject_simulation_state(
+        self,
+        hands: list[list[int]],
+        wall: list[int],
+        dora_indicators: list[int],
+        drawable_count: int,
+    ) -> None: ...
+    def recompute_current_claims(self) -> None: ...
+    def clear_last_error(self) -> None: ...
     def apply_event(self, event: dict[str, Any]) -> None:
         """Apply an MJAI event to advance the game state.
 

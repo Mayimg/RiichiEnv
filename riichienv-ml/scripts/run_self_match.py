@@ -13,7 +13,7 @@ except ModuleNotFoundError:
 
 load_dotenv()
 
-from riichienv_ml.config import SelfMatchAgentConfig, load_config  # noqa: E402
+from riichienv_ml.config import load_config  # noqa: E402
 from riichienv_ml.self_match import SelfMatchRunner  # noqa: E402
 from riichienv_ml.utils import setup_logging  # noqa: E402
 
@@ -69,21 +69,6 @@ def main() -> None:
 
     output_dir = Path(cfg.output_dir)
     setup_logging(str(output_dir), "self_match")
-
-    if len(cfg.agents) == 1:
-        agent_cfg = cfg.agents[0]
-        cfg = cfg.model_copy(
-            update={
-                "agents": [
-                    SelfMatchAgentConfig(
-                        config_path=agent_cfg.config_path,
-                        model_path=agent_cfg.model_path,
-                        device=agent_cfg.device,
-                        name=agent_cfg.name,
-                    )
-                ]
-            }
-        )
 
     runner = SelfMatchRunner(cfg)
     runner.run()

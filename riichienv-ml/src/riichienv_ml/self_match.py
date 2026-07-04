@@ -12,9 +12,11 @@ from loguru import logger
 
 from riichienv import GameRule, MjaiReplay, RiichiEnv
 from riichienv_ml.agents import Agent, PolicyDecision
+from riichienv_ml.belief_mcts import BeliefMCTSAgent
 from riichienv_ml.config import SelfMatchConfig
 
 PolicyDecisionStep = tuple[int, int, list[PolicyDecision]]
+SelfMatchAgent = Agent | BeliefMCTSAgent
 
 
 def _make_rule(rule_name: str) -> GameRule:
@@ -39,25 +41,29 @@ class SelfMatchRunner:
         self.starting_scores = list(cfg.game.starting_scores)
         self._shared_agents, self.seat_agents = self._build_agents()
 
-    def _build_agents(self) -> tuple[list[Agent], dict[int, Agent]]:
-        if len(self.cfg.agents) == 1:
-            agent_cfg = self.cfg.agents[0]
-            shared = Agent(
+    def _make_agent(self, agent_cfg) -> SelfMatchAgent:
+        if agent_cfg.agent_type == "belief_mcts":
+            return BeliefMCTSAgent(
                 config_path=agent_cfg.config_path,
                 model_path=agent_cfg.model_path,
                 device=agent_cfg.device,
+                search_config=agent_cfg.belief_mcts,
             )
+        return Agent(
+            config_path=agent_cfg.config_path,
+            model_path=agent_cfg.model_path,
+            device=agent_cfg.device,
+        )
+
+    def _build_agents(self) -> tuple[list[SelfMatchAgent], dict[int, SelfMatchAgent]]:
+        if len(self.cfg.agents) == 1:
+            agent_cfg = self.cfg.agents[0]
+            shared = self._make_agent(agent_cfg)
             return [shared], {seat: shared for seat in range(self.cfg.game.n_players)}
 
         built = []
         for agent_cfg in self.cfg.agents:
-            built.append(
-                Agent(
-                    config_path=agent_cfg.config_path,
-                    model_path=agent_cfg.model_path,
-                    device=agent_cfg.device,
-                )
-            )
+            built.append(self._make_agent(agent_cfg))
         return built, {seat: built[seat] for seat in range(self.cfg.game.n_players)}
 
     def _log_path(self, game_idx: int) -> Path:
@@ -187,6 +193,18 @@ class SelfMatchRunner:
             return value
         return len(env.mjai_log)
 
+    @staticmethod
+    def _act(agent: SelfMatchAgent, env: RiichiEnv, pid: int, obs):
+        if hasattr(agent, "act_from_env"):
+            return agent.act_from_env(env, pid, obs)
+        return agent.act(obs)
+
+    @staticmethod
+    def _act_with_policy(agent: SelfMatchAgent, env: RiichiEnv, pid: int, obs) -> PolicyDecision:
+        if hasattr(agent, "act_with_policy_from_env"):
+            return agent.act_with_policy_from_env(env, pid, obs)
+        return agent.act_with_policy(obs)
+
     def _play_one_game(self, game_idx: int) -> dict:
         seed = self.cfg.base_seed + game_idx * self.cfg.seed_stride
         env = RiichiEnv(
@@ -204,7 +222,7 @@ class SelfMatchRunner:
             if self.cfg.log_policy_meta:
                 start_log_len = self._mjai_log_len(env)
                 decisions_by_pid = {
-                    pid: self.seat_agents[pid].act_with_policy(obs)
+                    pid: self._act_with_policy(self.seat_agents[pid], env, pid, obs)
                     for pid, obs in obs_dict.items()
                 }
                 actions = {
@@ -214,7 +232,7 @@ class SelfMatchRunner:
                 decisions = list(decisions_by_pid.values())
             else:
                 actions = {
-                    pid: self.seat_agents[pid].act(obs)
+                    pid: self._act(self.seat_agents[pid], env, pid, obs)
                     for pid, obs in obs_dict.items()
                 }
 
