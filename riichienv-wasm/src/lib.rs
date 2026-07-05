@@ -4,6 +4,7 @@ use riichienv_core::hand_evaluator::HandEvaluator;
 use riichienv_core::hand_evaluator_3p::HandEvaluator3P;
 use riichienv_core::parser::{mjai_to_tid, tid_to_mjai};
 use riichienv_core::types::{Conditions, Meld, MeldType, Wind};
+use riichienv_core::{score, yaku};
 
 /// Input format for melds passed from JavaScript.
 #[derive(serde::Deserialize)]
@@ -50,6 +51,10 @@ struct ConditionsInput {
     honba: u32,
     kita_count: u8,
     is_sanma: bool,
+    is_kokushi_musou_13machi_double: bool,
+    is_suuankou_tanki_double: bool,
+    is_junsei_chuurenpoutou_double: bool,
+    is_daisuushii_double: bool,
 }
 
 impl ConditionsInput {
@@ -86,6 +91,40 @@ struct ScoreResult {
     tsumo_agari_oya: u32,
     tsumo_agari_ko: u32,
     yaku: Vec<u32>,
+}
+
+fn apply_double_yakuman_rules(score: &mut ScoreResult, conditions: &ConditionsInput) {
+    if !score.yakuman || score.han <= 13 {
+        return;
+    }
+
+    let mut cap = 0u32;
+    for &y in &score.yaku {
+        match y {
+            yaku::ID_JUNSEI_CHUUREN if !conditions.is_junsei_chuurenpoutou_double => cap += 13,
+            yaku::ID_SUANKO_TANKI if !conditions.is_suuankou_tanki_double => cap += 13,
+            yaku::ID_KOKUSHI_13 if !conditions.is_kokushi_musou_13machi_double => cap += 13,
+            yaku::ID_DAISUUSHI if !conditions.is_daisuushii_double => cap += 13,
+            _ => {}
+        }
+    }
+
+    if cap == 0 {
+        return;
+    }
+
+    score.han = score.han.saturating_sub(cap).max(13);
+    let score_res = score::calculate_score(
+        score.han as u8,
+        0,
+        conditions.player_wind % 4 == Wind::East as u8,
+        conditions.tsumo,
+        conditions.honba,
+        if conditions.is_sanma { 3 } else { 4 },
+    );
+    score.ron_agari = score_res.pay_ron;
+    score.tsumo_agari_oya = score_res.pay_tsumo_oya;
+    score.tsumo_agari_ko = score_res.pay_tsumo_ko;
 }
 
 /// Calculate wait tiles (machi) for a given hand.
@@ -149,7 +188,7 @@ pub fn calc_score(
         evaluator.calc(win_tile, dora_indicators, ura_indicators, Some(conditions))
     };
 
-    let score = ScoreResult {
+    let mut score = ScoreResult {
         is_win: result.is_win,
         yakuman: result.yakuman,
         han: result.han,
@@ -159,6 +198,7 @@ pub fn calc_score(
         tsumo_agari_ko: result.tsumo_agari_ko,
         yaku: result.yaku,
     };
+    apply_double_yakuman_rules(&mut score, &cond_input);
 
     serde_wasm_bindgen::to_value(&score)
         .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
@@ -174,4 +214,51 @@ pub fn mjai_to_tile_id(mjai: &str) -> Option<u8> {
 #[wasm_bindgen]
 pub fn tile_id_to_mjai(tid: u8) -> String {
     tid_to_mjai(tid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn double_yakuman_score(yaku_id: u32) -> ScoreResult {
+        ScoreResult {
+            is_win: true,
+            yakuman: true,
+            han: 26,
+            fu: 0,
+            ron_agari: 64000,
+            tsumo_agari_oya: 32000,
+            tsumo_agari_ko: 16000,
+            yaku: vec![yaku_id],
+        }
+    }
+
+    #[test]
+    fn tenhou_default_caps_suuankou_tanki_to_single_yakuman() {
+        let conditions = ConditionsInput {
+            player_wind: Wind::South as u8,
+            ..Default::default()
+        };
+        let mut score = double_yakuman_score(yaku::ID_SUANKO_TANKI);
+
+        apply_double_yakuman_rules(&mut score, &conditions);
+
+        assert_eq!(score.han, 13);
+        assert_eq!(score.ron_agari, 32000);
+    }
+
+    #[test]
+    fn enabled_suuankou_tanki_rule_keeps_double_yakuman() {
+        let conditions = ConditionsInput {
+            player_wind: Wind::South as u8,
+            is_suuankou_tanki_double: true,
+            ..Default::default()
+        };
+        let mut score = double_yakuman_score(yaku::ID_SUANKO_TANKI);
+
+        apply_double_yakuman_rules(&mut score, &conditions);
+
+        assert_eq!(score.han, 26);
+        assert_eq!(score.ron_agari, 64000);
+    }
 }

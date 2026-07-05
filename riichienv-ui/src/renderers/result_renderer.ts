@@ -275,18 +275,21 @@ export class ResultRenderer {
                 }
 
                 // 5. Han / Fu
-                const statsRow = document.createElement('div');
-                Object.assign(statsRow.style, {
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    marginTop: '15px',
-                    fontWeight: 'bold',
-                    fontSize: '1.1em',
-                    borderTop: '1px solid #444',
-                    paddingTop: '10px',
-                });
-                statsRow.innerHTML = `<span>${score.han} Han</span><span>${score.fu} Fu</span>`;
-                body.appendChild(statsRow);
+                // Yakuman hands are not scored by han/fu. Keep this line for kazoe yakuman.
+                if (!isYakuman || isKazoe) {
+                    const statsRow = document.createElement('div');
+                    Object.assign(statsRow.style, {
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        marginTop: '15px',
+                        fontWeight: 'bold',
+                        fontSize: '1.1em',
+                        borderTop: '1px solid #444',
+                        paddingTop: '10px',
+                    });
+                    statsRow.innerHTML = `<span>${score.han} Han</span><span>${score.fu} Fu</span>`;
+                    body.appendChild(statsRow);
+                }
 
                 content.appendChild(body);
 

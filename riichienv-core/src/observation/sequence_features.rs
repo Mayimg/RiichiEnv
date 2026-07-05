@@ -1227,14 +1227,14 @@ mod tests {
     #[test]
     fn test_sparse_vocab_bounds() {
         // Verify all sparse offsets are within vocab
-        assert!(SPARSE_PAD < SPARSE_VOCAB_SIZE as u16);
-
-        assert!(SPARSE_WIND_OFFSET + 3 < SPARSE_KYOKU_OFFSET);
-        assert!(SPARSE_KYOKU_OFFSET + 3 < SPARSE_TILES_REMAINING_OFFSET);
-        assert!(SPARSE_TILES_REMAINING_OFFSET + 69 < SPARSE_DORA_OFFSET);
-        assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_PAD);
-
-        assert_eq!(SPARSE_PAD as usize + 1, SPARSE_VOCAB_SIZE);
+        const _: () = {
+            assert!(SPARSE_PAD < SPARSE_VOCAB_SIZE as u16);
+            assert!(SPARSE_WIND_OFFSET + 3 < SPARSE_KYOKU_OFFSET);
+            assert!(SPARSE_KYOKU_OFFSET + 3 < SPARSE_TILES_REMAINING_OFFSET);
+            assert!(SPARSE_TILES_REMAINING_OFFSET + 69 < SPARSE_DORA_OFFSET);
+            assert!(SPARSE_DORA_OFFSET + 4 * 37 + 36 < SPARSE_PAD);
+            assert!(SPARSE_PAD as usize + 1 == SPARSE_VOCAB_SIZE);
+        };
     }
 
     #[test]
