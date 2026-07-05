@@ -63,6 +63,16 @@ Discard response decisions (`chi`, `pon`, `daiminkan`, `ron`, `pass`) are includ
 When multiple players can respond, the searched player's root action is fixed and the other responders are
 sampled from the BC policy in the rollout batch.
 
+For a response root, hidden hands are injected and discard claims are recomputed before the root action is
+stepped. If no other player can respond in that sampled world, the root action is stepped by itself. If other
+players can also respond, their declarations are sampled from the BC policy and all declarations are submitted
+to the Rust engine together, so normal Mahjong priority rules decide the effective action.
+
+The search estimates the value of choosing the root declaration, not the value conditioned on that declaration
+being accepted. Therefore, if a non-pass root call is preempted by a higher-priority declaration such as another
+player's `ron` or `pon`, that rollout is still counted for the selected root action. This keeps `pass` and
+call/ron actions on the same belief-world distribution.
+
 Chankan response search is currently treated as a BC fallback. The Rust engine precomputes kan response
 claims through a different path than ordinary discard claims, so recomputing those claims after hidden-hand
 injection is not yet supported.

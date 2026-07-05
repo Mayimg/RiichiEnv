@@ -648,6 +648,7 @@ class BeliefMCTSAgent:
     ) -> list[RolloutState]:
         states: list[RolloutState] = []
         other_response_requests: list[tuple[RolloutState, int, Any, dict[int, Any]]] = []
+        response_step_requests: list[tuple[RolloutState, dict[int, Any]]] = []
 
         for action_idx in selected_indices:
             sample = samples[self.rng.randrange(len(samples))]
@@ -681,9 +682,9 @@ class BeliefMCTSAgent:
                         if int(other_pid) == int(root_pid):
                             continue
                         other_response_requests.append((state, int(other_pid), other_obs, actions))
+                    response_step_requests.append((state, actions))
                 else:
-                    clone.step(actions)
-                    self._finish_if_terminal_after_step(state)
+                    self._step_root_rollout(state, actions, "root_step_error")
             except Exception as exc:
                 logger.debug(f"root rollout preparation failed: {exc}")
                 self._finish_error(state, "root_preparation_error")
@@ -692,24 +693,30 @@ class BeliefMCTSAgent:
             obs_list = [item[2] for item in other_response_requests if not item[0].done]
             sampled = self._sample_actions(obs_list)
             sample_idx = 0
-            stepped: set[int] = set()
             for state, other_pid, _other_obs, actions in other_response_requests:
                 if state.done:
                     continue
                 actions[other_pid] = sampled[sample_idx]
                 sample_idx += 1
-            for state, _other_pid, _other_obs, actions in other_response_requests:
-                if state.done or id(state) in stepped:
-                    continue
-                stepped.add(id(state))
-                try:
-                    state.env.step(actions)
-                    self._finish_if_terminal_after_step(state)
-                except Exception as exc:
-                    logger.debug(f"root response rollout step failed: {exc}")
-                    self._finish_error(state, "root_response_step_error")
+
+        for state, actions in response_step_requests:
+            if state.done:
+                continue
+            self._step_root_rollout(state, actions, "root_response_step_error")
 
         return states
+
+    def _step_root_rollout(self, state: RolloutState, actions: dict[int, Any], error_reason: str) -> None:
+        try:
+            state.env.step(actions)
+            if getattr(state.env, "last_error", None):
+                logger.debug(f"root rollout env error: {state.env.last_error}")
+                self._finish_error(state, "root_step_env_last_error")
+                return
+            self._finish_if_terminal_after_step(state)
+        except Exception as exc:
+            logger.debug(f"root rollout step failed: {exc}")
+            self._finish_error(state, error_reason)
 
     def _play_rollout_batch(self, states: list[RolloutState]) -> None:
         while any(not state.done for state in states):
