@@ -1,13 +1,15 @@
 import json
+import random
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
-from riichienv_ml.belief_mcts import BeliefMCTSAgent
+from riichienv_ml.belief_mcts import BeliefMCTSAgent, WorldSample
 from riichienv_ml.config import BeliefMctsConfig
 
-from riichienv import GameRule, RiichiEnv
+from riichienv import Action, ActionType, GameRule, Phase, RiichiEnv
+from tests.env.helper import helper_setup_env
 
 
 def _bare_belief_agent() -> BeliefMCTSAgent:
@@ -16,12 +18,41 @@ def _bare_belief_agent() -> BeliefMCTSAgent:
     agent.device = torch.device("cpu")
     agent.policy_head_is_pointer = True
     agent.rank_weights = np.asarray(agent.cfg.rank_point_weights, dtype=np.float64)
+    agent.rng = random.Random(0)
     return agent
 
 
 def _initial_obs():
     env = RiichiEnv(seed=1, rule=GameRule.default_tenhou())
     return env.reset()[0]
+
+
+def _world_sample_from_env(env: RiichiEnv) -> WorldSample:
+    return WorldSample(
+        hands=[list(hand) for hand in env.hands],
+        wall=list(env.wall),
+        dora_indicators=list(env.dora_indicators),
+        drawable_count=int(env.drawable_count),
+    )
+
+
+def _root_only_chi_response_env() -> RiichiEnv:
+    env = helper_setup_env(
+        seed=1,
+        hands=[
+            [16] + [2] * 12,
+            [8, 12] + [0] * 11,
+            [40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84, 88],
+            [92, 96, 100, 104, 108, 112, 116, 120, 124, 128, 132, 133, 134],
+        ],
+        current_player=0,
+        active_players=[0],
+        drawn_tile=20,
+    )
+    env.step({0: Action(ActionType.DISCARD, tile=16)})
+    assert env.phase == Phase.WaitResponse
+    assert env.active_players == [1]
+    return env
 
 
 def test_belief_mcts_selected_action_meta_preserves_raw_bc_policy_prob():
@@ -49,6 +80,101 @@ def test_belief_mcts_selected_action_meta_preserves_raw_bc_policy_prob():
     assert selected_entry["logit"] == pytest.approx(float(logits[selected_key]))
     assert selected_entry["prob"] == pytest.approx(float(raw_probs[selected_key]))
     assert selected_entry["prob"] < 0.1
+
+
+def test_belief_mcts_response_root_steps_when_no_other_responder(monkeypatch):
+    agent = _bare_belief_agent()
+    env = _root_only_chi_response_env()
+    root_pid = 1
+    root_obs = env.get_observations([root_pid])[root_pid]
+    root_chi = next(action for action in root_obs.legal_actions() if action.action_type == ActionType.CHI)
+
+    def fail_sample_actions(_obs_list):
+        raise AssertionError("other responders should not be sampled")
+
+    monkeypatch.setattr(agent, "_sample_actions", fail_sample_actions)
+
+    state = agent._prepare_root_rollouts(
+        env,
+        root_pid,
+        [root_chi],
+        [_world_sample_from_env(env)],
+        [0],
+    )[0]
+
+    assert state.done is False
+    assert state.env.phase == Phase.WaitAct
+    assert state.env.active_players == [root_pid]
+    assert len(state.env.melds[root_pid]) == 1
+
+
+def test_belief_mcts_response_root_pass_steps_when_no_other_responder(monkeypatch):
+    agent = _bare_belief_agent()
+    env = _root_only_chi_response_env()
+    root_pid = 1
+    root_obs = env.get_observations([root_pid])[root_pid]
+    root_pass = next(action for action in root_obs.legal_actions() if action.action_type == ActionType.PASS)
+
+    def fail_sample_actions(_obs_list):
+        raise AssertionError("other responders should not be sampled")
+
+    monkeypatch.setattr(agent, "_sample_actions", fail_sample_actions)
+
+    state = agent._prepare_root_rollouts(
+        env,
+        root_pid,
+        [root_pass],
+        [_world_sample_from_env(env)],
+        [0],
+    )[0]
+
+    assert state.done is False
+    assert state.env.phase == Phase.WaitAct
+    assert state.env.active_players == [root_pid]
+    assert len(state.env.melds[root_pid]) == 0
+
+
+def test_belief_mcts_response_root_keeps_priority_cancellation_as_valid_rollout(monkeypatch):
+    agent = _bare_belief_agent()
+    env = helper_setup_env(
+        seed=1,
+        hands=[
+            [57] + [2] * 12,
+            [62, 65] + [0] * 11,
+            [56, 58] + [1] * 11,
+            [12, 16, 19, 21, 48, 59, 64, 77, 81, 89, 104, 130, 133],
+        ],
+        current_player=0,
+        active_players=[0],
+        drawn_tile=100,
+    )
+    env.step({0: Action(ActionType.DISCARD, tile=57)})
+    assert env.phase == Phase.WaitResponse
+    assert env.active_players == [1, 2]
+
+    root_pid = 1
+    root_obs = env.get_observations([root_pid])[root_pid]
+    root_chi = next(action for action in root_obs.legal_actions() if action.action_type == ActionType.CHI)
+
+    def sample_other_pon(obs_list):
+        assert len(obs_list) == 1
+        return [next(action for action in obs_list[0].legal_actions() if action.action_type == ActionType.PON)]
+
+    monkeypatch.setattr(agent, "_sample_actions", sample_other_pon)
+
+    state = agent._prepare_root_rollouts(
+        env,
+        root_pid,
+        [root_chi],
+        [_world_sample_from_env(env)],
+        [0],
+    )[0]
+
+    assert state.done is False
+    assert state.env.phase == Phase.WaitAct
+    assert state.env.active_players == [2]
+    assert len(state.env.melds[root_pid]) == 0
+    assert len(state.env.melds[2]) == 1
 
 
 def test_belief_mcts_search_stats_are_separate_from_bc_policy_entries():
