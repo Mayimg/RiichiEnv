@@ -8,7 +8,7 @@ mod python;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 
-use crate::action::{Action, Action3P};
+use crate::action::{Action, Action3P, ActionType};
 use crate::errors::{RiichiError, RiichiResult};
 use crate::types::Meld;
 
@@ -107,16 +107,23 @@ impl Observation3P {
     }
 
     pub fn find_action(&self, action_id: usize) -> Option<Action3P> {
-        self._legal_actions
-            .iter()
-            .find(|a| {
-                if let Ok(idx) = a.encode() {
-                    (idx as usize) == action_id
-                } else {
-                    false
-                }
-            })
-            .cloned()
+        // Prefer non-red-five candidates so that 5m/5p/5s discards do not
+        // accidentally drop the akadora when a normal 5 is also legal.
+        let mut fallback: Option<&Action3P> = None;
+        for action in &self._legal_actions {
+            let Ok(idx) = action.encode() else {
+                continue;
+            };
+            if (idx as usize) != action_id {
+                continue;
+            }
+            if is_red_five_discard(&action.0) {
+                fallback.get_or_insert(action);
+            } else {
+                return Some(action.clone());
+            }
+        }
+        fallback.cloned()
     }
 
     /// Return absolute player indices in relative order: [self, next, prev].
@@ -148,5 +155,69 @@ impl Observation3P {
                 message: format!("JSON deserialize failed: {e}"),
             })?;
         Ok(obs)
+    }
+}
+
+fn is_red_five_discard(action: &Action) -> bool {
+    matches!(action.action_type, ActionType::Discard)
+        && matches!(action.tile, Some(16) | Some(52) | Some(88))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obs_with_actions(actions: Vec<Action>) -> Observation3P {
+        Observation3P::new(
+            0,
+            [vec![], vec![], vec![]],
+            [vec![], vec![], vec![]],
+            [vec![], vec![], vec![]],
+            vec![],
+            [35000, 35000, 35000],
+            [false, false, false],
+            actions,
+            vec![],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None, None, None],
+            [None, None, None],
+            None,
+            None,
+        )
+    }
+
+    fn discard(tile: u8) -> Action {
+        Action::new(ActionType::Discard, Some(tile), vec![], Some(0))
+    }
+
+    #[test]
+    fn find_action_3p_prefers_non_red_5p() {
+        let obs = obs_with_actions(vec![discard(52), discard(54)]);
+        // 5p compact id matches the encoded discard id of either action.
+        let id = obs._legal_actions[0].encode().unwrap() as usize;
+        let chosen = obs.find_action(id).expect("discard 5p should resolve");
+        assert_eq!(chosen.0.tile, Some(54), "non-red 5p must win over red 5p");
+    }
+
+    #[test]
+    fn find_action_3p_prefers_non_red_5s() {
+        let obs = obs_with_actions(vec![discard(88), discard(90)]);
+        let id = obs._legal_actions[0].encode().unwrap() as usize;
+        let chosen = obs.find_action(id).expect("discard 5s should resolve");
+        assert_eq!(chosen.0.tile, Some(90));
+    }
+
+    #[test]
+    fn find_action_3p_falls_back_to_red_when_only_red_legal() {
+        let obs = obs_with_actions(vec![discard(52)]);
+        let id = obs._legal_actions[0].encode().unwrap() as usize;
+        let chosen = obs.find_action(id).expect("red-only 5p must still resolve");
+        assert_eq!(chosen.0.tile, Some(52));
     }
 }

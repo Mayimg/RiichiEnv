@@ -38,6 +38,10 @@ export interface ConditionsInput {
     honba?: number;
     kita_count?: number;
     is_sanma?: boolean;
+    is_kokushi_musou_13machi_double?: boolean;
+    is_suuankou_tanki_double?: boolean;
+    is_junsei_chuurenpoutou_double?: boolean;
+    is_daisuushii_double?: boolean;
 }
 
 /**

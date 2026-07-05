@@ -12,7 +12,7 @@ pub(crate) mod sequence_features;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 
-use crate::action::{Action, ActionEncoder};
+use crate::action::{Action, ActionEncoder, ActionType};
 use crate::errors::{RiichiError, RiichiResult};
 use crate::types::Meld;
 #[cfg(feature = "python")]
@@ -133,16 +133,23 @@ impl Observation {
 
     pub fn find_action(&self, action_id: usize) -> Option<Action> {
         let encoder = ActionEncoder::FourPlayer;
-        self._legal_actions
-            .iter()
-            .find(|a| {
-                if let Ok(idx) = encoder.encode(a) {
-                    (idx as usize) == action_id
-                } else {
-                    false
-                }
-            })
-            .cloned()
+        // Prefer non-red-five candidates so that 5m/5p/5s discards do not
+        // accidentally drop the akadora when a normal 5 is also legal.
+        let mut fallback: Option<&Action> = None;
+        for action in &self._legal_actions {
+            let Ok(idx) = encoder.encode(action) else {
+                continue;
+            };
+            if (idx as usize) != action_id {
+                continue;
+            }
+            if is_red_five_discard(action) {
+                fallback.get_or_insert(action);
+            } else {
+                return Some(action.clone());
+            }
+        }
+        fallback.cloned()
     }
 
     /// Return absolute player indices in relative order: [self, shimocha, toimen, kamicha].
@@ -174,5 +181,85 @@ impl Observation {
                 message: format!("JSON deserialize failed: {e}"),
             })?;
         Ok(obs)
+    }
+}
+
+fn is_red_five_discard(action: &Action) -> bool {
+    matches!(action.action_type, ActionType::Discard)
+        && matches!(action.tile, Some(16) | Some(52) | Some(88))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obs_with_actions(actions: Vec<Action>) -> Observation {
+        Observation::new(
+            0,
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            vec![],
+            [25000, 25000, 25000, 25000],
+            [false, false, false, false],
+            actions,
+            vec![],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None, None, None, None],
+            [None, None, None, None],
+            None,
+            None,
+            None,
+        )
+    }
+
+    fn discard(tile: u8) -> Action {
+        Action::new(ActionType::Discard, Some(tile), vec![], Some(0))
+    }
+
+    #[test]
+    fn find_action_prefers_non_red_5m() {
+        // 5m action_id = 16 / 4 = 4; legal actions list red 5m first.
+        let obs = obs_with_actions(vec![discard(16), discard(17), discard(18), discard(19)]);
+        let chosen = obs.find_action(4).expect("discard 5m should resolve");
+        assert_eq!(chosen.tile, Some(17), "non-red 5m must win over red 5m");
+    }
+
+    #[test]
+    fn find_action_prefers_non_red_5p() {
+        // 5p action_id = 52 / 4 = 13.
+        let obs = obs_with_actions(vec![discard(52), discard(54)]);
+        let chosen = obs.find_action(13).expect("discard 5p should resolve");
+        assert_eq!(chosen.tile, Some(54));
+    }
+
+    #[test]
+    fn find_action_prefers_non_red_5s() {
+        // 5s action_id = 88 / 4 = 22.
+        let obs = obs_with_actions(vec![discard(88), discard(90)]);
+        let chosen = obs.find_action(22).expect("discard 5s should resolve");
+        assert_eq!(chosen.tile, Some(90));
+    }
+
+    #[test]
+    fn find_action_falls_back_to_red_when_only_red_legal() {
+        // Only the red 5m is in the hand; we still need a working discard.
+        let obs = obs_with_actions(vec![discard(16)]);
+        let chosen = obs.find_action(4).expect("red-only 5m must still resolve");
+        assert_eq!(chosen.tile, Some(16));
+    }
+
+    #[test]
+    fn find_action_unaffected_for_non_five_tiles() {
+        // 4m action_id = 12 / 4 = 3.
+        let obs = obs_with_actions(vec![discard(12), discard(13)]);
+        let chosen = obs.find_action(3).expect("discard 4m should resolve");
+        assert_eq!(chosen.tile, Some(12), "first match wins for non-red ties");
     }
 }
