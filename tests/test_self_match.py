@@ -226,16 +226,8 @@ def test_self_match_runner_writes_parseable_mjai_logs(tmp_path):
 
     replay = MjaiReplay.from_jsonl(str(log_files[0]), rule="tenhou")
     assert replay.num_rounds() > 0
-    events = [
-        json.loads(line)
-        for line in log_files[0].read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    policy_events = [
-        event
-        for event in events
-        if isinstance(event.get("meta"), dict) and "policy" in event["meta"]
-    ]
+    events = [json.loads(line) for line in log_files[0].read_text(encoding="utf-8").splitlines() if line.strip()]
+    policy_events = [event for event in events if isinstance(event.get("meta"), dict) and "policy" in event["meta"]]
     assert policy_events
     policy = policy_events[0]["meta"]["policy"]
     assert policy["head"] == "pointer"

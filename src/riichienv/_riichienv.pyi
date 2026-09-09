@@ -859,7 +859,6 @@ class KyokuStepIterator:
 def encode_grp_tenhou_4p(
     start_scores: list[int], delta_scores: list[int], chang: int, ju: int, ben: int, liqibang: int
 ) -> bytes: ...
-
 def encode_seq_agari_overtakes_tenhou_4p(
     scores: list[int], oya: int, honba: int, liqibang: int, observer: int
 ) -> bytes: ...
