@@ -17,7 +17,7 @@ const TOTAL_TILES: u32 = 108;
 impl Observation3P {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None))]
+    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None, forced_tedashi=false))]
     pub fn py_new(
         player_id: u8,
         hands: Vec<Vec<u8>>,
@@ -39,6 +39,7 @@ impl Observation3P {
         last_tedashis: Vec<Option<u8>>,
         last_discard: Option<u32>,
         drawn_tile: Option<u8>,
+        forced_tedashi: bool,
     ) -> Self {
         let hands: [Vec<u8>; 3] = hands.try_into().expect("expected 3 hands");
         let melds: [Vec<Meld>; 3] = melds.try_into().expect("expected 3 melds");
@@ -52,7 +53,7 @@ impl Observation3P {
             .expect("expected 3 riichi_sutehais");
         let last_tedashis: [Option<u8>; 3] =
             last_tedashis.try_into().expect("expected 3 last_tedashis");
-        Self::new(
+        let mut obs = Self::new(
             player_id,
             hands,
             melds,
@@ -73,7 +74,9 @@ impl Observation3P {
             last_tedashis,
             last_discard,
             drawn_tile,
-        )
+        );
+        obs.forced_tedashi = forced_tedashi;
+        obs
     }
 
     #[getter]
@@ -128,7 +131,8 @@ impl Observation3P {
         let parsed = parse_mjai_message(mjai_data)?;
         let inner_actions: Vec<Action> =
             self._legal_actions.iter().map(|a| (**a).clone()).collect();
-        let selected = select_action(&inner_actions, &parsed, self.drawn_tile, true)?;
+        let drawn_tile = self.drawn_tile.filter(|_| !self.forced_tedashi);
+        let selected = select_action(&inner_actions, &parsed, drawn_tile, true)?;
         // Re-find the corresponding Action3P instance to return.
         self._legal_actions
             .iter()
@@ -940,10 +944,10 @@ impl Observation3P {
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let mut arr = Array2::<f32>::zeros((NP - 1, 3));
 
-        let dora_tiles: Vec<u8> = self
+        let dora_types: Vec<u8> = self
             .dora_indicators
             .iter()
-            .map(|&indicator| get_next_tile_sanma(indicator))
+            .map(|&indicator| get_next_tile_sanma(indicator) / 4)
             .collect();
 
         let mut opponent_idx = 0;
@@ -959,7 +963,7 @@ impl Observation3P {
                 }
                 let is_aka = matches!(tile, 16 | 52 | 88);
                 arr[[opponent_idx, 1]] = if is_aka { 1.0 } else { 0.0 };
-                let is_dora = dora_tiles.contains(&tile);
+                let is_dora = dora_types.contains(&(tile / 4));
                 arr[[opponent_idx, 2]] = if is_dora { 1.0 } else { 0.0 };
             }
 
@@ -984,10 +988,10 @@ impl Observation3P {
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let mut arr = Array2::<f32>::zeros((NP - 1, 3));
 
-        let dora_tiles: Vec<u8> = self
+        let dora_types: Vec<u8> = self
             .dora_indicators
             .iter()
-            .map(|&indicator| get_next_tile_sanma(indicator))
+            .map(|&indicator| get_next_tile_sanma(indicator) / 4)
             .collect();
 
         let mut opponent_idx = 0;
@@ -1003,7 +1007,7 @@ impl Observation3P {
                 }
                 let is_aka = matches!(tile, 16 | 52 | 88);
                 arr[[opponent_idx, 1]] = if is_aka { 1.0 } else { 0.0 };
-                let is_dora = dora_tiles.contains(&tile);
+                let is_dora = dora_types.contains(&(tile / 4));
                 arr[[opponent_idx, 2]] = if is_dora { 1.0 } else { 0.0 };
             }
 
@@ -1035,12 +1039,12 @@ impl Observation3P {
             }
             let is_aka = matches!(tile, 16 | 52 | 88);
             arr[1] = if is_aka { 1.0 } else { 0.0 };
-            let dora_tiles: Vec<u8> = self
+            let dora_types: Vec<u8> = self
                 .dora_indicators
                 .iter()
-                .map(|&indicator| get_next_tile_sanma(indicator))
+                .map(|&indicator| get_next_tile_sanma(indicator) / 4)
                 .collect();
-            let is_dora = dora_tiles.contains(&(tile as u8));
+            let is_dora = dora_types.contains(&((tile / 4) as u8));
             arr[2] = if is_dora { 1.0 } else { 0.0 };
         }
 

@@ -1,14 +1,15 @@
 import json
 from pathlib import Path
 
+import pytest
 import torch
 import yaml
-from riichienv_ml.agents import PolicyDecision, _action_to_policy_payload
+from riichienv_ml.agents import PolicyDecision, _action_to_policy_payload, _policy_decision_from_logits
 from riichienv_ml.config import load_config
 from riichienv_ml.models.transformer import TransformerPolicyNetwork
 from riichienv_ml.self_match import SelfMatchRunner
 
-from riichienv import Action, ActionType, MjaiReplay
+from riichienv import Action, ActionType, GameRule, MjaiReplay, Phase, RiichiEnv
 
 
 def test_policy_payload_marks_tedashi_and_tsumogiri_discards():
@@ -30,6 +31,46 @@ def test_policy_payload_marks_tedashi_and_tsumogiri_discards():
     assert call["moqie"] == "na"
     assert call["moqie_id"] == 2
     assert "tsumogiri" not in call["mjai"]
+
+
+@pytest.mark.parametrize("preset", ["mjsoul", "tenhou"])
+@pytest.mark.parametrize("pointer", [True, False], ids=["pointer", "fixed"])
+def test_policy_discard_metadata_matches_live_log(preset, pointer):
+    env = RiichiEnv(seed=1, rule=getattr(GameRule, f"default_{preset}")())
+    observations = env.reset()
+
+    # Check the dealer's initial draw and a later draw under both rule presets.
+    for turn in range(2):
+        pid, obs = next(iter(observations.items()))
+        drawn_tile = obs.drawn_tile
+        action = next(a for a in obs.legal_actions() if a.action_type == ActionType.DISCARD and a.tile == drawn_tile)
+        index = obs.find_candidate_index(action) if pointer else action.encode()
+        width = len(obs.candidate_actions()) if pointer else len(obs.mask())
+        logits = torch.zeros(1, width)
+        logits[0, index] = 1
+        decision = _policy_decision_from_logits(obs, logits, torch.device("cpu"), candidate_logits=pointer)
+        assert decision.action.tile == drawn_tile
+        assert obs.drawn_tile == drawn_tile
+
+        start = len(env.mjai_log)
+        observations = env.step({pid: decision.action})
+        log = env.mjai_log
+        SelfMatchRunner._annotate_policy_log(log, [(start, len(log), [decision])])
+        event = next(e for e in log[start:] if e["type"] == "dahai")
+        expected_tsumogiri = preset == "tenhou" or turn > 0
+        assert event["tsumogiri"] is expected_tsumogiri
+        policy = event["meta"]["policy"]
+        payloads = [policy["chosen_action"]]
+        for group in ("candidates", "legal_actions"):
+            payloads.extend(entry["action"] for entry in policy.get(group, []) if entry["action"]["tile"] == drawn_tile)
+        for payload in payloads:
+            assert payload["tsumogiri"] is expected_tsumogiri
+            assert payload["mjai"]["tsumogiri"] is expected_tsumogiri
+            assert payload["moqie"] == ("tsumogiri" if expected_tsumogiri else "tedashi")
+            assert payload["moqie_id"] == int(expected_tsumogiri)
+
+        while env.phase == Phase.WaitResponse:
+            observations = env.step({p: Action(ActionType.PASS) for p in env.active_players})
 
 
 def test_self_match_response_policy_meta_attaches_to_source_event():

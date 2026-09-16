@@ -306,7 +306,6 @@ impl GameState {
         let scores: [i32; 4] = std::array::from_fn(|i| self.players[i].score);
         let riichi_declared: [bool; 4] = std::array::from_fn(|i| self.players[i].riichi_declared);
 
-        #[cfg_attr(not(feature = "python"), allow(unused_mut))]
         let mut obs = Observation::new(
             player_id,
             masked_hands,
@@ -339,6 +338,8 @@ impl GameState {
                 .map(|&from_hand| !from_hand)
                 .collect()
         });
+
+        obs.forced_tedashi = self.is_forced_tedashi(player_id);
 
         // Attach pre-computed progression snapshot.
         #[cfg(feature = "python")]
@@ -426,6 +427,7 @@ impl GameState {
         }
         // Validation
         let np = NP;
+        let mut normalized_kakan = None;
         for pid in 0..np {
             if let Some(act) = actions.get(&(pid as u8)) {
                 let legals = self._get_legal_actions_internal(pid as u8);
@@ -434,15 +436,16 @@ impl GameState {
                         return false;
                     }
 
+                    if act.action_type == ActionType::Kakan {
+                        normalized_kakan = act.resolve_kakan(l);
+                        return normalized_kakan.is_some();
+                    }
+
                     let tiles_match = l.tile == act.tile;
                     let consumes_match = l.consume_tiles == act.consume_tiles;
 
                     if tiles_match {
                         if consumes_match {
-                            return true;
-                        }
-                        // Allow empty consume for Kakan
-                        if act.consume_tiles.is_empty() && l.action_type == ActionType::Kakan {
                             return true;
                         }
                         // Allow empty consume for Discard, Riichi, Tsumo, Ron, Pass
@@ -460,9 +463,7 @@ impl GameState {
                         }
                     }
 
-                    if consumes_match
-                        && matches!(l.action_type, ActionType::Ankan | ActionType::Kakan)
-                    {
+                    if consumes_match && l.action_type == ActionType::Ankan {
                         return true;
                     }
 
@@ -493,6 +494,7 @@ impl GameState {
         if self.phase == Phase::WaitAct {
             let pid = self.current_player;
             if let Some(act) = actions.get(&pid) {
+                let act = normalized_kakan.as_ref().unwrap_or(act);
                 match act.action_type {
                     ActionType::Discard => {
                         if let Some(tile) = act.tile {
@@ -549,12 +551,6 @@ impl GameState {
                                     && dt == t
                                 {
                                     tsumogiri = true;
-                                }
-                                // Record riichi sutehai (riichi discard tile)
-                                self.riichi_sutehais[pid as usize] = Some(t);
-                                // Record last tedashi if not tsumogiri
-                                if !tsumogiri {
-                                    self.last_tedashis[pid as usize] = Some(t);
                                 }
                                 if let Some(idx) =
                                     self.players[pid as usize].hand.iter().position(|&x| x == t)
@@ -1042,6 +1038,10 @@ impl GameState {
                 }
             }
 
+            // Retire this response's offers after recording missed wins and
+            // selecting claims, before a call can open a new response window.
+            self.current_claims.clear();
+
             if !ron_claims.is_empty() {
                 // Sanchaho: all non-discarders ron → abortive draw
                 if ron_claims.len() >= NP - 1 && self.rule.sanchaho_is_draw {
@@ -1244,7 +1244,6 @@ impl GameState {
                 self._accept_riichi();
                 self.is_rinshan_flag = false;
                 self.is_first_turn = false;
-                self.players[claimer as usize].missed_agari_doujun = false;
 
                 // Discard was called → discarder loses nagashi eligibility
                 if let Some((discarder_pid, _)) = self.last_discard {
@@ -1397,7 +1396,6 @@ impl GameState {
                 }
             } else {
                 // All Pass
-                self.current_claims.clear();
                 self.active_players.clear();
 
                 if let Some((pk_pid, pk_act)) = self.pending_kan.take() {
@@ -1418,7 +1416,15 @@ impl GameState {
         }
     }
 
+    fn is_forced_tedashi(&self, pid: u8) -> bool {
+        self.rule.dealer_first_discard_is_tedashi
+            && pid == self.oya
+            && self.is_first_turn
+            && self.players[pid as usize].discards.is_empty()
+    }
+
     fn _resolve_discard(&mut self, pid: u8, tile: u8, tsumogiri: bool) {
+        let tsumogiri = tsumogiri && !self.is_forced_tedashi(pid);
         // After a discard the rinshan context is over. Clearing here ensures
         // that houtei (last-discard win) is correctly detected even when the
         // discard comes after a kan draw.
@@ -1448,6 +1454,7 @@ impl GameState {
         self.needs_tsumo = true;
 
         if self.players[pid as usize].riichi_stage {
+            self.riichi_sutehais[pid as usize] = Some(tile);
             self.players[pid as usize].riichi_declared = true;
             if self.is_first_turn {
                 self.players[pid as usize].double_riichi_declared = true;
@@ -1473,6 +1480,8 @@ impl GameState {
             self._push_mjai_event(Value::Object(ev));
         }
 
+        // A player's own discard ends temporary furiten, including after a call.
+        // Other players' calls and discards must not clear this player's furiten.
         self.players[pid as usize].missed_agari_doujun = false;
         self.players[pid as usize].nagashi_eligible &= crate::types::is_terminal_tile(tile);
 
