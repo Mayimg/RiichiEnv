@@ -82,6 +82,42 @@ def test_belief_mcts_selected_action_meta_preserves_raw_bc_policy_prob():
     assert selected_entry["prob"] < 0.1
 
 
+@pytest.mark.parametrize("preset", ["mjsoul", "tenhou"])
+@pytest.mark.parametrize("pointer", [True, False], ids=["pointer", "fixed"])
+def test_belief_mcts_selected_discard_metadata_matches_live_log(preset, pointer):
+    agent = _bare_belief_agent()
+    agent.policy_head_is_pointer = pointer
+    env = RiichiEnv(seed=1, rule=getattr(GameRule, f"default_{preset}")())
+    obs = env.reset()[0]
+    selected_action = next(
+        a for a in obs.legal_actions() if a.action_type == ActionType.DISCARD and a.tile == obs.drawn_tile
+    )
+    selected_key = obs.find_candidate_index(selected_action) if pointer else selected_action.encode()
+    actions = obs.candidate_actions() if pointer else obs.legal_actions()
+    bc_action = next(a for a in actions if a.tile != selected_action.tile)
+    bc_key = obs.find_candidate_index(bc_action) if pointer else bc_action.encode()
+    logits = torch.zeros(len(actions) if pointer else len(obs.mask()))
+    logits[bc_key] = 1
+
+    meta = agent._meta_for_selected_action(
+        obs=obs,
+        logits=logits,
+        selected_action=selected_action,
+        selected_index=0,
+        action_keys=[selected_key],
+    )
+    env.step({0: selected_action})
+    event = next(e for e in reversed(env.mjai_log) if e["type"] == "dahai")
+    expected_tsumogiri = preset == "tenhou"
+    assert event["tsumogiri"] is expected_tsumogiri
+    assert meta["chosen_index"] == selected_key
+    assert meta["chosen_action"]["tile"] == selected_action.tile
+    assert meta["chosen_action"]["tsumogiri"] is expected_tsumogiri
+    assert meta["chosen_action"]["mjai"]["tsumogiri"] is expected_tsumogiri
+    assert meta["chosen_action"]["moqie"] == ("tsumogiri" if expected_tsumogiri else "tedashi")
+    assert meta["chosen_action"]["moqie_id"] == int(expected_tsumogiri)
+
+
 def test_belief_mcts_response_root_steps_when_no_other_responder(monkeypatch):
     agent = _bare_belief_agent()
     env = _root_only_chi_response_env()

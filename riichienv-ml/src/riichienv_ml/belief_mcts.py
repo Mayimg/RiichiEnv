@@ -18,6 +18,7 @@ from riichienv_ml.agents import (
     _action_to_policy_payload,
     _action_type_id,
     _policy_decision_from_logits,
+    _policy_drawn_tile,
 )
 from riichienv_ml.config import BeliefMctsConfig, import_class, load_config
 from riichienv_ml.features.belief_features import (
@@ -870,7 +871,7 @@ class BeliefMCTSAgent:
             decision.meta["chosen_index"] = int(selected_key)
             decision.meta["chosen_action"] = _action_to_policy_payload(
                 selected_action,
-                getattr(obs, "drawn_tile", None),
+                _policy_drawn_tile(obs),
             )
             for entry in decision.meta.get("candidates", []):
                 entry["selected"] = int(entry.get("index", -1)) == int(selected_key)
@@ -883,7 +884,7 @@ class BeliefMCTSAgent:
         except Exception:
             selected_key = action_keys[selected_index]
         decision.meta["chosen_index"] = int(selected_key)
-        decision.meta["chosen_action"] = _action_to_policy_payload(selected_action, getattr(obs, "drawn_tile", None))
+        decision.meta["chosen_action"] = _action_to_policy_payload(selected_action, _policy_drawn_tile(obs))
         for entry in decision.meta.get("legal_actions", []):
             entry["selected"] = entry.get("action_id") == int(selected_key)
         return decision.meta

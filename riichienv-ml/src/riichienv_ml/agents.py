@@ -106,6 +106,13 @@ def _action_type_id(action) -> int | None:
         return None
 
 
+def _policy_drawn_tile(obs) -> int | None:
+    """Return the tile that counts as tsumogiri for policy diagnostics."""
+    if getattr(obs, "forced_tedashi", False):
+        return None
+    return getattr(obs, "drawn_tile", None)
+
+
 def _discard_tsumogiri(action, drawn_tile: int | None) -> bool | None:
     if _action_type_id(action) != _DISCARD_ACTION_TYPE_ID:
         return None
@@ -186,7 +193,7 @@ def _pointer_policy_decision(obs, logits: torch.Tensor, device: torch.device) ->
             raise ValueError(f"No legal action for action_idx={action_idx}")
 
     logits_cpu = logits_1d.detach().cpu()
-    drawn_tile = getattr(obs, "drawn_tile", None)
+    drawn_tile = _policy_drawn_tile(obs)
     candidate_entries = []
     for idx, candidate in enumerate(candidates[:valid_count]):
         candidate_entries.append(
@@ -251,7 +258,7 @@ def _fixed_policy_decision(obs, logits: torch.Tensor, device: torch.device) -> P
     valid_indices = [idx for idx, value in enumerate(fixed_mask.tolist()) if value]
     probs_by_idx = _masked_softmax_values(logits_1d, valid_indices)
     logits_cpu = logits_1d.detach().cpu()
-    drawn_tile = getattr(obs, "drawn_tile", None)
+    drawn_tile = _policy_drawn_tile(obs)
 
     legal_entries = []
     for legal_index, legal in enumerate(obs.legal_actions()):
