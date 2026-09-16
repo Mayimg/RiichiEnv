@@ -141,7 +141,11 @@ impl GameState3PEventHandler for GameState3P {
                 self.active_players = vec![actor as u8];
                 self.needs_tsumo = false;
             }
-            MjaiEvent::Dahai { actor, pai, .. } => {
+            MjaiEvent::Dahai {
+                actor,
+                pai,
+                tsumogiri,
+            } => {
                 let tile = parse_mjai_tile(&pai);
                 self.current_player = actor as u8;
                 if let Some(idx) = self.players[actor].hand.iter().position(|&t| t == tile) {
@@ -149,6 +153,9 @@ impl GameState3PEventHandler for GameState3P {
                 }
                 self.players[actor].discards.push(tile);
                 self.last_discard = Some((actor as u8, tile));
+                if !tsumogiri {
+                    self.last_tedashis[actor] = Some(tile);
+                }
                 self.drawn_tile = None;
                 self.turn_count += 1;
                 if self.turn_count >= self.players.len() as u32 {
@@ -156,6 +163,7 @@ impl GameState3PEventHandler for GameState3P {
                 }
 
                 if self.players[actor].riichi_stage {
+                    self.riichi_sutehais[actor] = Some(tile);
                     self.players[actor].riichi_declared = true;
                     self.players[actor].riichi_stage = false;
                 }
@@ -413,7 +421,9 @@ impl GameState3PEventHandler for GameState3P {
             } => {
                 let s = *seat;
                 let log_tile = *tile;
-                let is_tsumogiri = tsumogiri.unwrap_or_else(|| self.drawn_tile == Some(log_tile));
+                let is_tsumogiri = tsumogiri.unwrap_or_else(|| {
+                    self.drawn_tile == Some(log_tile) && !self.is_forced_tedashi(s as u8)
+                });
                 let t = if is_tsumogiri {
                     self.drawn_tile
                         .filter(|&drawn| same_log_tile(drawn, log_tile))
@@ -444,6 +454,12 @@ impl GameState3PEventHandler for GameState3P {
                     .discard_is_riichi
                     .push(*is_liqi || *is_wliqi);
                 self.last_discard = Some((s as u8, t));
+                if !is_tsumogiri {
+                    self.last_tedashis[s] = Some(t);
+                }
+                if *is_liqi || *is_wliqi {
+                    self.riichi_sutehais[s] = Some(t);
+                }
                 self.drawn_tile = None;
                 // Reset same-turn furiten after own discard.
                 self.players[s].missed_agari_doujun = false;

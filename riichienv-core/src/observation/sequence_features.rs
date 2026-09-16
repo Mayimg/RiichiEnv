@@ -1047,7 +1047,7 @@ impl Observation {
             ActionType::Discard => {
                 let tile = action.tile?;
                 let type_idx = tile_id_to_kan37(tile as u32) as u16;
-                let moqie = if Some(tile) == self.drawn_tile {
+                let moqie = if !self.forced_tedashi && Some(tile) == self.drawn_tile {
                     CAND_MOQIE_TSUMOGIRI
                 } else {
                     CAND_MOQIE_TEDASHI

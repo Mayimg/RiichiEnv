@@ -153,10 +153,10 @@ impl GameStateEventHandler for GameState {
                 self.players[actor].discard_from_hand.push(!tsumogiri);
                 let riichi_stage = self.players[actor].riichi_stage;
                 self.players[actor].discard_is_riichi.push(riichi_stage);
+                self.last_discard = Some((actor as u8, tile));
                 if !tsumogiri {
                     self.last_tedashis[actor] = Some(tile);
                 }
-                self.last_discard = Some((actor as u8, tile));
                 self.drawn_tile = None;
                 self.turn_count += 1;
                 if self.turn_count >= self.players.len() as u32 {
@@ -388,7 +388,9 @@ impl GameStateEventHandler for GameState {
             } => {
                 let s = *seat;
                 let log_tile = *tile;
-                let is_tsumogiri = tsumogiri.unwrap_or_else(|| self.drawn_tile == Some(log_tile));
+                let is_tsumogiri = tsumogiri.unwrap_or_else(|| {
+                    self.drawn_tile == Some(log_tile) && !self.is_forced_tedashi(s as u8)
+                });
                 let t = if is_tsumogiri {
                     self.drawn_tile
                         .filter(|&drawn| same_log_tile(drawn, log_tile))
@@ -452,6 +454,12 @@ impl GameStateEventHandler for GameState {
                     .discard_is_riichi
                     .push(*is_liqi || *is_wliqi);
                 self.last_discard = Some((s as u8, t));
+                if !is_tsumogiri {
+                    self.last_tedashis[s] = Some(t);
+                }
+                if *is_liqi || *is_wliqi {
+                    self.riichi_sutehais[s] = Some(t);
+                }
                 self.drawn_tile = None;
                 // Reset same-turn furiten after own discard.
                 self.players[s].missed_agari_doujun = false;
